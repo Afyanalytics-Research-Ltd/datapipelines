@@ -1,0 +1,115 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Simple neonatal note extraction",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "document_type": {
+      "type": ["string", "null"],
+      "description": "Type of document, for example neonatal discharge summary or progress note."
+    },
+    "document_date": {
+      "type": ["string", "null"],
+      "description": "Document date exactly as written."
+    },
+    "baby_name": {
+      "type": ["string", "null"]
+    },
+    "sex": {
+      "type": ["string", "null"]
+    },
+    "gestational_age": {
+      "type": ["string", "null"],
+      "description": "Gestational age as written, for example 34 weeks."
+    },
+    "age_or_day_of_life": {
+      "type": ["string", "null"]
+    },
+    "birth_weight": {
+      "type": ["string", "null"],
+      "description": "Birth weight exactly as written, including units if present."
+    },
+    "current_weight": {
+      "type": ["string", "null"],
+      "description": "Current or discharge weight exactly as written, including units if present."
+    },
+    "delivery_details": {
+      "type": ["string", "null"],
+      "description": "Delivery mode and related birth details."
+    },
+    "apgar_scores": {
+      "type": ["string", "null"],
+      "description": "APGAR scores exactly as written."
+    },
+    "diagnoses": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "List of diagnoses or major problems."
+    },
+    "clinical_summary": {
+      "type": ["string", "null"],
+      "description": "Short summary of the clinical course or progress."
+    },
+    "vitals": {
+      "type": ["string", "null"],
+      "description": "Vital signs exactly as written."
+    },
+    "examination_findings": {
+      "type": ["string", "null"],
+      "description": "System examination findings or general exam notes."
+    },
+    "investigations": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Tests and results as plain text entries."
+    },
+    "treatments": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Medicines, supportive care, and procedures as plain text entries."
+    },
+    "feeding_and_support": {
+      "type": ["string", "null"],
+      "description": "Feeding plan and supportive care such as KMC, oxygen, phototherapy, EBM."
+    },
+    "discharge_plan": {
+      "type": ["string", "null"],
+      "description": "Discharge status, follow-up plan, and destination."
+    },
+    "clinician_name": {
+      "type": ["string", "null"]
+    },
+    "raw_notes": {
+      "type": ["string", "null"],
+      "description": "Any extra handwritten content that does not fit elsewhere."
+    }
+  },
+  "required": [
+    "document_type",
+    "document_date",
+    "baby_name",
+    "sex",
+    "gestational_age",
+    "age_or_day_of_life",
+    "birth_weight",
+    "current_weight",
+    "delivery_details",
+    "apgar_scores",
+    "diagnoses",
+    "clinical_summary",
+    "vitals",
+    "examination_findings",
+    "investigations",
+    "treatments",
+    "feeding_and_support",
+    "discharge_plan",
+    "clinician_name",
+    "raw_notes"
+  ]
+}

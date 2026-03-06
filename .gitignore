@@ -60,3 +60,8 @@ htmlcov/
 
 logs/*
 failed_mapped_logs/*
+# Ignore all json files
+*.json
+
+# But allow jsons inside this folder
+!dags/jsons/*.json
