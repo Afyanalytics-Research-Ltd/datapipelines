@@ -235,14 +235,14 @@ with DAG(
             extracted = extract_response.json()
 
             # Upload JSON result to Drive
-            json_filename = file_name.replace(".pdf", ".json")
+            # json_filename = file_name.replace(".pdf", ".json")
 
-            upload_json_to_drive(
-                service,
-                json_filename,
-                extracted,
-                JSON_DEST_FOLDER_ID
-            )
+            # upload_json_to_drive(
+            #     service,
+            #     json_filename,
+            #     extracted,
+            #     JSON_DEST_FOLDER_ID
+            # )
 
 
             move_file(service, file_id, DEST_FOLDER_ID)
