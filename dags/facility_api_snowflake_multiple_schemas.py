@@ -271,7 +271,7 @@ def extract_one_model(job: dict, **context):
                              singular_body=singular_body, 
                              double_namespace_body=double_namespace_body,
                              double_namespace_singular_body=double_namespace_singular_body,
-                             timeout=60, max_pages=2)
+                             timeout=60, max_pages=10000)
 
     
     # ✅ S3 key per model namespace
