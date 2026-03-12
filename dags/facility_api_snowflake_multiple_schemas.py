@@ -26,7 +26,8 @@ FACILITIES = {
     "afya_api_auth": {"base_url": "https://staging.afyanalytics.ai", "db": "staging_db"},
     "kakamega": {"base_url":"https://demo.collabmed.net", "db":"kakamega_db"},
     "kisumu": {"base_url": "https://kshospital.collabmed.net", "db":"kisumu_db"},
-    "lodwar": {"base_url": "https://lcrh.collabmed.net", "db":"lodwar_db"}
+    "lodwar": {"base_url": "https://lcrh.collabmed.net", "db":"lodwar_db"},
+    "tenri": {"base_url": "https://stageenv.collabmed.net", "db":"lodwar_db"}
 }
 
 S3_CONN_ID = "aws_default"
@@ -35,7 +36,7 @@ SNOWFLAKE_CONN_ID = "snowflake_default"
 S3_BUCKET = "collabmedbucket"
 S3_PREFIX = "raw/facilities"  # s3://bucket/raw/facilities/facility_id=.../dt=.../*.jsonl
 
-SF_DB = "HOSPITALS"
+SF_DB = "HOSPITALS" 
 SF_SHARED_SCHEMA = "SHARED"
 SF_STAGE = f"{SF_DB}.{SF_SHARED_SCHEMA}.FACILITY_RAW_STAGE"
 SF_FILE_FORMAT = f"{SF_DB}.{SF_SHARED_SCHEMA}.JSON_FF"
