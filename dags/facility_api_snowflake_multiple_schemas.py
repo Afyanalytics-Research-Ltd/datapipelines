@@ -27,7 +27,8 @@ FACILITIES = {
     "kakamega": {"base_url":"https://demo.collabmed.net", "db":"kakamega_db"},
     "kisumu": {"base_url": "https://kshospital.collabmed.net", "db":"kisumu_db"},
     "lodwar": {"base_url": "https://lcrh.collabmed.net", "db":"lodwar_db"},
-    "tenri": {"base_url": "https://stageenv.collabmed.net", "db":"lodwar_db"}
+    "tenri": {"base_url": "https://stageenv.collabmed.net", "db":"lodwar_db"},
+    "xanalife": {"base_url": "https://xanastaging.afyanalytics.ai", "db":"lodwar_db"}
 }
 
 S3_CONN_ID = "aws_default"
