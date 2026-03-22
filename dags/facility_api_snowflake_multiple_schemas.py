@@ -134,89 +134,128 @@ def _safe_s3_token(s: str) -> str:
     return re.sub(r"[^a-zA-Z0-9_\-=\.\+]+", "_", s)
 
 
-def post_with_retry(
+def post_with_retry_and_fallback(
     url,
     headers,
-    json_body,
+    bodies,  # list of candidate bodies in fallback order
     timeout=60,
     max_retries=6,
     default_retry_wait=10,
     backoff_factor=2,
+    base_delay=0.5,  # small polite delay after successful requests
 ):
     """
-    POST with retry support for:
-      - 429 Too Many Requests
-      - transient 5xx errors
-      - timeout / connection errors
+    Tries multiple request bodies in order.
+    Handles:
+      - 404 by moving to next fallback body
+      - 429 by waiting and retrying same body
+      - 5xx by retrying same body
+      - Timeout / ConnectionError by retrying same body
 
     Returns:
-      requests.Response
+      (response, used_body)
+
     Raises:
-      last exception if retries are exhausted
+      Exception if all fallback bodies return 404
+      or the final retryable error exhausts retries.
     """
-    attempt = 0
-    wait_time = default_retry_wait
 
-    while True:
-        attempt += 1
-        try:
-            r = requests.post(url, headers=headers, json=json_body, timeout=timeout)
-            log.info(
-                "Attempt=%s Status=%s Response=%s",
-                attempt,
-                r.status_code,
-                r.text[:800]
-            )
+    for body_index, base_body in enumerate(bodies):
+        attempt = 0
+        wait_time = default_retry_wait
 
-            # Handle rate limit
-            if r.status_code == 429:
-                retry_after = default_retry_wait
-                try:
-                    payload = r.json()
-                    retry_after = int(payload.get("retry_after_seconds", default_retry_wait))
-                except Exception:
-                    pass
+        while True:
+            attempt += 1
 
-                if attempt >= max_retries:
-                    r.raise_for_status()
-
-                log.warning(
-                    "429 rate limited. Waiting %s seconds before retrying. Attempt %s/%s",
-                    retry_after, attempt, max_retries
+            try:
+                r = requests.post(
+                    url=url,
+                    headers=headers,
+                    json=base_body,
+                    timeout=timeout,
                 )
-                time.sleep(retry_after)
-                continue
 
-            # Retry transient server errors
-            if r.status_code in {500, 502, 503, 504}:
+                log.info(
+                    "BodyIndex=%s Attempt=%s Status=%s Response=%s",
+                    body_index,
+                    attempt,
+                    r.status_code,
+                    r.text[:800],
+                )
+
+                # 404 => try next fallback body
+                if r.status_code == 404:
+                    log.warning(
+                        "404 for namespace=%s; trying next fallback body",
+                        base_body.get("namespace"),
+                    )
+                    break
+
+                # 429 => respect retry_after_seconds and retry same body
+                if r.status_code == 429:
+                    retry_after = default_retry_wait
+                    try:
+                        retry_after = int(
+                            r.json().get("retry_after_seconds", default_retry_wait)
+                        )
+                    except Exception:
+                        pass
+
+                    if attempt >= max_retries:
+                        r.raise_for_status()
+
+                    log.warning(
+                        "429 rate limited for namespace=%s. Sleeping %s seconds before retry (%s/%s)",
+                        base_body.get("namespace"),
+                        retry_after,
+                        attempt,
+                        max_retries,
+                    )
+                    time.sleep(retry_after)
+                    continue
+
+                # 5xx => retry same body
+                if r.status_code in {500, 502, 503, 504}:
+                    log.warning(
+                        "Server error %s for namespace=%s",
+                        r.status_code,
+                        base_body.get("namespace"),
+                    )
+
+                    if attempt >= max_retries:
+                        r.raise_for_status()
+
+                    time.sleep(wait_time)
+                    wait_time *= backoff_factor
+                    continue
+
+                r.raise_for_status()
+
+                if base_delay > 0:
+                    time.sleep(base_delay)
+
+                return r, base_body
+
+            except (Timeout, ConnectionError) as e:
                 if attempt >= max_retries:
-                    r.raise_for_status()
+                    raise
 
                 log.warning(
-                    "Server error %s. Waiting %s seconds before retrying. Attempt %s/%s",
-                    r.status_code, wait_time, attempt, max_retries
+                    "Network error for namespace=%s: %s. Sleeping %s seconds before retry (%s/%s)",
+                    base_body.get("namespace"),
+                    str(e),
+                    wait_time,
+                    attempt,
+                    max_retries,
                 )
                 time.sleep(wait_time)
                 wait_time *= backoff_factor
-                continue
 
-            # For everything else, raise if bad
-            r.raise_for_status()
-            return r
-
-        except (Timeout, ConnectionError) as e:
-            if attempt >= max_retries:
+            except HTTPError:
                 raise
 
-            log.warning(
-                "Network error: %s. Waiting %s seconds before retrying. Attempt %s/%s",
-                str(e), wait_time, attempt, max_retries
-            )
-            time.sleep(wait_time)
-            wait_time *= backoff_factor
+    raise Exception("All fallback request bodies returned 404")
 
-        except HTTPError:
-            raise
 
 def extract_all_pages(
     url,
@@ -227,11 +266,16 @@ def extract_all_pages(
     double_namespace_singular_body,
     timeout=60,
     max_pages=10000,
+    max_retries=6,
+    default_retry_wait=10,
+    backoff_factor=2,
+    base_delay=0.5,
 ):
     """
-    Returns: (all_rows, used_body)
-      - all_rows: list of records across all pages
-      - used_body: the body (plural or singular) that actually worked
+    Returns:
+      (all_rows, used_body)
+        - all_rows: list of records across all pages
+        - used_body: the request body shape that actually worked
     """
 
     def extract_rows(payload: dict) -> list:
@@ -251,44 +295,35 @@ def extract_all_pages(
 
         return rows
 
-    def make_request(candidate_body, page):
-        req_body = dict(candidate_body)
-        req_body["page"] = page
-        response = post_with_retry(
-            url=url,
-            headers=headers,
-            json_body=req_body,
-            timeout=timeout,
-        )
-        return response, req_body
-
     page = 1
 
-    # Try plural first
-    r, chosen_body = make_request(body, page)
+    candidate_bodies = [
+        {**body, "page": page},
+        {**singular_body, "page": page},
+        {**double_namespace_body, "page": page},
+        {**double_namespace_singular_body, "page": page},
+    ]
 
-    # Fallback sequence only for 404
-    if r.status_code == 404:
-        r, chosen_body = make_request(singular_body, page)
-        if r.status_code == 404:
-            r, chosen_body = make_request(double_namespace_body, page)
-            if r.status_code == 404:
-                r, chosen_body = make_request(double_namespace_singular_body, page)
+    # First page with fallback sequence built in
+    r, chosen_body = post_with_retry_and_fallback(
+        url=url,
+        headers=headers,
+        bodies=candidate_bodies,
+        timeout=timeout,
+        max_retries=max_retries,
+        default_retry_wait=default_retry_wait,
+        backoff_factor=backoff_factor,
+        base_delay=base_delay,
+    )
 
-    if r.status_code == 500:
-        log.info("status=500 for %s", chosen_body.get("namespace"))
-
-    r.raise_for_status()
     payload = r.json()
-
-    all_rows = []
-    rows = extract_rows(payload)
-    all_rows.extend(rows)
+    all_rows = extract_rows(payload)
 
     pagination = payload.get("pagination") or {}
     has_more = bool(pagination.get("has_more_pages", False))
     last_page = pagination.get("last_page")
 
+    # Remaining pages use the chosen body only
     while has_more:
         page += 1
 
@@ -299,12 +334,17 @@ def extract_all_pages(
         if last_page is not None and page > int(last_page):
             break
 
-        chosen_body["page"] = page
-        r = post_with_retry(
+        next_body = {**chosen_body, "page": page}
+
+        r, chosen_body = post_with_retry_and_fallback(
             url=url,
             headers=headers,
-            json_body=chosen_body,
+            bodies=[next_body],
             timeout=timeout,
+            max_retries=max_retries,
+            default_retry_wait=default_retry_wait,
+            backoff_factor=backoff_factor,
+            base_delay=base_delay,
         )
 
         payload = r.json()
@@ -315,9 +355,10 @@ def extract_all_pages(
         has_more = bool(pagination.get("has_more_pages", False))
         last_page = pagination.get("last_page", last_page)
 
+        # extra guard in case pagination lies
         if not rows:
             break
-        time.sleep(1)   # or 1.0 depending on API strictness
+
     return all_rows, chosen_body
 
 def extract_one_model(job: dict, **context):
