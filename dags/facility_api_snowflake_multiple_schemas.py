@@ -536,7 +536,7 @@ def copy_one_into_snowflake(**job_result):
     )
     FILES = ('{s3_key}')
     FILE_FORMAT = (FORMAT_NAME = {SF_FILE_FORMAT})
-    ON_ERROR = 'ABORT_STATEMENT';
+    ON_ERROR = 'CONTINUE';
     """
     SnowflakeHook(snowflake_conn_id=SNOWFLAKE_CONN_ID).run(sql)
 
