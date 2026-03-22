@@ -3,9 +3,11 @@ from __future__ import annotations
 import gzip
 from io import BytesIO
 import json
+import time
 import inflect
 import logging
 import requests
+from requests.exceptions import Timeout, ConnectionError, HTTPError
 import re
 import gspread
 from datetime import datetime, timedelta, timezone
@@ -132,17 +134,107 @@ def _safe_s3_token(s: str) -> str:
     return re.sub(r"[^a-zA-Z0-9_\-=\.\+]+", "_", s)
 
 
-def extract_all_pages(url, headers, body, singular_body,
-                    double_namespace_body,
-                    double_namespace_singular_body,
-                    timeout=60, max_pages=10000):
+def post_with_retry(
+    url,
+    headers,
+    json_body,
+    timeout=60,
+    max_retries=6,
+    default_retry_wait=10,
+    backoff_factor=2,
+):
+    """
+    POST with retry support for:
+      - 429 Too Many Requests
+      - transient 5xx errors
+      - timeout / connection errors
+
+    Returns:
+      requests.Response
+    Raises:
+      last exception if retries are exhausted
+    """
+    attempt = 0
+    wait_time = default_retry_wait
+
+    while True:
+        attempt += 1
+        try:
+            r = requests.post(url, headers=headers, json=json_body, timeout=timeout)
+            log.info(
+                "Attempt=%s Status=%s Response=%s",
+                attempt,
+                r.status_code,
+                r.text[:800]
+            )
+
+            # Handle rate limit
+            if r.status_code == 429:
+                retry_after = default_retry_wait
+                try:
+                    payload = r.json()
+                    retry_after = int(payload.get("retry_after_seconds", default_retry_wait))
+                except Exception:
+                    pass
+
+                if attempt >= max_retries:
+                    r.raise_for_status()
+
+                log.warning(
+                    "429 rate limited. Waiting %s seconds before retrying. Attempt %s/%s",
+                    retry_after, attempt, max_retries
+                )
+                time.sleep(retry_after)
+                continue
+
+            # Retry transient server errors
+            if r.status_code in {500, 502, 503, 504}:
+                if attempt >= max_retries:
+                    r.raise_for_status()
+
+                log.warning(
+                    "Server error %s. Waiting %s seconds before retrying. Attempt %s/%s",
+                    r.status_code, wait_time, attempt, max_retries
+                )
+                time.sleep(wait_time)
+                wait_time *= backoff_factor
+                continue
+
+            # For everything else, raise if bad
+            r.raise_for_status()
+            return r
+
+        except (Timeout, ConnectionError) as e:
+            if attempt >= max_retries:
+                raise
+
+            log.warning(
+                "Network error: %s. Waiting %s seconds before retrying. Attempt %s/%s",
+                str(e), wait_time, attempt, max_retries
+            )
+            time.sleep(wait_time)
+            wait_time *= backoff_factor
+
+        except HTTPError:
+            raise
+
+def extract_all_pages(
+    url,
+    headers,
+    body,
+    singular_body,
+    double_namespace_body,
+    double_namespace_singular_body,
+    timeout=60,
+    max_pages=10000,
+):
     """
     Returns: (all_rows, used_body)
       - all_rows: list of records across all pages
       - used_body: the body (plural or singular) that actually worked
     """
+
     def extract_rows(payload: dict) -> list:
-        # ---- SAFE ROW EXTRACTION ----
         rows = payload.get("data")
 
         if rows is None:
@@ -152,39 +244,39 @@ def extract_all_pages(url, headers, body, singular_body,
             else:
                 rows = []
 
-        # normalize
         if isinstance(rows, dict):
             rows = rows.get("data") or []
         elif not isinstance(rows, list):
             rows = []
+
         return rows
 
-    # --- first request (page 1), with plural then singular fallback if 404 ---
+    def make_request(candidate_body, page):
+        req_body = dict(candidate_body)
+        req_body["page"] = page
+        response = post_with_retry(
+            url=url,
+            headers=headers,
+            json_body=req_body,
+            timeout=timeout,
+        )
+        return response, req_body
+
     page = 1
-    chosen_body = dict(body)
-    chosen_body["page"] = page
 
-    r = requests.post(url, headers=headers, json=chosen_body, timeout=timeout)
-    log.info("Status=%s Response=%s", r.status_code, r.text[:800])
+    # Try plural first
+    r, chosen_body = make_request(body, page)
 
+    # Fallback sequence only for 404
     if r.status_code == 404:
-        chosen_body = dict(singular_body)
-        chosen_body["page"] = page
-        r = requests.post(url, headers=headers, json=chosen_body, timeout=timeout)
-        log.info("Status=%s Response=%s", r.status_code, r.text[:800])
+        r, chosen_body = make_request(singular_body, page)
         if r.status_code == 404:
-            chosen_body = dict(double_namespace_body)
-            chosen_body["page"] = page
-            r = requests.post(url, headers=headers, json=chosen_body, timeout=timeout)
-            log.info("Status=%s Response=%s", r.status_code, r.text[:800])
+            r, chosen_body = make_request(double_namespace_body, page)
             if r.status_code == 404:
-                chosen_body = dict(double_namespace_singular_body)
-                chosen_body["page"] = page
-                r = requests.post(url, headers=headers, json=chosen_body, timeout=timeout)
-                log.info("Status=%s Response=%s", r.status_code, r.text[:800])
+                r, chosen_body = make_request(double_namespace_singular_body, page)
 
     if r.status_code == 500:
-        log.info(f"status=500 for {chosen_body['namespace']}")
+        log.info("status=500 for %s", chosen_body.get("namespace"))
 
     r.raise_for_status()
     payload = r.json()
@@ -195,22 +287,25 @@ def extract_all_pages(url, headers, body, singular_body,
 
     pagination = payload.get("pagination") or {}
     has_more = bool(pagination.get("has_more_pages", False))
-    last_page = pagination.get("last_page")  # may be None
+    last_page = pagination.get("last_page")
 
-    # --- loop remaining pages ---
     while has_more:
         page += 1
+
         if page > max_pages:
-            log.info (f"Pagination safety stop: exceeded max_pages={max_pages}")
+            log.info("Pagination safety stop: exceeded max_pages=%s", max_pages)
             break
 
         if last_page is not None and page > int(last_page):
             break
 
         chosen_body["page"] = page
-        r = requests.post(url, headers=headers, json=chosen_body, timeout=timeout)
-        log.info("Status=%s Response=%s", r.status_code, r.text[:800])
-        r.raise_for_status()
+        r = post_with_retry(
+            url=url,
+            headers=headers,
+            json_body=chosen_body,
+            timeout=timeout,
+        )
 
         payload = r.json()
         rows = extract_rows(payload)
@@ -220,10 +315,9 @@ def extract_all_pages(url, headers, body, singular_body,
         has_more = bool(pagination.get("has_more_pages", False))
         last_page = pagination.get("last_page", last_page)
 
-        # Optional extra safety: if API lies about has_more_pages but returns empty data
         if not rows:
             break
-
+        time.sleep(1)   # or 1.0 depending on API strictness
     return all_rows, chosen_body
 
 def extract_one_model(job: dict, **context):
