@@ -547,35 +547,48 @@ def merge_clean(**context):
     clean_table = f"{sf_schema(facility, 'CLEAN')}.EVENTS"
 
     sql = f"""
-    MERGE INTO {clean_table} t
+    MERGE INTO {clean_table} AS t
     USING (
-      SELECT
-        facility_id,
-        payload:id::STRING            AS event_id,
-        payload:event_time::TIMESTAMP AS event_time,
-        payload:type::STRING          AS event_type,
-        payload:amount::NUMBER        AS amount,
-        payload                       AS payload,
-        ingested_at
-      FROM {raw_table}
-      WHERE payload:id IS NOT NULL
-        AND NULLIF(TRIM(payload:id::STRING), '') IS NOT NULL
-      QUALIFY ROW_NUMBER() OVER (
-        PARTITION BY payload:id::STRING
-        ORDER BY ingested_at DESC
-      ) = 1
-    ) s
+        SELECT
+            facility_id,
+            f.value:id::STRING            AS event_id,
+            f.value:event_time::TIMESTAMP AS event_time,
+            f.value:type::STRING          AS event_type,
+            f.value:amount::NUMBER        AS amount,
+            f.value                       AS payload,
+            ingested_at
+        FROM {raw_table} AS r,
+            LATERAL FLATTEN(input => r.payload) AS f
+        WHERE f.value:id IS NOT NULL
+        AND NULLIF(TRIM(f.value:id::STRING), '') IS NOT NULL
+        QUALIFY ROW_NUMBER() OVER (
+            PARTITION BY f.value:id::STRING
+            ORDER BY ingested_at DESC
+        ) = 1
+    ) AS s
     ON t.event_id = s.event_id
     WHEN MATCHED THEN UPDATE SET
-      event_time = s.event_time,
-      event_type = s.event_type,
-      amount     = s.amount,
-      payload    = s.payload,
-      ingested_at= s.ingested_at
-    WHEN NOT MATCHED THEN INSERT
-      (event_id, event_time, event_type, amount, payload, ingested_at)
-    VALUES
-      (s.event_id, s.event_time, s.event_type, s.amount, s.payload, s.ingested_at);
+        event_time  = s.event_time,
+        event_type  = s.event_type,
+        amount      = s.amount,
+        payload     = s.payload,
+        ingested_at = s.ingested_at
+    WHEN NOT MATCHED THEN INSERT (
+        event_id,
+        event_time,
+        event_type,
+        amount,
+        payload,
+        ingested_at
+    )
+    VALUES (
+        s.event_id,
+        s.event_time,
+        s.event_type,
+        s.amount,
+        s.payload,
+        s.ingested_at
+    );
     """
     SnowflakeHook(snowflake_conn_id=SNOWFLAKE_CONN_ID).run(sql)    
 
