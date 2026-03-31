@@ -133,7 +133,7 @@ def map_mysql_to_snowflake(mysql_type):
 # =========================
 with DAG(
     dag_id="gsheet_mysql_to_snowflake_dynamic",
-    schedule_interval="@daily",
+    schedule=None,
     catchup=False,
     default_args=default_args,
     max_active_tasks=20,
