@@ -53,12 +53,19 @@ RUN CHROMEDRIVER_VERSION=114.0.5735.90 && \
         
 RUN chmod +x /usr/local/bin/chromedriver
 
-RUN curl -fsSL https://dl.google.com/linux/linux_signing_key.pub | \
-    gpg --dearmor -o /etc/apt/trusted.gpg.d/google-chrome.gpg
-RUN echo "deb [arch=amd64 signed-by=/etc/apt/trusted.gpg.d/google-chrome.gpg] https://dl.google.com/linux/chrome/deb/ stable main" \
-    > /etc/apt/sources.list.d/google-chrome.list
+# RUN curl -fsSL https://dl.google.com/linux/linux_signing_key.pub | \
+#     gpg --dearmor -o /etc/apt/trusted.gpg.d/google-chrome.gpg
+# RUN echo "deb [arch=amd64 signed-by=/etc/apt/trusted.gpg.d/google-chrome.gpg] https://dl.google.com/linux/chrome/deb/ stable main" \
+#     > /etc/apt/sources.list.d/google-chrome.list
 
-RUN apt-get update && apt-get install -y google-chrome-stable
+# RUN apt-get update && apt-get install -y google-chrome-stable
+
+RUN wget -q https://dl.google.com/linux/chrome/deb/pool/main/g/google-chrome-stable/google-chrome-stable_114.0.5735.198-1_amd64.deb -O /tmp/chrome-114.deb
+RUN apt-get update
+RUN apt-get install -y /tmp/chrome-114.deb
+RUN apt-mark hold google-chrome-stable
+RUN rm -f /tmp/chrome-114.deb
+
 
 # Ensure Chrome is reachable as `google-chrome` in PATH
 
