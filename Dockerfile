@@ -29,6 +29,7 @@ RUN CHROMEDRIVER_VERSION=114.0.5735.90 && \
     chmod +x /usr/local/bin/chromedriver && \
     rm /tmp/chromedriver.zip
         
+RUN chmod +x /usr/local/bin/chromedriver
 # Switch back to airflow user
 USER airflow
 
