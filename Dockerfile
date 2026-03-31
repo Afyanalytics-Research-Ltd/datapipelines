@@ -52,18 +52,18 @@ RUN apt-get update && apt-get install -y \
 # Add Google Chrome repository and install stable version
 # Install a known stable Chrome version
 
-RUN wget https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb && \
-    dpkg -i google-chrome-stable_current_amd64.deb || apt-get -f install -y && \
-    rm google-chrome-stable_current_amd64.deb
+# RUN wget https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb && \
+#     dpkg -i google-chrome-stable_current_amd64.deb || apt-get -f install -y && \
+#     rm google-chrome-stable_current_amd64.deb
 
-# Install matching ChromeDriver version
-RUN CHROMEDRIVER_VERSION=114.0.5735.90 && \
-    wget -O /tmp/chromedriver.zip https://chromedriver.storage.googleapis.com/${CHROMEDRIVER_VERSION}/chromedriver_linux64.zip && \
-    unzip /tmp/chromedriver.zip -d /usr/local/bin/ && \
-    chmod +x /usr/local/bin/chromedriver && \
-    rm /tmp/chromedriver.zip
+# # Install matching ChromeDriver version
+# RUN CHROMEDRIVER_VERSION=114.0.5735.90 && \
+#     wget -O /tmp/chromedriver.zip https://chromedriver.storage.googleapis.com/${CHROMEDRIVER_VERSION}/chromedriver_linux64.zip && \
+#     unzip /tmp/chromedriver.zip -d /usr/local/bin/ && \
+#     chmod +x /usr/local/bin/chromedriver && \
+#     rm /tmp/chromedriver.zip
         
-RUN chmod +x /usr/local/bin/chromedriver
+# RUN chmod +x /usr/local/bin/chromedriver
 
 # RUN curl -fsSL https://dl.google.com/linux/linux_signing_key.pub | \
 #     gpg --dearmor -o /etc/apt/trusted.gpg.d/google-chrome.gpg
@@ -72,6 +72,14 @@ RUN chmod +x /usr/local/bin/chromedriver
 
 # RUN apt-get update && apt-get install -y google-chrome-stable
 # RUN ln -sf /usr/bin/google-chrome /usr/local/bin/chrome || true
+
+
+# Install matching ChromeDriver 114
+RUN wget https://chromedriver.storage.googleapis.com/114.0.5735.90/chromedriver_linux64.zip -O /tmp/chromedriver.zip
+RUN unzip /tmp/chromedriver.zip -d /tmp
+RUN install /tmp/chromedriver /usr/local/bin/chromedriver
+RUN chmod +x /usr/local/bin/chromedriver
+RUN /usr/local/bin/chromedriver --version
 
 RUN rm -f /etc/apt/sources.list.d/google-chrome.list || true
 RUN apt-get remove --purge google-chrome-stable || true
