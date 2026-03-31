@@ -177,7 +177,7 @@ with DAG(
     # =========================
     @task
     def create_table(table_config):
-        snowflake = SnowflakeHook(snowflake_conn_id="snowflake_conn")
+        snowflake = SnowflakeHook(snowflake_conn_id="snowflake_default")
 
         df = pd.DataFrame(table_config["schema"])
 
