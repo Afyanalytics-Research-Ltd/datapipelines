@@ -55,8 +55,7 @@ def scrape_jumia():
     options.add_argument("--disable-dev-shm-usage")
     options.add_argument("--disable-gpu")
     options.add_argument("--window-size=1920,1080")
-    driver = webdriver.Chrome(options=options)
-
+    driver = webdriver.Chrome(executable_path="/usr/local/bin/chromedriver", options=options)
     all_data = []
     driver.get(BASE_URL)
     time.sleep(5)
