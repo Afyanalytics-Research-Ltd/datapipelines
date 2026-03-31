@@ -12,8 +12,30 @@ RUN apt-get update && apt-get install -y \
     gnupg \
     curl \
     software-properties-common \
+    \
+    # libs chromedriver needs
+    libnss3 \
+    libnspr4 \
+    libatk1.0-0 \
+    libatk-bridge2.0-0 \
+    libcups2 \
+    libxss1 \
+    libxrandr2 \
+    libasound2 \
+    libxtst6 \
+    libdrm2 \
+    libx11-6 \
+    libxcomposite1 \
+    libxcursor1 \
+    libxi6 \
+    libxkbcommon0 \
+    libxrender1 \
+    libxext6 \
+    fonts-liberation \
+    fontconfig \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
+
 
 # Add Google Chrome repository and install stable version
 # Install a known stable Chrome version
