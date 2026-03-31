@@ -36,6 +36,18 @@ RUN apt-get update && apt-get install -y \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
+RUN apt-get update && apt-get install -y \
+    libcairo2 \
+    libgbm1 \
+    libgtk-3-0 \
+    libpango-1.0-0 \
+    libu2f-udev \
+    libvulkan1 \
+    libxdamage1 \
+    xdg-utils \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
 
 # Add Google Chrome repository and install stable version
 # Install a known stable Chrome version
@@ -66,11 +78,9 @@ RUN apt-get remove --purge google-chrome-stable || true
 
 # Install Chrome 114 from the Debian pool via mirror
 RUN wget -q https://mirror.cs.uchicago.edu/google-chrome/pool/main/g/google-chrome-stable/google-chrome-stable_114.0.5735.198-1_amd64.deb -O /tmp/chrome-114.deb
-RUN dpkg -i /tmp/chrome-114.deb || apt-get -f -y install
+RUN apt-get install -y /tmp/chrome-114.deb || apt-get -f -y install
 RUN apt-mark hold google-chrome-stable
 RUN rm -f /tmp/chrome-114.deb
-
-# Verify:
 RUN google-chrome-stable --version
 
 # Switch back to airflow user
