@@ -52,6 +52,11 @@ RUN CHROMEDRIVER_VERSION=114.0.5735.90 && \
     rm /tmp/chromedriver.zip
         
 RUN chmod +x /usr/local/bin/chromedriver
+
+RUN apt-get update && apt-get install -y google-chrome-stable
+
+# Ensure Chrome is reachable as `google-chrome` in PATH
+RUN ln -sf /usr/bin/google-chrome /usr/local/bin/chrome || true
 # Switch back to airflow user
 USER airflow
 
