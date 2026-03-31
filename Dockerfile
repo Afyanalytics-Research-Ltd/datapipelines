@@ -59,17 +59,20 @@ RUN chmod +x /usr/local/bin/chromedriver
 #     > /etc/apt/sources.list.d/google-chrome.list
 
 # RUN apt-get update && apt-get install -y google-chrome-stable
+# RUN ln -sf /usr/bin/google-chrome /usr/local/bin/chrome || true
 
-RUN wget -q https://dl.google.com/linux/chrome/deb/pool/main/g/google-chrome-stable/google-chrome-stable_114.0.5735.198-1_amd64.deb -O /tmp/chrome-114.deb
-RUN apt-get update
-RUN apt-get install -y /tmp/chrome-114.deb
+RUN rm -f /etc/apt/sources.list.d/google-chrome.list || true
+RUN apt-get remove --purge google-chrome-stable || true
+
+# Install Chrome 114 from the Debian pool via mirror
+RUN wget -q https://mirror.cs.uchicago.edu/google-chrome/pool/main/g/google-chrome-stable/google-chrome-stable_114.0.5735.198-1_amd64.deb -O /tmp/chrome-114.deb
+RUN dpkg -i /tmp/chrome-114.deb || apt-get -f -y install
 RUN apt-mark hold google-chrome-stable
 RUN rm -f /tmp/chrome-114.deb
 
+# Verify:
+RUN google-chrome-stable --version
 
-# Ensure Chrome is reachable as `google-chrome` in PATH
-
-RUN ln -sf /usr/bin/google-chrome /usr/local/bin/chrome || true
 # Switch back to airflow user
 USER airflow
 
