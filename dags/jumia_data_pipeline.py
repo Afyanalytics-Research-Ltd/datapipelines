@@ -9,6 +9,7 @@ from bs4 import BeautifulSoup
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.action_chains import ActionChains
+from selenium.webdriver.chrome.service import Service
 
 # =========================
 # CONFIG
@@ -49,13 +50,15 @@ def extract_data(page_source):
     return rows
 
 def scrape_jumia():
+
     options = webdriver.ChromeOptions()
     options.add_argument("--headless")
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
     options.add_argument("--disable-gpu")
     options.add_argument("--window-size=1920,1080")
-    driver = webdriver.Chrome(options=options)
+    service = Service("/usr/local/bin/chromedriver")
+    driver = webdriver.Chrome(service=service, options=options)
     all_data = []
     driver.get(BASE_URL)
     time.sleep(5)
