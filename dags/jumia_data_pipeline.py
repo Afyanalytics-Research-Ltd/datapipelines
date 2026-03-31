@@ -62,6 +62,7 @@ def scrape_jumia():
     driver = webdriver.Chrome(service=service, options=options)
     all_data = []
     driver.get(BASE_URL)
+    print(driver.page_source)
     time.sleep(5)
 
     while True:
