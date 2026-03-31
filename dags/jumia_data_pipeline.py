@@ -92,7 +92,7 @@ def load_to_snowflake(file_path):
 # =========================
 with DAG(
     dag_id="jumia_full_pipeline",
-    schedule_interval="@daily",
+    schedule=None,
     catchup=False,
     default_args=default_args,
     max_active_tasks=5,
