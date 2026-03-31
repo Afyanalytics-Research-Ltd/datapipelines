@@ -53,9 +53,15 @@ RUN CHROMEDRIVER_VERSION=114.0.5735.90 && \
         
 RUN chmod +x /usr/local/bin/chromedriver
 
+RUN curl -fsSL https://dl.google.com/linux/linux_signing_key.pub | \
+    gpg --dearmor -o /etc/apt/trusted.gpg.d/google-chrome.gpg
+RUN echo "deb [arch=amd64 signed-by=/etc/apt/trusted.gpg.d/google-chrome.gpg] https://dl.google.com/linux/chrome/deb/ stable main" \
+    > /etc/apt/sources.list.d/google-chrome.list
+
 RUN apt-get update && apt-get install -y google-chrome-stable
 
 # Ensure Chrome is reachable as `google-chrome` in PATH
+
 RUN ln -sf /usr/bin/google-chrome /usr/local/bin/chrome || true
 # Switch back to airflow user
 USER airflow
