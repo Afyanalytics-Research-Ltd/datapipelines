@@ -1,4 +1,4 @@
-# dags/mydawa_full_pipeline.py
+# dags/onlinestore_full_pipeline.py
 from airflow import DAG
 from airflow.decorators import task
 from datetime import datetime
@@ -23,7 +23,7 @@ BASE_URL = "https://mydawa.com/"
 SF_DB = "HOSPITALS" 
 SF_SHARED_SCHEMA = "SHARED"
 SNOWFLAKE_STAGE = f"{SF_DB}.{SF_SHARED_SCHEMA}.DB_BUCKET"
-SNOWFLAKE_TABLE = "mydawa_products_raw"
+SNOWFLAKE_TABLE = "onlinestore_products_raw"
 
 default_args = {
     "owner": "airflow",
@@ -95,7 +95,6 @@ def extract_data(page_source):
                 'current_price': current_price,
                 'original_price': old_price,
                 'discount': discount,
-                'url': f"https://mydawa.com{product_url}" if product_url else None,
                 'image_url': img_url,
                 'product_id': data_product_id,
                 'item_no': data_itemno,
@@ -118,7 +117,7 @@ def extract_data(page_source):
 # =========================
 # MAIN SCRAPE FUNCTION
 # =========================
-def scrape_mydawa():
+def scrape_onlinestore():
     options = webdriver.ChromeOptions()
     options.add_argument("--headless=new")
     options.add_argument("--no-sandbox")
@@ -178,7 +177,7 @@ def scrape_mydawa():
         
         # Save files
         ts = int(time.time())
-        parquet_path = f"/tmp/mydawa_products_{ts}.parquet"
+        parquet_path = f"/tmp/onlinestore_products_{ts}.parquet"
         df.to_parquet(parquet_path, index=False)
         
         csv_path = parquet_path.replace('.parquet', '.csv')
@@ -209,7 +208,7 @@ def upload_to_snowflake(file_path):
     hook.copy_file_to_stage(
         file_path,
         SNOWFLAKE_STAGE,
-        file_name=f"mydawa_{int(time.time())}.parquet"
+        file_name=f"onlinestore_{int(time.time())}.parquet"
     )
     
     # Copy to table (merge on product_name + date)
@@ -225,7 +224,7 @@ def upload_to_snowflake(file_path):
             $1:rating::string as rating,
             $1:reviews::string as reviews,
             $1:url::string as url
-        FROM @{SNOWFLAKE_STAGE}/mydawa_*.parquet
+        FROM @{SNOWFLAKE_STAGE}/onlinestore_*.parquet
     ) AS source
     ON target.product_name = source.product_name 
        AND DATE_TRUNC('day', target.scrape_date) = DATE_TRUNC('day', source.scrape_date)
@@ -250,14 +249,14 @@ def upload_to_snowflake(file_path):
 # DAG DEFINITION
 # =========================
 with DAG(
-    dag_id="mydawa_full_pipeline",
+    dag_id="onlinestore_full_pipeline",
     schedule=None,  # Manual trigger
     catchup=False,
     default_args=default_args,
     max_active_runs=1,
-    tags=["scraper", "mydawa", "snowflake"],
+    tags=["scraper", "onlinestore", "snowflake"],
 ) as dag:
 
-    scrape_task = task(scrape_mydawa)()
+    scrape_task = task(scrape_onlinestore)()
     
     upload_task = upload_to_snowflake(scrape_task)
