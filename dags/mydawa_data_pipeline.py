@@ -170,10 +170,10 @@ def scrape_mydawa():
         print("\nFINAL SAMPLE (first 3):")
         print(json.dumps(all_data[:3], indent=2, default=str))
         
-        df = pd.DataFrame(all_data).drop_duplicates(subset=['product_name'])
+        df = pd.DataFrame(all_data).drop_duplicates(subset=['name'])
         print(f"\nDataFrame after dedup: {df.shape}")
         print("\nName + Price preview:")
-        preview_cols = ['product_name', 'current_price', 'original_price']
+        preview_cols = ['name', 'current_price', 'original_price']
         print(df[preview_cols].head(10).to_string(index=False))
         
         # Save files
