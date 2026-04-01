@@ -14,7 +14,7 @@ from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from airflow.providers.snowflake.hooks.snowflake import SnowflakeHook
-
+from datetime import datetime, timedelta
 # =========================
 # CONFIG
 # =========================
@@ -28,7 +28,7 @@ default_args = {
     "owner": "airflow",
     "start_date": datetime(2024, 1, 1),
     "retries": 2,
-    "retry_delay": datetime.timedelta(minutes=5)
+    "retry_delay": timedelta(minutes=5)
 }
 
 # =========================
