@@ -177,7 +177,7 @@ with DAG(
     # =========================
     # 3. CREATE TABLE IN SNOWFLAKE
     # =========================
-    @task
+    @task(trigger_rule=TriggerRule.ALL_DONE)  
     def create_table(table_config):
         snowflake = SnowflakeHook(snowflake_conn_id="snowflake_default")
 
@@ -208,7 +208,7 @@ with DAG(
     # =========================
     # 4. EXTRACT FROM MYSQL
     # =========================
-    @task
+    @task(trigger_rule=TriggerRule.ALL_DONE)  
     def extract(table_config):
         mysql = MySqlHook(mysql_conn_id="mysql_conn")
 
@@ -228,7 +228,7 @@ with DAG(
     # =========================
     # 5. LOAD INTO SNOWFLAKE
     # =========================
-    @task
+    @task(trigger_rule=TriggerRule.ALL_DONE)  
     def load(table_config):
         snowflake = SnowflakeHook(snowflake_conn_id="snowflake_conn")
 
@@ -258,9 +258,6 @@ with DAG(
     schema = load_schema()
     tables = group_tables(schema)
 
-    created = create_table.expand(table_config=tables,
-                                  trigger_rule=TriggerRule.ALL_DONE)
-    extracted = extract.expand(table_config=created,
-                                trigger_rule=TriggerRule.ALL_DONE)
-    load.expand(table_config=extracted,
-                 trigger_rule=TriggerRule.ALL_DONE)
+    created = create_table.expand(table_config=tables)
+    extracted = extract.expand(table_config=created)
+    load.expand(table_config=extracted)
