@@ -14,7 +14,7 @@ from selenium.webdriver.chrome.service import Service
 # =========================
 # CONFIG
 # =========================
-BASE_URL = "https://www.mydawa.co.ke/home-office-appliances/?tag=JMALL&sort=rating"
+BASE_URL = "https://mydawa.com/products/family-planning"
 SF_DB = "HOSPITALS" 
 SF_SHARED_SCHEMA = "SHARED"
 SNOWFLAKE_STAGE = f"{SF_DB}.{SF_SHARED_SCHEMA}.DB_BUCKET"
