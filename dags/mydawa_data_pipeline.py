@@ -140,7 +140,8 @@ def scrape_mydawa():
         
 
         page_num = 1
-        while True:
+        i = 0
+        while i < 3:
             print(f"\n{'='*50}")
             print(f"SCRAPING PAGE {page_num}")
             print(f"{'='*50}")
@@ -155,6 +156,7 @@ def scrape_mydawa():
                 print(f"... (showing first 5 of {len(page_data)})")
             
             all_data.extend(page_data)
+            i += 1
             
            
     except Exception as err:
