@@ -1,4 +1,4 @@
-# dags/jumia_full_pipeline.py
+# dags/mydawa_full_pipeline.py
 from airflow import DAG
 from airflow.decorators import task
 from airflow.providers.snowflake.hooks.snowflake import SnowflakeHook
@@ -14,11 +14,11 @@ from selenium.webdriver.chrome.service import Service
 # =========================
 # CONFIG
 # =========================
-BASE_URL = "https://www.jumia.co.ke/home-office-appliances/?tag=JMALL&sort=rating"
+BASE_URL = "https://www.mydawa.co.ke/home-office-appliances/?tag=JMALL&sort=rating"
 SF_DB = "HOSPITALS" 
 SF_SHARED_SCHEMA = "SHARED"
 SNOWFLAKE_STAGE = f"{SF_DB}.{SF_SHARED_SCHEMA}.DB_BUCKET"
-SNOWFLAKE_TABLE = "jumia_products_raw"
+SNOWFLAKE_TABLE = "mydawa_products_raw"
 
 default_args = {
     "owner": "airflow",
@@ -49,7 +49,7 @@ def extract_data(page_source):
             continue
     return rows
 
-def scrape_jumia():
+def scrape_mydawa():
 
     options = webdriver.ChromeOptions()
     options.add_argument("--headless")
@@ -76,7 +76,7 @@ def scrape_jumia():
 
     driver.quit()
     df = pd.DataFrame(all_data)
-    file_path = f"/tmp/jumia_products_{int(time.time())}.parquet"
+    file_path = f"/tmp/mydawa_products_{int(time.time())}.parquet"
     df.to_parquet(file_path, index=False)
     return file_path
 
@@ -99,18 +99,18 @@ def load_to_snowflake(file_path):
 # DAG
 # =========================
 with DAG(
-    dag_id="jumia_full_pipeline",
+    dag_id="mydawa_full_pipeline",
     schedule=None,
     catchup=False,
     default_args=default_args,
     max_active_tasks=5,
-    tags=["scraper", "jumia"]
+    tags=["scraper", "mydawa"]
 ) as dag:
 
     @task
     def scrape_task():
-        """Scrape Jumia and save to Parquet"""
-        return scrape_jumia()
+        """Scrape mydawa and save to Parquet"""
+        return scrape_mydawa()
 
     @task
     def load_task(file_path: str):
