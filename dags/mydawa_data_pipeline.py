@@ -6,6 +6,7 @@ import pandas as pd
 import time
 import json
 from bs4 import BeautifulSoup
+import re
 
 from selenium import webdriver
 from selenium.webdriver.common.by import By
@@ -18,7 +19,7 @@ from datetime import datetime, timedelta
 # =========================
 # CONFIG
 # =========================
-BASE_URL = "https://mydawa.com/products/family-planning"
+BASE_URL = "https://mydawa.com/"
 SF_DB = "HOSPITALS" 
 SF_SHARED_SCHEMA = "SHARED"
 SNOWFLAKE_STAGE = f"{SF_DB}.{SF_SHARED_SCHEMA}.DB_BUCKET"
@@ -34,98 +35,85 @@ default_args = {
 # =========================
 # HELPER FUNCTIONS
 # =========================
+
 def clean_price(text):
-    """Extract numeric price from text like 'KSh 120' or '120.00'"""
+    """Extract KES price from text"""
     if not text:
         return None
-    t = text.replace("KSh", "").replace(",", "").strip()
-    digits = "".join(ch for ch in t if ch.isdigit() or ch == ".")
-    return float(digits) if digits else None
-
-def accept_age_modal(driver, wait):
-    """Click age consent modal if present"""
-    selectors = [
-        "#confirmHeaderConsentModalConfirm",
-        "button#confirmHeaderConsentModalConfirm", 
-        "button.btn-green.btn-rounded.btn-lg",
-        ".btn-green",  # Fallback
-        "button[aria-label*='confirm']",
-    ]
-    for sel in selectors:
-        try:
-            btn = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, sel)))
-            print(f"Clicked age consent: {sel}")
-            btn.click()
-            time.sleep(2)
-            return
-        except Exception:
-            continue
-    print("No age consent modal found")
+    # Find patterns like "KES 1,234.00" or "1,234"
+    match = re.search(r'KES\s*([\d,]+\.?\d*)', text, re.IGNORECASE)
+    if match:
+        price = match.group(1).replace(',', '')
+        return float(price)
+    # Fallback: any number
+    nums = re.findall(r'[\d,]+\.?\d*', text)
+    return float(nums[0].replace(',', '')) if nums else None
 
 def extract_data(page_source):
-    """Extract product data with multiple fallback selectors"""
-    soup = BeautifulSoup(page_source, "html.parser")
-    rows = []
-
-    # Try multiple product container selectors
-    product_selectors = [
-        "div.info",
-        "div.product-item", 
-        "div.product-card",
-        "div.item",
-        "article.product",
-        ".product",
-        "[data-product-id]",
-    ]
-    
+    soup = BeautifulSoup(page_source, 'html.parser')
     products = []
-    for selector in product_selectors:
-        products = soup.select(selector)
-        if products:
-            print(f"Found {len(products)} products with selector: {selector}")
-            break
     
-    if not products:
-        print("No products found with any selector")
-        return []
-
-    for i, product in enumerate(products):
+    # Target product cards from your HTML structure
+    product_cards = soup.find_all('a', class_='card product-card')
+    
+    print(f"Found {len(product_cards)} product cards")
+    
+    for card in product_cards:
         try:
-            # Multiple name selectors
-            name_el = (product.select_one("h3.name, h2, .name, .product-name, a[title], h3, h4") 
-                      or product.select_one("a"))
-            name = name_el.get_text(" ", strip=True)[:200] if name_el else f"Product_{i}"
-
-            # Multiple price selectors  
-            price_el = product.select_one("div.prc, .prc, .price, .current-price, .amount")
-            current_price = clean_price(price_el.get_text(" ", strip=True)) if price_el else None
-
-            # Original price
-            old_el = product.select_one("div.old, .old, .old-price, .strike, del")
-            original_price = clean_price(old_el.get_text(" ", strip=True)) if old_el else None
-
-            # Discount, rating, reviews
-            disc_el = product.select_one("div.bdg._dsct._sm, .discount, .badge")
-            rating_el = product.select_one("div.stars._s, .stars, .rating")
-            rev_el = product.select_one("div.rev, .rev, .reviews")
-
-            row = {
-                "scrape_date": datetime.now(),
-                "product_name": name,
-                "current_price": current_price,
-                "original_price": original_price,
-                "discount_percentage": disc_el.get_text(" ", strip=True) if disc_el else None,
-                "rating": rating_el.get_text(" ", strip=True) if rating_el else None,
-                "reviews": rev_el.get_text(" ", strip=True) if rev_el else None,
-                "url": product.select_one("a")["href"] if product.select_one("a") else None,
-            }
-            rows.append(row)
+            # Product name from h5.product-title or title
+            title_el = card.find('h5', class_='product-title')
+            name = title_el.get_text(strip=True) if title_el else None
             
+            # Image URL
+            img = card.find('img', class_='product-img')
+            img_url = img['src'] if img else None
+            
+            # Current price from data-price or p.product-price
+            current_price = None
+            price_el = card.find('p', class_='product-price')
+            if price_el:
+                current_price = clean_price(price_el.get_text())
+            
+            # Old price from p.product-price-old
+            old_price_el = card.find('p', class_='product-price-old')
+            old_price = clean_price(old_price_el.get_text()) if old_price_el else None
+            
+            # Sale badge
+            sale_badge = card.find('span', class_='sale-badge')
+            discount = sale_badge.get_text(strip=True) if sale_badge else None
+            
+            # Product URL
+            product_url = card.get('href', '')
+            
+            # Data attributes with product info
+            data_product_id = card.get('data-product-id', '')
+            data_itemno = card.select_one('button.btn-cart')['data-itemno'] if card.select_one('button.btn-cart') else ''
+            
+            product = {
+                'scrape_date': datetime.now().isoformat(),
+                'name': name,
+                'current_price': current_price,
+                'original_price': old_price,
+                'discount': discount,
+                'url': f"https://mydawa.com{product_url}" if product_url else None,
+                'image_url': img_url,
+                'product_id': data_product_id,
+                'item_no': data_itemno,
+                'full_html_snippet': str(card)[:500]  # Debug snippet
+            }
+            
+            # Only add if we have name + price
+            if name and current_price:
+                products.append(product)
+                
         except Exception as e:
-            print(f"Error parsing product {i}: {e}")
+            print(f"Error parsing card: {e}")
             continue
     
-    return rows
+    return products
+
+
+
 
 # =========================
 # MAIN SCRAPE FUNCTION
@@ -149,10 +137,7 @@ def scrape_mydawa():
         print(f"Starting scrape: {BASE_URL}")
         driver.get(BASE_URL)
         
-        accept_age_modal(driver, wait)
         
-        wait.until(lambda d: d.execute_script("return document.readyState") == "complete")
-        time.sleep(3)
 
         page_num = 1
         while True:
@@ -171,24 +156,9 @@ def scrape_mydawa():
             
             all_data.extend(page_data)
             
-            # Try next page
-            try:
-                next_button = wait.until(EC.element_to_be_clickable(
-                    (By.CSS_SELECTOR, "a.pg[aria-label='Next Page'], .pagination .next, .next-page")
-                ))
-                driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", next_button)
-                time.sleep(1)
-                ActionChains(driver).move_to_element(next_button).click().perform()
-                time.sleep(5)
-                accept_age_modal(driver, wait)
-                page_num += 1
-            except Exception as e:
-                print(f"No more pages: {e}")
-                break
-
-    finally:
-        driver.quit()
-
+           
+    except Exception as err:
+        print(err)
     # FINAL SUMMARY
     print(f"\n{'='*60}")
     print(f"SCRAPE COMPLETE: {len(all_data)} TOTAL PRODUCTS")
