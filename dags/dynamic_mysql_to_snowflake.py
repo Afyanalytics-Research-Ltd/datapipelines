@@ -1,12 +1,14 @@
 from airflow import DAG
 from airflow.decorators import task
 from airflow.models import Variable
+from airflow.utils.trigger_rule import TriggerRule
 from airflow.providers.mysql.hooks.mysql import MySqlHook
 from airflow.providers.snowflake.hooks.snowflake import SnowflakeHook
 from datetime import datetime
 import pandas as pd
 import json
 import gspread
+
 
 def get_gsheet_client():
     # Store service account JSON in Airflow Variable GOOGLE_SA_JSON
@@ -256,6 +258,9 @@ with DAG(
     schema = load_schema()
     tables = group_tables(schema)
 
-    created = create_table.expand(table_config=tables)
-    extracted = extract.expand(table_config=created)
-    load.expand(table_config=extracted)
+    created = create_table.expand(table_config=tables,
+                                  trigger_rule=TriggerRule.ALL_DONE)
+    extracted = extract.expand(table_config=created,
+                                trigger_rule=TriggerRule.ALL_DONE)
+    load.expand(table_config=extracted,
+                 trigger_rule=TriggerRule.ALL_DONE)
