@@ -89,7 +89,7 @@ SPREADSHEET_ID = Variable.get("IGNITE_SHEET_ID")
 WORKSHEET_NAME = Variable.get("WORKSHEET", default_var="Sheet1")
 
 SF_DB = "HOSPITALS" 
-SF_SHARED_SCHEMA = "SHARED"
+SF_SHARED_SCHEMA = "TENRI"
 SNOWFLAKE_STAGE = f"{SF_DB}.{SF_SHARED_SCHEMA}.DB_BUCKETS"
 default_args = {
     "owner": "airflow",
@@ -197,8 +197,10 @@ with DAG(
         # metadata column
         columns.append("_ingested_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP()")
 
+        qualified_table = f"{SF_DB}.{SF_SHARED_SCHEMA}.{table_config['table_name']}"
+
         create_sql = f"""
-        CREATE OR REPLACE TABLE {table_config['table_name']} (
+        CREATE OR REPLACE TABLE {qualified_table} (
             {', '.join(columns)}
         );
         """
@@ -237,18 +239,19 @@ with DAG(
         snowflake = SnowflakeHook(snowflake_conn_id="snowflake_default")
 
         table = table_config["table_name"]
+        qualified_table = f"{SF_DB}.{SF_SHARED_SCHEMA}.{table}"
         file_path = table_config["file_path"]
 
         conn = snowflake.get_conn()
         cursor = conn.cursor()
 
         # upload file to table's internal stage (PUT is not supported on external stages)
-        cursor.execute(f"PUT file://{file_path} @%{table} AUTO_COMPRESS=TRUE OVERWRITE=TRUE")
+        cursor.execute(f"PUT file://{file_path} @%{qualified_table} AUTO_COMPRESS=TRUE OVERWRITE=TRUE")
 
         # load data and purge staged files
         cursor.execute(f"""
-            COPY INTO {table}
-            FROM @%{table}
+            COPY INTO {qualified_table}
+            FROM @%{qualified_table}
             FILE_FORMAT = (
                 TYPE = CSV
                 SKIP_HEADER = 1
@@ -258,7 +261,7 @@ with DAG(
         """)
         results = cursor.fetchall()
         rows_loaded = sum(r[3] for r in results)  # column 3 is rows_loaded in COPY INTO result
-        log.info("Loaded table '%s': %d rows", table, rows_loaded)
+        log.info("Loaded table '%s': %d rows", qualified_table, rows_loaded)
 
     # =========================
     # DAG FLOW
