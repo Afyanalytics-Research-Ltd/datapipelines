@@ -230,7 +230,7 @@ with DAG(
     # =========================
     @task(trigger_rule=TriggerRule.ALL_DONE)  
     def load(table_config):
-        snowflake = SnowflakeHook(snowflake_conn_id="snowflake_conn")
+        snowflake = SnowflakeHook(snowflake_conn_id="snowflake_default")
 
         table = table_config["table_name"]
         file_path = table_config["file_path"]
