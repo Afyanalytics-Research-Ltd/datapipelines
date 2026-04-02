@@ -83,7 +83,7 @@ def extract_table(mysql_hook, table_name, incremental_column=None):
     return file_path
 
 SPREADSHEET_ID = Variable.get("IGNITE_SHEET_ID")
-WORKSHEET_NAME = Variable.get("WORKSHEET", default_var="Sheet1")
+WORKSHEET_NAME = Variable.get("IGNITE_SHEET_WORKSHEET", default_var="Sheet1")
 
 SF_DB = "HOSPITALS" 
 SF_SHARED_SCHEMA = "SHARED"
