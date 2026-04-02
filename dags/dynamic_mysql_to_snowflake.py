@@ -185,91 +185,113 @@ with DAG(
         mysql = MySqlHook(mysql_conn_id="mysql_conn")
         snowflake = SnowflakeHook(snowflake_conn_id="snowflake_default")
         sf_conn = snowflake.get_conn()
+        sf_conn.autocommit(True)
         sf_cursor = sf_conn.cursor()
-        mysql_conn = mysql.get_conn()
+        mysql_engine = mysql.get_sqlalchemy_engine()
+
+        # Set Snowflake session context so @% stage refs work with unqualified table names
+        sf_cursor.execute(f"USE DATABASE {SF_DB}")
+        sf_cursor.execute(f"USE SCHEMA {SF_SHARED_SCHEMA}")
+
+        failed_tables = []
 
         for table_config in tables:
             table = table_config["table_name"]
-            qualified_table = f"{SF_DB}.{SF_SHARED_SCHEMA}.{table}"
-            staging_table = f"{SF_DB}.{SF_SHARED_SCHEMA}.{table}_staging"
+            qualified_table = f'"{SF_DB}"."{SF_SHARED_SCHEMA}"."{table}"'
+            staging_table = f'"{SF_DB}"."{SF_SHARED_SCHEMA}"."{table}_staging"'
+            staging_table_unqualified = f'"{table}_staging"'
 
-            # --- BUILD COLUMN DEFINITIONS ---
-            df_schema = pd.DataFrame(table_config["schema"])
-            columns = []
-            pk_columns = []
-            for _, row in df_schema.iterrows():
-                col = row["field"]
-                dtype = map_mysql_to_snowflake(row["type"])
-                nullable = "" if row["null"] == "YES" else "NOT NULL"
-                columns.append(f"{col} {dtype} {nullable}")
-                if str(row.get("key", "")).upper() == "PRI":
-                    pk_columns.append(col)
-            columns.append("_ingested_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP()")
-            col_defs = ', '.join(columns)
+            try:
+                # --- BUILD COLUMN DEFINITIONS ---
+                df_schema = pd.DataFrame(table_config["schema"])
+                columns = []
+                pk_columns = []
+                for _, row in df_schema.iterrows():
+                    col = row["field"]
+                    dtype = map_mysql_to_snowflake(row["type"])
+                    nullable = "" if row["null"] == "YES" else "NOT NULL"
+                    columns.append(f'"{col}" {dtype} {nullable}')
+                    if str(row.get("key", "")).upper() == "PRI":
+                        pk_columns.append(col)
+                columns.append('"_ingested_at" TIMESTAMP DEFAULT CURRENT_TIMESTAMP()')
+                col_defs = ', '.join(columns)
 
-            # --- ENSURE TARGET TABLE EXISTS (don't drop it) ---
-            sf_cursor.execute(f"""
-                CREATE TABLE IF NOT EXISTS {qualified_table} (
-                    {col_defs}
-                )
-            """)
-            log.info("Ensured table '%s' exists", qualified_table)
-
-            # --- CREATE STAGING TABLE ---
-            sf_cursor.execute(f"""
-                CREATE OR REPLACE TABLE {staging_table} (
-                    {col_defs}
-                )
-            """)
-
-            # --- EXTRACT IN CHUNKS & LOAD TO STAGING ---
-            total_rows = 0
-            data_cols = [row["field"] for _, row in df_schema.iterrows()]
-
-            for chunk in pd.read_sql(f"SELECT * FROM {table}", mysql_conn, chunksize=CHUNK_SIZE):
-                chunk["_ingested_at"] = pd.Timestamp.utcnow()
-                chunk.columns = [c.upper() for c in chunk.columns]
-
-                file_path = f"/tmp/{table}_chunk.csv"
-                chunk.to_csv(file_path, index=False)
-
-                sf_cursor.execute(f"PUT file://{file_path} @%{staging_table} AUTO_COMPRESS=TRUE OVERWRITE=TRUE")
+                # --- ENSURE TARGET TABLE EXISTS (don't drop it) ---
                 sf_cursor.execute(f"""
-                    COPY INTO {staging_table}
-                    FROM @%{staging_table}
-                    FILE_FORMAT = (
-                        TYPE = CSV
-                        SKIP_HEADER = 1
-                        FIELD_OPTIONALLY_ENCLOSED_BY='"'
+                    CREATE TABLE IF NOT EXISTS {qualified_table} (
+                        {col_defs}
                     )
-                    PURGE = TRUE
                 """)
-                total_rows += len(chunk)
+                log.info("Ensured table '%s' exists", qualified_table)
 
-            log.info("Extracted '%s': %d rows total", table, total_rows)
-
-            # --- MERGE OR TRUNCATE+INSERT ---
-            if pk_columns:
-                join_clause = " AND ".join(f"tgt.{c} = stg.{c}" for c in pk_columns)
-                all_cols = [row["field"].upper() for _, row in df_schema.iterrows()] + ["_INGESTED_AT"]
-                update_clause = ", ".join(f"tgt.{c} = stg.{c}" for c in all_cols)
-                insert_cols = ", ".join(all_cols)
-                insert_vals = ", ".join(f"stg.{c}" for c in all_cols)
-
+                # --- CREATE STAGING TABLE ---
                 sf_cursor.execute(f"""
-                    MERGE INTO {qualified_table} tgt
-                    USING {staging_table} stg
-                    ON {join_clause}
-                    WHEN MATCHED THEN UPDATE SET {update_clause}
-                    WHEN NOT MATCHED THEN INSERT ({insert_cols}) VALUES ({insert_vals})
+                    CREATE OR REPLACE TABLE {staging_table} (
+                        {col_defs}
+                    )
                 """)
-                log.info("Merged '%s': %d rows", qualified_table, total_rows)
-            else:
-                sf_cursor.execute(f"TRUNCATE TABLE {qualified_table}")
-                sf_cursor.execute(f"INSERT INTO {qualified_table} SELECT * FROM {staging_table}")
-                log.info("Truncate+inserted '%s': %d rows", qualified_table, total_rows)
 
-            sf_cursor.execute(f"DROP TABLE {staging_table}")
+                # --- EXTRACT IN CHUNKS & LOAD TO STAGING ---
+                total_rows = 0
+
+                for chunk in pd.read_sql(f"SELECT * FROM `{table}`", mysql_engine, chunksize=CHUNK_SIZE):
+                    chunk["_ingested_at"] = pd.Timestamp.utcnow()
+                    chunk.columns = [c.upper() for c in chunk.columns]
+
+                    file_path = f"/tmp/{table}_chunk.csv"
+                    chunk.to_csv(file_path, index=False)
+
+                    # @% stage only works with unqualified table name when session context is set
+                    sf_cursor.execute(f"PUT file://{file_path} @%{staging_table_unqualified} AUTO_COMPRESS=TRUE OVERWRITE=TRUE")
+                    sf_cursor.execute(f"""
+                        COPY INTO {staging_table}
+                        FROM @%{staging_table_unqualified}
+                        FILE_FORMAT = (
+                            TYPE = CSV
+                            SKIP_HEADER = 1
+                            FIELD_OPTIONALLY_ENCLOSED_BY='"'
+                        )
+                        ON_ERROR = 'CONTINUE'
+                        PURGE = TRUE
+                    """)
+                    total_rows += len(chunk)
+
+                log.info("Extracted '%s': %d rows total", table, total_rows)
+
+                # --- MERGE OR TRUNCATE+INSERT ---
+                if pk_columns:
+                    join_clause = " AND ".join(f'tgt."{c}" = stg."{c}"' for c in pk_columns)
+                    all_cols = [row["field"] for _, row in df_schema.iterrows()] + ["_ingested_at"]
+                    update_clause = ", ".join(f'tgt."{c}" = stg."{c}"' for c in all_cols)
+                    insert_cols = ", ".join(f'"{c}"' for c in all_cols)
+                    insert_vals = ", ".join(f'stg."{c}"' for c in all_cols)
+
+                    sf_cursor.execute(f"""
+                        MERGE INTO {qualified_table} tgt
+                        USING {staging_table} stg
+                        ON {join_clause}
+                        WHEN MATCHED THEN UPDATE SET {update_clause}
+                        WHEN NOT MATCHED THEN INSERT ({insert_cols}) VALUES ({insert_vals})
+                    """)
+                    log.info("Merged '%s': %d rows", qualified_table, total_rows)
+                else:
+                    sf_cursor.execute(f"TRUNCATE TABLE {qualified_table}")
+                    sf_cursor.execute(f"INSERT INTO {qualified_table} SELECT * FROM {staging_table}")
+                    log.info("Truncate+inserted '%s': %d rows", qualified_table, total_rows)
+
+                sf_cursor.execute(f"DROP TABLE IF EXISTS {staging_table}")
+
+            except Exception as e:
+                log.error("Failed to process table '%s': %s", table, str(e), exc_info=True)
+                failed_tables.append(table)
+                # clean up staging if it exists before moving on
+                try:
+                    sf_cursor.execute(f"DROP TABLE IF EXISTS {staging_table}")
+                except Exception:
+                    pass
+
+        if failed_tables:
+            raise RuntimeError(f"The following tables failed to load: {failed_tables}")
 
     # =========================
     # DAG FLOW
