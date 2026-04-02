@@ -8,6 +8,9 @@ from datetime import datetime
 import pandas as pd
 import json
 import gspread
+import logging
+
+log = logging.getLogger(__name__)
 
 
 def get_gsheet_client():
@@ -217,6 +220,7 @@ with DAG(
         query = f"SELECT * FROM {table}"
 
         df = mysql.get_pandas_df(query)
+        log.info("Extracted table '%s': %d rows", table, len(df))
 
         file_path = f"/tmp/{table}.csv"
         df.to_csv(file_path, index=False)
@@ -252,6 +256,9 @@ with DAG(
             )
             PURGE = TRUE
         """)
+        results = cursor.fetchall()
+        rows_loaded = sum(r[3] for r in results)  # column 3 is rows_loaded in COPY INTO result
+        log.info("Loaded table '%s': %d rows", table, rows_loaded)
 
     # =========================
     # DAG FLOW
