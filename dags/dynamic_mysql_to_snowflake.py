@@ -88,9 +88,9 @@ def extract_table(mysql_hook, table_name, incremental_column=None):
 SPREADSHEET_ID = Variable.get("IGNITE_SHEET_ID")
 WORKSHEET_NAME = Variable.get("WORKSHEET", default_var="Sheet1")
 
-SF_DB = "HOSPITALS" 
+SF_DB = "HOSPITALS"
 SF_SHARED_SCHEMA = "TENRI"
-SNOWFLAKE_STAGE = f"{SF_DB}.{SF_SHARED_SCHEMA}.DB_BUCKETS"
+CHUNK_SIZE = 50_000
 default_args = {
     "owner": "airflow",
     "start_date": datetime(2024, 1, 1),
@@ -141,7 +141,7 @@ with DAG(
     schedule=None,
     catchup=False,
     default_args=default_args,
-    max_active_tasks=20,
+    max_active_tasks=4,
     tags=["dynamic", "mysql", "snowflake"]
 ) as dag:
 
@@ -162,7 +162,7 @@ with DAG(
     # =========================
     # 2. GROUP INTO TABLES
     # =========================
-    @task
+    @task(trigger_rule=TriggerRule.ALL_DONE)
     def group_tables(schema_records):
         df = pd.DataFrame(schema_records)
 
@@ -178,97 +178,102 @@ with DAG(
         return tables
 
     # =========================
-    # 3. CREATE TABLE IN SNOWFLAKE
+    # 3. PROCESS ALL TABLES SEQUENTIALLY
     # =========================
-    @task(trigger_rule=TriggerRule.ALL_DONE)  
-    def create_table(table_config):
-        snowflake = SnowflakeHook(snowflake_conn_id="snowflake_default")
-
-        df = pd.DataFrame(table_config["schema"])
-
-        columns = []
-        for _, row in df.iterrows():
-            col = row["field"]
-            dtype = map_mysql_to_snowflake(row["type"])
-            nullable = "" if row["null"] == "YES" else "NOT NULL"
-
-            columns.append(f"{col} {dtype} {nullable}")
-
-        # metadata column
-        columns.append("_ingested_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP()")
-
-        qualified_table = f"{SF_DB}.{SF_SHARED_SCHEMA}.{table_config['table_name']}"
-
-        create_sql = f"""
-        CREATE OR REPLACE TABLE {qualified_table} (
-            {', '.join(columns)}
-        );
-        """
-
-        conn = snowflake.get_conn()
-        conn.cursor().execute(create_sql)
-
-        return table_config
-
-    # =========================
-    # 4. EXTRACT FROM MYSQL
-    # =========================
-    @task(trigger_rule=TriggerRule.ALL_DONE)  
-    def extract(table_config):
+    @task(trigger_rule=TriggerRule.ALL_DONE)
+    def process_all_tables(tables):
         mysql = MySqlHook(mysql_conn_id="mysql_conn")
-
-        table = table_config["table_name"]
-
-        query = f"SELECT * FROM {table}"
-
-        df = mysql.get_pandas_df(query)
-        log.info("Extracted table '%s': %d rows", table, len(df))
-
-        file_path = f"/tmp/{table}.csv"
-        df.to_csv(file_path, index=False)
-
-        table_config["file_path"] = file_path
-
-        return table_config
-
-    # =========================
-    # 5. LOAD INTO SNOWFLAKE
-    # =========================
-    @task(trigger_rule=TriggerRule.ALL_DONE)  
-    def load(table_config):
         snowflake = SnowflakeHook(snowflake_conn_id="snowflake_default")
+        sf_conn = snowflake.get_conn()
+        sf_cursor = sf_conn.cursor()
+        mysql_conn = mysql.get_conn()
 
-        table = table_config["table_name"]
-        qualified_table = f"{SF_DB}.{SF_SHARED_SCHEMA}.{table}"
-        file_path = table_config["file_path"]
+        for table_config in tables:
+            table = table_config["table_name"]
+            qualified_table = f"{SF_DB}.{SF_SHARED_SCHEMA}.{table}"
+            staging_table = f"{SF_DB}.{SF_SHARED_SCHEMA}.{table}_staging"
 
-        conn = snowflake.get_conn()
-        cursor = conn.cursor()
+            # --- BUILD COLUMN DEFINITIONS ---
+            df_schema = pd.DataFrame(table_config["schema"])
+            columns = []
+            pk_columns = []
+            for _, row in df_schema.iterrows():
+                col = row["field"]
+                dtype = map_mysql_to_snowflake(row["type"])
+                nullable = "" if row["null"] == "YES" else "NOT NULL"
+                columns.append(f"{col} {dtype} {nullable}")
+                if str(row.get("key", "")).upper() == "PRI":
+                    pk_columns.append(col)
+            columns.append("_ingested_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP()")
+            col_defs = ', '.join(columns)
 
-        # upload file to table's internal stage (PUT is not supported on external stages)
-        cursor.execute(f"PUT file://{file_path} @%{qualified_table} AUTO_COMPRESS=TRUE OVERWRITE=TRUE")
+            # --- ENSURE TARGET TABLE EXISTS (don't drop it) ---
+            sf_cursor.execute(f"""
+                CREATE TABLE IF NOT EXISTS {qualified_table} (
+                    {col_defs}
+                )
+            """)
+            log.info("Ensured table '%s' exists", qualified_table)
 
-        # load data and purge staged files
-        cursor.execute(f"""
-            COPY INTO {qualified_table}
-            FROM @%{qualified_table}
-            FILE_FORMAT = (
-                TYPE = CSV
-                SKIP_HEADER = 1
-                FIELD_OPTIONALLY_ENCLOSED_BY='"'
-            )
-            PURGE = TRUE
-        """)
-        results = cursor.fetchall()
-        rows_loaded = sum(r[3] for r in results)  # column 3 is rows_loaded in COPY INTO result
-        log.info("Loaded table '%s': %d rows", qualified_table, rows_loaded)
+            # --- CREATE STAGING TABLE ---
+            sf_cursor.execute(f"""
+                CREATE OR REPLACE TABLE {staging_table} (
+                    {col_defs}
+                )
+            """)
+
+            # --- EXTRACT IN CHUNKS & LOAD TO STAGING ---
+            total_rows = 0
+            data_cols = [row["field"] for _, row in df_schema.iterrows()]
+
+            for chunk in pd.read_sql(f"SELECT * FROM {table}", mysql_conn, chunksize=CHUNK_SIZE):
+                chunk["_ingested_at"] = pd.Timestamp.utcnow()
+                chunk.columns = [c.upper() for c in chunk.columns]
+
+                file_path = f"/tmp/{table}_chunk.csv"
+                chunk.to_csv(file_path, index=False)
+
+                sf_cursor.execute(f"PUT file://{file_path} @%{staging_table} AUTO_COMPRESS=TRUE OVERWRITE=TRUE")
+                sf_cursor.execute(f"""
+                    COPY INTO {staging_table}
+                    FROM @%{staging_table}
+                    FILE_FORMAT = (
+                        TYPE = CSV
+                        SKIP_HEADER = 1
+                        FIELD_OPTIONALLY_ENCLOSED_BY='"'
+                    )
+                    PURGE = TRUE
+                """)
+                total_rows += len(chunk)
+
+            log.info("Extracted '%s': %d rows total", table, total_rows)
+
+            # --- MERGE OR TRUNCATE+INSERT ---
+            if pk_columns:
+                join_clause = " AND ".join(f"tgt.{c} = stg.{c}" for c in pk_columns)
+                all_cols = [row["field"].upper() for _, row in df_schema.iterrows()] + ["_INGESTED_AT"]
+                update_clause = ", ".join(f"tgt.{c} = stg.{c}" for c in all_cols)
+                insert_cols = ", ".join(all_cols)
+                insert_vals = ", ".join(f"stg.{c}" for c in all_cols)
+
+                sf_cursor.execute(f"""
+                    MERGE INTO {qualified_table} tgt
+                    USING {staging_table} stg
+                    ON {join_clause}
+                    WHEN MATCHED THEN UPDATE SET {update_clause}
+                    WHEN NOT MATCHED THEN INSERT ({insert_cols}) VALUES ({insert_vals})
+                """)
+                log.info("Merged '%s': %d rows", qualified_table, total_rows)
+            else:
+                sf_cursor.execute(f"TRUNCATE TABLE {qualified_table}")
+                sf_cursor.execute(f"INSERT INTO {qualified_table} SELECT * FROM {staging_table}")
+                log.info("Truncate+inserted '%s': %d rows", qualified_table, total_rows)
+
+            sf_cursor.execute(f"DROP TABLE {staging_table}")
 
     # =========================
     # DAG FLOW
     # =========================
     schema = load_schema()
     tables = group_tables(schema)
-
-    created = create_table.expand(table_config=tables)
-    extracted = extract.expand(table_config=created)
-    load.expand(table_config=extracted)
+    process_all_tables(tables)
