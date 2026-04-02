@@ -87,7 +87,7 @@ WORKSHEET_NAME = Variable.get("IGNITE_SHEET_WORKSHEET", default_var="Sheet1")
 
 SF_DB = "HOSPITALS" 
 SF_SHARED_SCHEMA = "SHARED"
-SNOWFLAKE_STAGE = f"{SF_DB}.{SF_SHARED_SCHEMA}.DB_BUCKET"
+SNOWFLAKE_STAGE = f"{SF_DB}.{SF_SHARED_SCHEMA}.DB_BUCKETS"
 default_args = {
     "owner": "airflow",
     "start_date": datetime(2024, 1, 1),
@@ -238,18 +238,19 @@ with DAG(
         conn = snowflake.get_conn()
         cursor = conn.cursor()
 
-        # upload file
-        cursor.execute(f"PUT file://{file_path} @{SNOWFLAKE_STAGE} AUTO_COMPRESS=TRUE")
+        # upload file to table's internal stage (PUT is not supported on external stages)
+        cursor.execute(f"PUT file://{file_path} @%{table} AUTO_COMPRESS=TRUE OVERWRITE=TRUE")
 
-        # load data
+        # load data and purge staged files
         cursor.execute(f"""
             COPY INTO {table}
-            FROM @{SNOWFLAKE_STAGE}
+            FROM @%{table}
             FILE_FORMAT = (
                 TYPE = CSV
                 SKIP_HEADER = 1
                 FIELD_OPTIONALLY_ENCLOSED_BY='"'
             )
+            PURGE = TRUE
         """)
 
     # =========================
