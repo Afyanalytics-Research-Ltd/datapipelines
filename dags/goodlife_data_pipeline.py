@@ -174,7 +174,9 @@ def scrape_onlinestoregl():
             pass
 
     time.sleep(5)
+    print(f"Starting scrape: {BASE_URL}")
     driver.get(BASE_URL)
+    time.sleep(5)
     all_data = extract_data(driver.page_source)
     print(f"\nTOTAL PRODUCTS: {len(all_data)}")
 
