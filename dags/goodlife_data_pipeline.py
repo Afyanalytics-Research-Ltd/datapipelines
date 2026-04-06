@@ -7,14 +7,9 @@ import pandas as pd
 import time
 import json
 import re
+import requests
 
 from bs4 import BeautifulSoup
-
-from selenium import webdriver
-from selenium.webdriver.common.by import By
-from selenium.webdriver.chrome.service import Service
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
 
 from airflow.providers.snowflake.hooks.snowflake import SnowflakeHook
 
@@ -22,6 +17,12 @@ from airflow.providers.snowflake.hooks.snowflake import SnowflakeHook
 # CONFIG
 # =========================
 BASE_URL = "https://www.goodlife.co.ke/shop/"
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                  "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+}
 SF_DB = "HOSPITALS"
 SF_SHARED_SCHEMA = "SHARED"
 SNOWFLAKE_STAGE = f"{SF_DB}.{SF_SHARED_SCHEMA}.DB_BUCKET"
@@ -58,17 +59,15 @@ def extract_data(page_source):
             name_el = card.select_one(".woocommerce-loop-product__title")
             name = name_el.get_text(strip=True) if name_el else None
 
-            # Product permalink (the wrapping <a> around the image/title)
-            link_el = card.select_one("a.woocommerce-loop-product__link")
+            # Product permalink — first <a> in the card wraps the image/title
+            link_el = card.select_one("a")
             product_url = link_el['href'] if link_el else None
 
-            # Image — WooCommerce lazy-loads via data-src; fall back to src
+            # Image — WP Smush serves final URL directly in src
             img_el = card.select_one("img.attachment-woocommerce_thumbnail")
             if img_el is None:
                 img_el = card.select_one("img")
-            img_url = (
-                img_el.get("data-src") or img_el.get("src")
-            ) if img_el else None
+            img_url = img_el.get("src") if img_el else None
 
             # Product ID and SKU from the add-to-cart button data attributes
             cart_btn = card.select_one("a.add_to_cart_button")
@@ -137,116 +136,43 @@ def has_next_page(page_source):
 # =========================
 
 def scrape_onlinestoregl():
-    options = webdriver.ChromeOptions()
-    options.add_argument("--headless=new")
-    options.add_argument("--no-sandbox")
-    options.add_argument("--disable-dev-shm-usage")
-    options.add_argument("--disable-gpu")
-    options.add_argument("--window-size=1920,1080")
-    options.add_argument(
-        "--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-    )
-    # Avoid headless bot-detection fingerprints
-    options.add_argument("--disable-blink-features=AutomationControlled")
-    options.add_experimental_option("excludeSwitches", ["enable-automation"])
-    options.add_experimental_option("useAutomationExtension", False)
-    options.binary_location = "/usr/bin/google-chrome"
-
-    service = Service("/usr/local/bin/chromedriver")
-    driver = webdriver.Chrome(service=service, options=options)
-    # Remove navigator.webdriver flag that sites use to detect bots
-    driver.execute_cdp_cmd(
-        "Page.addScriptToEvaluateOnNewDocument",
-        {"source": "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"}
-    )
-    wait = WebDriverWait(driver, 25)
+    session = requests.Session()
+    session.headers.update(HEADERS)
 
     all_data = []
+    page = 1
 
-    def dismiss_cookie_banner():
+    while True:
+        url = BASE_URL if page == 1 else f"{BASE_URL}page/{page}/"
+        print(f"\n{'='*50}")
+        print(f"SCRAPING PAGE {page}: {url}")
+        print(f"{'='*50}")
+
         try:
-            btn = WebDriverWait(driver, 6).until(
-                EC.element_to_be_clickable((By.CSS_SELECTOR, "button.wcc-btn-accept"))
-            )
-            btn.click()
-            print("Cookie banner dismissed")
-        except Exception:
-            pass  # Banner not present or already accepted
+            response = session.get(url, timeout=30)
+            response.raise_for_status()
+        except requests.RequestException as err:
+            print(f"Request error on page {page}: {err}")
+            break
 
-    def scroll_to_load_lazy():
-        last_height = driver.execute_script("return document.body.scrollHeight")
-        while True:
-            driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-            time.sleep(2)
-            new_height = driver.execute_script("return document.body.scrollHeight")
-            if new_height == last_height:
-                break
-            last_height = new_height
+        html = response.text
+        page_data = extract_data(html)
 
-    try:
-        page = 1
-        cookie_dismissed = False
+        print(f"\nSample JSON:")
+        print(json.dumps(page_data[:3], indent=2, default=str))
 
-        while True:
-            # Page 1 uses the base shop URL; subsequent pages use /page/N/
-            url = BASE_URL if page == 1 else f"{BASE_URL}page/{page}/"
-            print(f"\n{'='*50}")
-            print(f"SCRAPING PAGE {page}: {url}")
-            print(f"{'='*50}")
+        if not page_data:
+            print(f"No products found on page {page}, stopping.")
+            break
 
-            driver.get(url)
+        all_data.extend(page_data)
 
-            # Dismiss cookie banner once on first page load
-            if not cookie_dismissed:
-                dismiss_cookie_banner()
-                cookie_dismissed = True
+        if not has_next_page(html):
+            print("No next page link found — reached last page.")
+            break
 
-            # Wait for products — try specific selector first, fall back to any li.product
-            product_found = False
-            for selector in ("ul.products li.product", "li.product"):
-                try:
-                    wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, selector)))
-                    product_found = True
-                    print(f"Products located via selector: '{selector}'")
-                    break
-                except Exception:
-                    continue
-
-            if not product_found:
-                # Diagnostic: log page title and HTML snippet so we know what we got
-                print(f"No products found on page {page}.")
-                print(f"  Page title : {driver.title!r}")
-                print(f"  Current URL: {driver.current_url!r}")
-                print(f"  HTML snippet (first 1500 chars):\n{driver.page_source[:1500]}")
-                break
-
-            scroll_to_load_lazy()
-
-            html = driver.page_source
-            page_data = extract_data(html)
-
-            print(f"\nSample JSON:")
-            print(json.dumps(page_data[:3], indent=2, default=str))
-
-            if not page_data:
-                break
-
-            all_data.extend(page_data)
-
-            # Stop when WooCommerce reports no further pages
-            if not has_next_page(html):
-                print("No next page link found — reached last page.")
-                break
-
-            page += 1
-            time.sleep(1.5)  # Polite crawl delay
-
-    except Exception as err:
-        print(f"Scraper error: {err}")
-
-    finally:
-        driver.quit()
+        page += 1
+        time.sleep(1.5)  # Polite crawl delay
 
     print(f"\nTOTAL PRODUCTS: {len(all_data)}")
 
