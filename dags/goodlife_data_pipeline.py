@@ -49,35 +49,51 @@ def extract_data(page_source):
     soup = BeautifulSoup(page_source, 'html.parser')
     products = []
 
-    product_cards = soup.select('li.product')
+    product_cards = soup.select('ul.products li.product')
     print(f"Found {len(product_cards)} products")
 
     for card in product_cards:
         try:
-            name_el = card.select_one("h2.woocommerce-loop-product__title")
+            # Product name
+            name_el = card.select_one(".woocommerce-loop-product__title")
             name = name_el.get_text(strip=True) if name_el else None
 
-            link_el = card.select_one("a")
+            # Product permalink (the wrapping <a> around the image/title)
+            link_el = card.select_one("a.woocommerce-loop-product__link")
             product_url = link_el['href'] if link_el else None
 
-            img_el = card.select_one("img")
-            img_url = img_el['src'] if img_el else None
+            # Image — WooCommerce lazy-loads via data-src; fall back to src
+            img_el = card.select_one("img.attachment-woocommerce_thumbnail")
+            if img_el is None:
+                img_el = card.select_one("img")
+            img_url = (
+                img_el.get("data-src") or img_el.get("src")
+            ) if img_el else None
 
+            # Product ID and SKU from the add-to-cart button data attributes
+            cart_btn = card.select_one("a.add_to_cart_button")
+            product_id = cart_btn.get("data-product_id") if cart_btn else None
+            product_sku = cart_btn.get("data-product_sku") if cart_btn else None
+
+            # Discount badge (e.g. "Sale!", "-20%")
+            badge_el = card.select_one(".onsale")
+            discount_badge = badge_el.get_text(strip=True) if badge_el else None
+
+            # Prices
             current_price = None
             original_price = None
 
             price_container = card.select_one(".price")
-
             if price_container:
-                ins = price_container.select_one("ins")
+                ins = price_container.select_one("ins .woocommerce-Price-amount bdi")
+                de = price_container.select_one("del .woocommerce-Price-amount bdi")
                 if ins:
                     current_price = clean_price(ins.get_text())
-
-                    de = price_container.select_one("del")
-                    if de:
-                        original_price = clean_price(de.get_text())
+                    original_price = clean_price(de.get_text()) if de else None
                 else:
-                    current_price = clean_price(price_container.get_text())
+                    # No sale — grab the single visible price amount
+                    single = price_container.select_one(".woocommerce-Price-amount bdi")
+                    current_price = clean_price(single.get_text()) if single else clean_price(price_container.get_text())
 
             if current_price and original_price:
                 discount_pct = round((original_price - current_price) / original_price * 100, 2)
@@ -86,10 +102,13 @@ def extract_data(page_source):
 
             product = {
                 'scrape_date': datetime.now().isoformat(),
+                'product_id': product_id,
+                'product_sku': product_sku,
                 'product_name': name,
                 'current_price': current_price,
                 'original_price': original_price,
                 'discount_percentage': discount_pct,
+                'discount_badge': discount_badge,
                 'rating': None,
                 'reviews': None,
                 'url': product_url,
@@ -107,6 +126,12 @@ def extract_data(page_source):
     return products
 
 
+def has_next_page(page_source):
+    """Return True if a WooCommerce 'next page' link exists in the HTML."""
+    soup = BeautifulSoup(page_source, 'html.parser')
+    return bool(soup.select_one("a.next.page-numbers"))
+
+
 # =========================
 # MAIN SCRAPER
 # =========================
@@ -118,7 +143,10 @@ def scrape_onlinestoregl():
     options.add_argument("--disable-dev-shm-usage")
     options.add_argument("--disable-gpu")
     options.add_argument("--window-size=1920,1080")
-    options.add_argument("--user-agent=Mozilla/5.0")
+    options.add_argument(
+        "--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    )
     options.binary_location = "/usr/bin/google-chrome"
 
     service = Service("/usr/local/bin/chromedriver")
@@ -127,7 +155,17 @@ def scrape_onlinestoregl():
 
     all_data = []
 
-    def scroll_page():
+    def dismiss_cookie_banner():
+        try:
+            btn = WebDriverWait(driver, 6).until(
+                EC.element_to_be_clickable((By.CSS_SELECTOR, "button.wcc-btn-accept"))
+            )
+            btn.click()
+            print("Cookie banner dismissed")
+        except Exception:
+            pass  # Banner not present or already accepted
+
+    def scroll_to_load_lazy():
         last_height = driver.execute_script("return document.body.scrollHeight")
         while True:
             driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
@@ -139,32 +177,51 @@ def scrape_onlinestoregl():
 
     try:
         page = 1
+        cookie_dismissed = False
 
         while True:
-            url = f"{BASE_URL}page/{page}/"
+            # Page 1 uses the base shop URL; subsequent pages use /page/N/
+            url = BASE_URL if page == 1 else f"{BASE_URL}page/{page}/"
             print(f"\n{'='*50}")
-            print(f"SCRAPING PAGE {page}")
+            print(f"SCRAPING PAGE {page}: {url}")
             print(f"{'='*50}")
 
             driver.get(url)
 
-            wait.until(EC.presence_of_all_elements_located((By.CSS_SELECTOR, "li.product")))
-            scroll_page()
+            # Dismiss cookie banner once on first page load
+            if not cookie_dismissed:
+                dismiss_cookie_banner()
+                cookie_dismissed = True
+
+            try:
+                wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "ul.products li.product")))
+            except Exception:
+                print(f"No products found on page {page}, stopping.")
+                break
+
+            scroll_to_load_lazy()
 
             html = driver.page_source
             page_data = extract_data(html)
 
             print(f"\nSample JSON:")
-            print(json.dumps(page_data[:5], indent=2, default=str))
+            print(json.dumps(page_data[:3], indent=2, default=str))
 
             if not page_data:
                 break
 
             all_data.extend(page_data)
+
+            # Stop when WooCommerce reports no further pages
+            if not has_next_page(html):
+                print("No next page link found — reached last page.")
+                break
+
             page += 1
+            time.sleep(1.5)  # Polite crawl delay
 
     except Exception as err:
-        print(err)
+        print(f"Scraper error: {err}")
 
     finally:
         driver.quit()
@@ -208,28 +265,36 @@ def upload_to_snowflake(file_path):
     merge_sql = f"""
     MERGE INTO {SF_DB}.{SF_SHARED_SCHEMA}.{SNOWFLAKE_TABLE} AS target
     USING (
-        SELECT 
-            $1:scrape_date::timestamp as scrape_date,
-            $1:product_name::string as product_name,
-            $1:current_price::float as current_price,
-            $1:original_price::float as original_price,
-            $1:discount_percentage::float as discount_percentage,
-            $1:rating::string as rating,
-            $1:reviews::string as reviews,
-            $1:url::string as url
+        SELECT
+            $1:scrape_date::timestamp      as scrape_date,
+            $1:product_id::string          as product_id,
+            $1:product_sku::string         as product_sku,
+            $1:product_name::string        as product_name,
+            $1:current_price::float        as current_price,
+            $1:original_price::float       as original_price,
+            $1:discount_percentage::float  as discount_percentage,
+            $1:discount_badge::string      as discount_badge,
+            $1:rating::string              as rating,
+            $1:reviews::string             as reviews,
+            $1:url::string                 as url,
+            $1:image_url::string           as image_url
         FROM @{SNOWFLAKE_STAGE}/onlinestoregl_*.parquet
     ) AS source
-    ON target.product_name = source.product_name 
+    ON target.product_name = source.product_name
        AND DATE_TRUNC('day', target.scrape_date) = DATE_TRUNC('day', source.scrape_date)
     WHEN MATCHED THEN UPDATE SET
-        current_price = source.current_price,
-        original_price = source.original_price,
-        discount_percentage = source.discount_percentage
-    WHEN NOT MATCHED THEN INSERT 
-        (scrape_date, product_name, current_price, original_price, discount_percentage, rating, reviews, url)
-    VALUES 
-        (source.scrape_date, source.product_name, source.current_price, source.original_price, 
-         source.discount_percentage, source.rating, source.reviews, source.url);
+        current_price       = source.current_price,
+        original_price      = source.original_price,
+        discount_percentage = source.discount_percentage,
+        discount_badge      = source.discount_badge,
+        image_url           = source.image_url
+    WHEN NOT MATCHED THEN INSERT
+        (scrape_date, product_id, product_sku, product_name, current_price, original_price,
+         discount_percentage, discount_badge, rating, reviews, url, image_url)
+    VALUES
+        (source.scrape_date, source.product_id, source.product_sku, source.product_name,
+         source.current_price, source.original_price, source.discount_percentage,
+         source.discount_badge, source.rating, source.reviews, source.url, source.image_url);
     """
 
     print("Executing MERGE...")
