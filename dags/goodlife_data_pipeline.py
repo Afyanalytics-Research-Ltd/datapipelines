@@ -7,9 +7,14 @@ import pandas as pd
 import time
 import json
 import re
-import requests
 
 from bs4 import BeautifulSoup
+
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
 
 from airflow.providers.snowflake.hooks.snowflake import SnowflakeHook
 
@@ -17,12 +22,6 @@ from airflow.providers.snowflake.hooks.snowflake import SnowflakeHook
 # CONFIG
 # =========================
 BASE_URL = "https://www.goodlife.co.ke/shop/"
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-                  "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Accept-Language": "en-US,en;q=0.9",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-}
 SF_DB = "HOSPITALS"
 SF_SHARED_SCHEMA = "SHARED"
 SNOWFLAKE_STAGE = f"{SF_DB}.{SF_SHARED_SCHEMA}.DB_BUCKET"
@@ -135,44 +134,60 @@ def has_next_page(page_source):
 # MAIN SCRAPER
 # =========================
 
+STEALTH_JS = """
+Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4, 5]});
+Object.defineProperty(navigator, 'languages', {get: () => ['en-US', 'en']});
+window.chrome = {runtime: {}};
+const origQuery = window.navigator.permissions.query;
+window.navigator.permissions.query = (p) =>
+    p.name === 'notifications'
+        ? Promise.resolve({state: Notification.permission})
+        : origQuery(p);
+"""
+
+
 def scrape_onlinestoregl():
-    session = requests.Session()
-    session.headers.update(HEADERS)
+    options = webdriver.ChromeOptions()
+    options.add_argument("--headless=new")
+    options.add_argument("--no-sandbox")
+    options.add_argument("--disable-dev-shm-usage")
+    options.add_argument("--disable-gpu")
+    options.add_argument("--window-size=1920,1080")
+    options.add_argument("--disable-blink-features=AutomationControlled")
+    options.add_argument(
+        "--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    )
+    options.add_experimental_option("excludeSwitches", ["enable-automation"])
+    options.add_experimental_option("useAutomationExtension", False)
+
+    service = Service("/usr/local/bin/chromedriver")
+    driver = webdriver.Chrome(service=service, options=options)
+    driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {"source": STEALTH_JS})
+    wait = WebDriverWait(driver, 30)
 
     all_data = []
-    page = 1
 
-    while True:
-        url = BASE_URL if page == 1 else f"{BASE_URL}page/{page}/"
-        print(f"\n{'='*50}")
-        print(f"SCRAPING PAGE {page}: {url}")
-        print(f"{'='*50}")
-
+    def dismiss_cookie_banner():
         try:
-            response = session.get(url, timeout=30)
-            response.raise_for_status()
-        except requests.RequestException as err:
-            print(f"Request error on page {page}: {err}")
-            break
+            btn = WebDriverWait(driver, 6).until(
+                EC.element_to_be_clickable((By.CSS_SELECTOR, "button.wcc-btn-accept"))
+            )
+            btn.click()
+            print("Cookie banner dismissed")
+        except Exception:
+            pass
 
-        html = response.text
-        page_data = extract_data(html)
+    try:
+        driver.get(BASE_URL)
+        all_data = extract_data(driver.page_source)
+        
+    except Exception as err:
+        print(f"Scraper error: {err}")
 
-        print(f"\nSample JSON:")
-        print(json.dumps(page_data[:3], indent=2, default=str))
-
-        if not page_data:
-            print(f"No products found on page {page}, stopping.")
-            break
-
-        all_data.extend(page_data)
-
-        if not has_next_page(html):
-            print("No next page link found — reached last page.")
-            break
-
-        page += 1
-        time.sleep(1.5)  # Polite crawl delay
+    finally:
+        driver.quit()
 
     print(f"\nTOTAL PRODUCTS: {len(all_data)}")
 
