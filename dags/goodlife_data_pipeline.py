@@ -173,6 +173,7 @@ def scrape_onlinestoregl():
         except Exception:
             pass
 
+    time.sleep(5)
     driver.get(BASE_URL)
     all_data = extract_data(driver.page_source)
     print(f"\nTOTAL PRODUCTS: {len(all_data)}")
