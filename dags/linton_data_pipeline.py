@@ -49,41 +49,43 @@ def extract_data(page_source):
     soup = BeautifulSoup(page_source, 'html.parser')
     products = []
 
-    # 🔥 Linton's products (WooCommerce-like)
-    product_cards = soup.select("li.product")
+    product_cards = soup.select('li[data-hook="product-list-grid-item"]')
     print(f"Found {len(product_cards)} products")
 
     for card in product_cards:
         try:
             # Name
-            name_el = card.select_one("h2, h3")
+            name_el = card.select_one('[data-hook="product-item-name"]')
             name = name_el.get_text(strip=True) if name_el else None
 
             # URL
-            link_el = card.select_one("a")
+            link_el = card.select_one('[data-hook="product-item-container"]')
             product_url = link_el['href'] if link_el else None
 
-            # Image
-            img_el = card.select_one("img")
-            img_url = img_el.get("src") or img_el.get("data-src") if img_el else None
+            # Image — first img inside wow-image
+            img_el = card.select_one('wow-image img')
+            img_url = img_el.get("src") if img_el else None
 
-            # PRICE LOGIC
-            current_price = None
-            original_price = None
+            # Prices — prefer data attributes, fall back to text
+            price_el = card.select_one('[data-hook="product-item-price-to-pay"]')
+            orig_el = card.select_one('[data-hook="product-item-price-before-discount"]')
 
-            price_container = card.select_one(".price")
+            current_price = clean_price(
+                price_el.get("data-wix-price") or price_el.get_text()
+            ) if price_el else None
 
-            if price_container:
-                # Discount case
-                ins = price_container.select_one("ins")
-                if ins:
-                    current_price = clean_price(ins.get_text())
+            original_price = clean_price(
+                orig_el.get("data-wix-original-price") or orig_el.get_text()
+            ) if orig_el else None
 
-                    de = price_container.select_one("del")
-                    if de:
-                        original_price = clean_price(de.get_text())
-                else:
-                    current_price = clean_price(price_container.get_text())
+            # If no sale, price-to-pay is the only price shown
+            if current_price is None and original_price is not None:
+                current_price = original_price
+                original_price = None
+
+            # Discount badge (e.g. "10% OFF")
+            ribbon_el = card.select_one('[data-hook="RibbonDataHook.RibbonOnImage"]')
+            discount_badge = ribbon_el.get_text(strip=True) if ribbon_el else None
 
             # Discount %
             if current_price and original_price:
@@ -97,6 +99,7 @@ def extract_data(page_source):
                 'current_price': current_price,
                 'original_price': original_price,
                 'discount_percentage': discount_pct,
+                'discount_badge': discount_badge,
                 'rating': None,
                 'reviews': None,
                 'url': product_url,
@@ -144,41 +147,8 @@ def scrape_onlinestoreli():
                 break
             last_height = new_height
 
-    try:
-        page = 1
-
-        while True:
-            url = f"{BASE_URL}page/{page}/"
-            print(f"\n{'='*50}")
-            print(f"SCRAPING PAGE {page}")
-            print(f"{'='*50}")
-
-            driver.get(url)
-
-            wait.until(
-                EC.presence_of_all_elements_located((By.CSS_SELECTOR, "li.product"))
-            )
-
-            scroll_page()
-
-            html = driver.page_source
-            page_data = extract_data(html)
-
-            print("\nSample JSON:")
-            print(json.dumps(page_data[:5], indent=2, default=str))
-
-            if not page_data:
-                break
-
-            all_data.extend(page_data)
-            page += 1
-
-    except Exception as err:
-        print(err)
-
-    finally:
-        driver.quit()
-
+    driver.get(BASE_URL)
+    all_data = extract_data(driver.page_source)
     print(f"\nTOTAL PRODUCTS: {len(all_data)}")
 
     if all_data:
