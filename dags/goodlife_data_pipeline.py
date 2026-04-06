@@ -147,11 +147,20 @@ def scrape_onlinestoregl():
         "--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
         "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     )
+    # Avoid headless bot-detection fingerprints
+    options.add_argument("--disable-blink-features=AutomationControlled")
+    options.add_experimental_option("excludeSwitches", ["enable-automation"])
+    options.add_experimental_option("useAutomationExtension", False)
     options.binary_location = "/usr/bin/google-chrome"
 
     service = Service("/usr/local/bin/chromedriver")
     driver = webdriver.Chrome(service=service, options=options)
-    wait = WebDriverWait(driver, 20)
+    # Remove navigator.webdriver flag that sites use to detect bots
+    driver.execute_cdp_cmd(
+        "Page.addScriptToEvaluateOnNewDocument",
+        {"source": "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"}
+    )
+    wait = WebDriverWait(driver, 25)
 
     all_data = []
 
@@ -193,10 +202,23 @@ def scrape_onlinestoregl():
                 dismiss_cookie_banner()
                 cookie_dismissed = True
 
-            try:
-                wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "ul.products li.product")))
-            except Exception:
-                print(f"No products found on page {page}, stopping.")
+            # Wait for products — try specific selector first, fall back to any li.product
+            product_found = False
+            for selector in ("ul.products li.product", "li.product"):
+                try:
+                    wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, selector)))
+                    product_found = True
+                    print(f"Products located via selector: '{selector}'")
+                    break
+                except Exception:
+                    continue
+
+            if not product_found:
+                # Diagnostic: log page title and HTML snippet so we know what we got
+                print(f"No products found on page {page}.")
+                print(f"  Page title : {driver.title!r}")
+                print(f"  Current URL: {driver.current_url!r}")
+                print(f"  HTML snippet (first 1500 chars):\n{driver.page_source[:1500]}")
                 break
 
             scroll_to_load_lazy()
