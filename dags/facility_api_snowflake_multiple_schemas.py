@@ -598,14 +598,20 @@ def _extract_all(**context):
     jobs_wrapped = context["ti"].xcom_pull(task_ids="prepare_model_jobs")
     results = []
     for item in jobs_wrapped:
-        result = extract_one_model(job=item["job"], **context)
-        results.append(result)
+        try:
+            result = extract_one_model(job=item["job"], **context)
+            results.append(result)
+        except Exception as e:
+            log.warning("Failed to extract model job=%s: %s", item.get("job", {}).get("table"), e, exc_info=True)
     return results
 
 def _copy_all(**context):
     results = context["ti"].xcom_pull(task_ids="extract_to_s3")
     for result in results:
-        copy_one_into_snowflake(**result)
+        try:
+            copy_one_into_snowflake(**result)
+        except Exception as e:
+            log.warning("Failed to copy model table=%s: %s", result.get("table"), e, exc_info=True)
 
 SCHEDULED_FACILITIES = ["kisumu", "xanalife"]
 
