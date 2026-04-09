@@ -12,7 +12,7 @@ import re
 import gspread
 from datetime import datetime, timedelta, timezone
 from airflow import DAG
-from airflow.models import Variable, Param
+from airflow.models import Variable
 from airflow.utils.trigger_rule import TriggerRule
 from airflow.operators.python import PythonOperator
 from airflow.providers.amazon.aws.hooks.s3 import S3Hook
@@ -540,8 +540,10 @@ def copy_one_into_snowflake(**job_result):
     """
     SnowflakeHook(snowflake_conn_id=SNOWFLAKE_CONN_ID).run(sql)
 
-def merge_clean(**context):
-    facility = context["params"]["facility"]
+def _prepare_jobs(facility, **context):
+    return build_jobs_for_facility_wrapped(facility)
+
+def merge_clean(facility, **context):
 
     raw_table = f"{sf_schema(facility, 'RAW')}.EVENTS_RAW"
     clean_table = f"{sf_schema(facility, 'CLEAN')}.EVENTS"
@@ -592,33 +594,52 @@ def merge_clean(**context):
     """
     SnowflakeHook(snowflake_conn_id=SNOWFLAKE_CONN_ID).run(sql)    
 
-with DAG(
-    dag_id=DAG_ID,
-    start_date=datetime(2025, 1, 1),
-    schedule=None,
-    catchup=False,
-    default_args={"retries": 3, "retry_delay": timedelta(minutes=2)},
-    params={
-        "facility": Param("afya_api_auth", enum=list(FACILITIES.keys())),
-    },
-    tags=["facility", "api", "snowflake"],
-) as dag:
-    
-    t_prepare = PythonOperator(
-        task_id="prepare_model_jobs",
-        python_callable=lambda **context: build_jobs_for_facility_wrapped(context["params"]["facility"]),
-    )
+def _extract_all(**context):
+    jobs_wrapped = context["ti"].xcom_pull(task_ids="prepare_model_jobs")
+    results = []
+    for item in jobs_wrapped:
+        result = extract_one_model(job=item["job"], **context)
+        results.append(result)
+    return results
 
-    t_extract_mapped = PythonOperator.partial(
-        task_id="extract_to_s3", #loop here to maap out each table
-        python_callable=extract_one_model,
-        trigger_rule=TriggerRule.ALL_DONE
-    ).expand(op_kwargs=t_prepare.output)
-    t_copy_mapped = PythonOperator.partial(
-        task_id="copy_into_snowflake_raw",
-        python_callable=copy_one_into_snowflake,
-        trigger_rule=TriggerRule.ALL_DONE
-    ).expand(op_kwargs=t_extract_mapped.output)
-    t3 = PythonOperator(task_id="merge_clean_table", python_callable=merge_clean)
+def _copy_all(**context):
+    results = context["ti"].xcom_pull(task_ids="extract_to_s3")
+    for result in results:
+        copy_one_into_snowflake(**result)
 
-    t_prepare >> t_extract_mapped >> t_copy_mapped >> t3
+SCHEDULED_FACILITIES = ["kisumu", "xanalife"]
+
+for _facility in SCHEDULED_FACILITIES:
+    with DAG(
+        dag_id=f"{DAG_ID}_{_facility}",
+        start_date=datetime(2025, 1, 1),
+        schedule="0 0 * * *",
+        catchup=False,
+        default_args={"retries": 3, "retry_delay": timedelta(minutes=2)},
+        tags=["facility", "api", "snowflake"],
+    ) as dag:
+
+        t_prepare = PythonOperator(
+            task_id="prepare_model_jobs",
+            python_callable=_prepare_jobs,
+            op_kwargs={"facility": _facility},
+        )
+        t_extract = PythonOperator(
+            task_id="extract_to_s3",
+            python_callable=_extract_all,
+            trigger_rule=TriggerRule.ALL_DONE,
+        )
+        t_copy = PythonOperator(
+            task_id="copy_into_snowflake_raw",
+            python_callable=_copy_all,
+            trigger_rule=TriggerRule.ALL_DONE,
+        )
+        t3 = PythonOperator(
+            task_id="merge_clean_table",
+            python_callable=merge_clean,
+            op_kwargs={"facility": _facility},
+        )
+
+        t_prepare >> t_extract >> t_copy >> t3
+
+    globals()[dag.dag_id] = dag
