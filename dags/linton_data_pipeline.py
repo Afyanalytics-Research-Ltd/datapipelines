@@ -1,4 +1,4 @@
-# dags/lintons_full_pipeline.py
+# dags/instagram_social_medi_listening.py
 
 from airflow import DAG
 from airflow.decorators import task
@@ -222,7 +222,7 @@ def upload_to_snowflake(file_path):
 # =========================
 
 with DAG(
-    dag_id="lintons_full_pipeline",
+    dag_id="instagram_social_medi_listening",
     schedule=None,
     catchup=False,
     default_args=default_args,
