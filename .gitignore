@@ -66,3 +66,4 @@ failed_mapped_logs/*
 # But allow jsons inside this folder
 !dags/jsons/*.json
 *.csv
+rsa_key*

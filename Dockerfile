@@ -3,17 +3,25 @@ FROM apache/airflow:3.1.7
 USER root
 
 # Install system dependencies
-RUN apt-get update && apt-get install -y \
+FROM apache/airflow:3.1.7
+
+USER root
+
+# ----------------------------
+# SYSTEM DEPENDENCIES (SINGLE LAYER)
+# ----------------------------
+RUN apt-get update && apt-get install -y --no-install-recommends \
     wget \
     unzip \
     xvfb \
+    curl \
+    gnupg \
+    software-properties-common \
+    fonts-liberation \
+    fontconfig \
+    xdg-utils \
     libxi6 \
     libgconf-2-4 \
-    gnupg \
-    curl \
-    software-properties-common \
-    \
-    # libs chromedriver needs
     libnss3 \
     libnspr4 \
     libatk1.0-0 \
@@ -27,16 +35,9 @@ RUN apt-get update && apt-get install -y \
     libx11-6 \
     libxcomposite1 \
     libxcursor1 \
-    libxi6 \
     libxkbcommon0 \
     libxrender1 \
     libxext6 \
-    fonts-liberation \
-    fontconfig \
-    && apt-get clean \
-    && rm -rf /var/lib/apt/lists/*
-
-RUN apt-get update && apt-get install -y \
     libcairo2 \
     libgbm1 \
     libgtk-3-0 \
@@ -44,10 +45,9 @@ RUN apt-get update && apt-get install -y \
     libu2f-udev \
     libvulkan1 \
     libxdamage1 \
-    xdg-utils \
+    --fix-missing \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
-
 
 # Add Google Chrome repository and install stable version
 # Install a known stable Chrome version
@@ -97,3 +97,4 @@ USER airflow
 # Install Python packages
 COPY requirements.txt /requirements.txt
 RUN pip install --no-cache-dir -r /requirements.txt
+
