@@ -44,6 +44,107 @@ SF_SHARED_SCHEMA = "SHARED"
 SF_STAGE = f"{SF_DB}.{SF_SHARED_SCHEMA}.FACILITY_RAW_STAGE"
 SF_FILE_FORMAT = f"{SF_DB}.{SF_SHARED_SCHEMA}.JSON_FF"
 
+
+import time
+import hashlib
+import pandas as pd
+from contextlib import contextmanager
+from airflow.providers.snowflake.hooks.snowflake import SnowflakeHook
+
+
+class SnowflakeClient:
+    """Thin wrapper around Airflow's SnowflakeHook with logging + a
+    consistent interface for both reads (`query`) and writes (`execute`).
+    Use one instance per task — connections are short-lived."""
+
+    def __init__(self, conn_id: str = SNOWFLAKE_CONN_ID):
+        self.conn_id = conn_id
+        self._hook = SnowflakeHook(snowflake_conn_id=conn_id)
+        self._conn = None
+
+    # ── connection lifecycle ────────────────────────────────────────────
+    def _get_conn(self):
+        if self._conn is None:
+            self._conn = self._hook.get_conn()
+        return self._conn
+
+    def close(self):
+        if self._conn is not None:
+            try:
+                self._conn.close()
+            except Exception:
+                pass
+            self._conn = None
+
+    @contextmanager
+    def _cursor(self):
+        cur = self._get_conn().cursor()
+        try:
+            yield cur
+        finally:
+            cur.close()
+
+    # ── public API ──────────────────────────────────────────────────────
+    def query(self, sql: str, label: str | None = None) -> pd.DataFrame:
+        """Run a SELECT and return a DataFrame. Decimal cols → float."""
+        label = label or f"q:{hashlib.md5(sql.encode()).hexdigest()[:8]}"
+        snippet = " ".join(sql.split())[:140]
+        log.info("▶ %-22s SELECT    | %s…", label, snippet)
+        t0 = time.perf_counter()
+        try:
+            with self._cursor() as cur:
+                cur.execute(sql)
+                df = cur.fetch_pandas_all()
+            elapsed = time.perf_counter() - t0
+
+            from decimal import Decimal
+            decimal_cols = []
+            for col in df.columns:
+                if df[col].dtype == "object":
+                    nn = df[col].dropna()
+                    if len(nn) and isinstance(nn.iloc[0], Decimal):
+                        df[col] = df[col].astype(float)
+                        decimal_cols.append(col)
+            log.info(
+                "✓ %-22s done      | %s rows · %d cols · %.2fs%s",
+                label, f"{len(df):,}", df.shape[1], elapsed,
+                f" · coerced {len(decimal_cols)} Decimal cols" if decimal_cols else "",
+            )
+            return df
+        except Exception as e:
+            log.exception("✗ %-22s SELECT failed | %.2fs · %s",
+                          label, time.perf_counter() - t0, e)
+            raise
+
+    def execute(self, sql: str, label: str | None = None) -> dict:
+        """Run a DDL/DML (COPY, MERGE, INSERT, etc.). Returns the
+        cursor's rowcount + sfqid so callers can audit / log."""
+        label = label or f"x:{hashlib.md5(sql.encode()).hexdigest()[:8]}"
+        snippet = " ".join(sql.split())[:140]
+        log.info("▶ %-22s WRITE     | %s…", label, snippet)
+        t0 = time.perf_counter()
+        try:
+            with self._cursor() as cur:
+                cur.execute(sql)
+                rowcount = cur.rowcount
+                sfqid = cur.sfqid
+            elapsed = time.perf_counter() - t0
+            log.info("✓ %-22s done      | rowcount=%s · sfqid=%s · %.2fs",
+                     label, rowcount, sfqid, elapsed)
+            if elapsed > 30:
+                log.warning("⚠ %-22s slow write | %.2fs", label, elapsed)
+            return {"rowcount": rowcount, "sfqid": sfqid, "elapsed_s": elapsed}
+        except Exception as e:
+            log.exception("✗ %-22s WRITE failed | %.2fs · %s",
+                          label, time.perf_counter() - t0, e)
+            raise
+
+    # context-manager sugar so you can `with SnowflakeClient() as sf:` if you want
+    def __enter__(self): return self
+    def __exit__(self, *a): self.close()
+
+
+
 def get_gsheet_client():
     # Store service account JSON in Airflow Variable GOOGLE_SA_JSON
     creds_dict = json.loads(Variable.get("GOOGLE_SA_JSON"))
@@ -513,12 +614,12 @@ def wm_key(facility: str) -> str:
 
 
 def copy_one_into_snowflake(**job_result):
-    facility = job_result["facility"]
-    s3_key = job_result["s3_key"]
-    ingested_at = job_result["ingested_at"]
-    module_source = (job_result.get("module") or "")
-    source_table = (job_result.get("table") or "")
-    namespace = (job_result.get("namespace") or "")
+    facility       = job_result["facility"]
+    s3_key         = job_result["s3_key"]
+    ingested_at    = job_result["ingested_at"]
+    module_source  = (job_result.get("module")    or "")
+    source_table   = (job_result.get("table")     or "")
+    namespace      = (job_result.get("namespace") or "")
 
     raw_table = f"{sf_schema(facility, 'RAW')}.EVENTS_RAW"
 
@@ -526,26 +627,27 @@ def copy_one_into_snowflake(**job_result):
     COPY INTO {raw_table} (facility_id, ingested_at, module_source, source_table, namespace, payload)
     FROM (
       SELECT
-        '{facility}'::STRING AS facility_id,
+        '{facility}'::STRING        AS facility_id,
         '{ingested_at}'::TIMESTAMP_TZ AS ingested_at,
-        '{module_source}'::STRING AS module_source,
-        '{source_table}'::STRING AS source_table,
-        '{namespace}'::STRING AS namespace,
-        PARSE_JSON($1) AS payload
+        '{module_source}'::STRING   AS module_source,
+        '{source_table}'::STRING    AS source_table,
+        '{namespace}'::STRING       AS namespace,
+        PARSE_JSON($1)              AS payload
       FROM @{SF_STAGE}
     )
     FILES = ('{s3_key}')
     FILE_FORMAT = (FORMAT_NAME = {SF_FILE_FORMAT})
     ON_ERROR = 'CONTINUE';
     """
-    SnowflakeHook(snowflake_conn_id=SNOWFLAKE_CONN_ID).run(sql)
+    with SnowflakeClient() as sf:
+        sf.execute(sql, label=f"copy:{facility}:{source_table or 'unknown'}")
+
 
 def _prepare_jobs(facility, **context):
     return build_jobs_for_facility_wrapped(facility)
 
 def merge_clean(facility, **context):
-
-    raw_table = f"{sf_schema(facility, 'RAW')}.EVENTS_RAW"
+    raw_table   = f"{sf_schema(facility, 'RAW')}.EVENTS_RAW"
     clean_table = f"{sf_schema(facility, 'CLEAN')}.EVENTS"
 
     sql = f"""
@@ -560,9 +662,9 @@ def merge_clean(facility, **context):
             f.value                       AS payload,
             ingested_at
         FROM {raw_table} AS r,
-            LATERAL FLATTEN(input => r.payload) AS f
+             LATERAL FLATTEN(input => r.payload) AS f
         WHERE f.value:id IS NOT NULL
-        AND NULLIF(TRIM(f.value:id::STRING), '') IS NOT NULL
+          AND NULLIF(TRIM(f.value:id::STRING), '') IS NOT NULL
         QUALIFY ROW_NUMBER() OVER (
             PARTITION BY f.value:id::STRING
             ORDER BY ingested_at DESC
@@ -576,24 +678,16 @@ def merge_clean(facility, **context):
         payload     = s.payload,
         ingested_at = s.ingested_at
     WHEN NOT MATCHED THEN INSERT (
-        event_id,
-        event_time,
-        event_type,
-        amount,
-        payload,
-        ingested_at
+        event_id, event_time, event_type, amount, payload, ingested_at
     )
     VALUES (
-        s.event_id,
-        s.event_time,
-        s.event_type,
-        s.amount,
-        s.payload,
-        s.ingested_at
+        s.event_id, s.event_time, s.event_type, s.amount, s.payload, s.ingested_at
     );
     """
-    SnowflakeHook(snowflake_conn_id=SNOWFLAKE_CONN_ID).run(sql)    
+    with SnowflakeClient() as sf:
+        sf.execute(sql, label=f"merge_clean:{facility}")
 
+        
 def _extract_all(**context):
     jobs_wrapped = context["ti"].xcom_pull(task_ids="prepare_model_jobs")
     results = []

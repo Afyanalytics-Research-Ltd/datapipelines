@@ -154,71 +154,71 @@ def extract_from_gsheet(**context):
 # LOAD WITH COPY INTO (PRODUCTION READY)
 # ----------------------------
 def load_to_snowflake(**context):
-    # pass
-    client = SnowflakeClient()
-    file_path = context["ti"].xcom_pull(task_ids="extract_gsheet", key="file_path")
+    pass
+    # client = SnowflakeClient()
+    # file_path = context["ti"].xcom_pull(task_ids="extract_gsheet", key="file_path")
     
-    if not file_path or not os.path.exists(file_path):
-        raise ValueError(f"Clean CSV file not found at {file_path}")
+    # if not file_path or not os.path.exists(file_path):
+    #     raise ValueError(f"Clean CSV file not found at {file_path}")
     
-    row_count = context["ti"].xcom_pull(task_ids="extract_gsheet", key="row_count")
-    print(f"Loading {row_count} rows from {file_path}")
+    # row_count = context["ti"].xcom_pull(task_ids="extract_gsheet", key="row_count")
+    # print(f"Loading {row_count} rows from {file_path}")
     
-    # 1. Create file format for robust CSV handling
-    file_format_sql = """
-    CREATE OR REPLACE FILE FORMAT gsheet_csv_format
-    TYPE = CSV
-    FIELD_DELIMITER = ','
-    SKIP_HEADER = 1
-    FIELD_OPTIONALLY_ENCLOSED_BY = '"'
-    NULL_IF = ('', 'NULL', 'null', 'NaN', 'nan')
-    EMPTY_FIELD_AS_NULL = TRUE
-    ERROR_ON_COLUMN_COUNT_MISMATCH = FALSE;
-    """
-    client.execute(file_format_sql)
+    # # 1. Create file format for robust CSV handling
+    # file_format_sql = """
+    # CREATE OR REPLACE FILE FORMAT gsheet_csv_format
+    # TYPE = CSV
+    # FIELD_DELIMITER = ','
+    # SKIP_HEADER = 1
+    # FIELD_OPTIONALLY_ENCLOSED_BY = '"'
+    # NULL_IF = ('', 'NULL', 'null', 'NaN', 'nan')
+    # EMPTY_FIELD_AS_NULL = TRUE
+    # ERROR_ON_COLUMN_COUNT_MISMATCH = FALSE;
+    # """
+    # client.execute(file_format_sql)
     
-    # 2. Create temporary stage
-    stage_sql = """
-        CREATE OR REPLACE TEMPORARY STAGE gsheet_temp_stage
-        FILE_FORMAT = gsheet_csv_format
-    """
-    client.execute(stage_sql)
+    # # 2. Create temporary stage
+    # stage_sql = """
+    #     CREATE OR REPLACE TEMPORARY STAGE gsheet_temp_stage
+    #     FILE_FORMAT = gsheet_csv_format
+    # """
+    # client.execute(stage_sql)
     
-    # 3. Upload file to stage
-    upload_sql = f"""
-        PUT file://{file_path} @gsheet_temp_stage AUTO_COMPRESS=FALSE OVERWRITE=TRUE
-    """
-    client.execute(upload_sql)
+    # # 3. Upload file to stage
+    # upload_sql = f"""
+    #     PUT file://{file_path} @gsheet_temp_stage AUTO_COMPRESS=FALSE OVERWRITE=TRUE
+    # """
+    # client.execute(upload_sql)
     
-    # 4. Truncate table before loading fresh data
-    truncate_sql = f"TRUNCATE TABLE {SNOWFLAKE_TABLE}"
-    client.execute(truncate_sql)
+    # # 4. Truncate table before loading fresh data
+    # truncate_sql = f"TRUNCATE TABLE {SNOWFLAKE_TABLE}"
+    # client.execute(truncate_sql)
     
-    # 5. COPY INTO with error handling
-    copy_sql = f"""
-        COPY INTO {SNOWFLAKE_TABLE}
-        FROM @gsheet_temp_stage
-        FILE_FORMAT = (FORMAT_NAME = 'gsheet_csv_format')
-        ON_ERROR = 'CONTINUE'
-        PURGE = TRUE
-    """
-    client.execute(copy_sql)
+    # # 5. COPY INTO with error handling
+    # copy_sql = f"""
+    #     COPY INTO {SNOWFLAKE_TABLE}
+    #     FROM @gsheet_temp_stage
+    #     FILE_FORMAT = (FORMAT_NAME = 'gsheet_csv_format')
+    #     ON_ERROR = 'CONTINUE'
+    #     PURGE = TRUE
+    # """
+    # client.execute(copy_sql)
     
-    # 6. Verify load
-    verify_sql = f"SELECT COUNT(*) as loaded_rows FROM {SNOWFLAKE_TABLE}"
-    result = client.query(verify_sql)
-    loaded_count = result['LOADED_ROWS'][0]
+    # # 6. Verify load
+    # verify_sql = f"SELECT COUNT(*) as loaded_rows FROM {SNOWFLAKE_TABLE}"
+    # result = client.query(verify_sql)
+    # loaded_count = result['LOADED_ROWS'][0]
     
-    print(f"Successfully loaded {loaded_count} rows into {SNOWFLAKE_TABLE}")
+    # print(f"Successfully loaded {loaded_count} rows into {SNOWFLAKE_TABLE}")
     
-    # Cleanup
-    client.execute("REMOVE @gsheet_temp_stage")
+    # # Cleanup
+    # client.execute("REMOVE @gsheet_temp_stage")
     
-    # Remove local file
-    try:
-        os.remove(file_path)
-    except:
-        pass
+    # # Remove local file
+    # try:
+    #     os.remove(file_path)
+    # except:
+    #     pass
 
 # ----------------------------
 # DAG DEFINITION
