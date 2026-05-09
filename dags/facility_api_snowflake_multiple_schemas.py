@@ -702,7 +702,7 @@ def merge_clean(**context):
         s.ingested_at
     );
     """
-    with SnowflakeClient(schema_=sf_schema(facility, 'RAW')) as sf:
+    with SnowflakeClient() as sf:
         sf.execute(sql, label=f"merge_clean:{facility}")
 
 with DAG(

@@ -2,8 +2,10 @@
 from __future__ import annotations
 import gzip
 import hashlib
+import os
 from contextlib import contextmanager
 from io import BytesIO
+from pathlib import Path
 import json
 import time
 import inflect
@@ -13,6 +15,8 @@ import requests
 from requests.exceptions import Timeout, ConnectionError, HTTPError
 import re
 import gspread
+import snowflake.connector
+from dotenv import load_dotenv
 from datetime import datetime, timedelta, timezone
 from airflow import DAG
 from airflow.models import Variable, Param
@@ -20,7 +24,9 @@ from airflow.utils.trigger_rule import TriggerRule
 from airflow.operators.python import PythonOperator
 from airflow.providers.amazon.aws.hooks.s3 import S3Hook
 from airflow.hooks.base import BaseHook
-from airflow.providers.snowflake.hooks.snowflake import SnowflakeHook
+
+load_dotenv(Path(__file__).parent.parent.parent.parent / ".env")
+
 log = logging.getLogger(__name__)
 p = inflect.engine()
 
@@ -50,19 +56,27 @@ SF_FILE_FORMAT = f"{SF_DB}.{SF_SHARED_SCHEMA}.JSON_FF"
 
 # ── Snowflake client ────────────────────────────────────────────────────
 class SnowflakeClient:
-    """Thin wrapper around Airflow's SnowflakeHook with logging + a
+    """Thin wrapper around snowflake.connector with logging + a
     consistent interface for both reads (`query`) and writes (`execute`).
-    Use one instance per task — connections are short-lived."""
+    Use one instance per task — connections are short-lived.
+    Authenticates via key-pair using SNOWFLAKE_* env vars."""
 
-    def __init__(self, conn_id: str = SNOWFLAKE_CONN_ID):
-        self.conn_id = conn_id
-        self._hook = SnowflakeHook(snowflake_conn_id=conn_id)
-        self._conn = None
+    def __init__(self, schema_: str | None = None):
+        with open(os.getenv("SNOWFLAKE_PRIVATE_KEY_PATH").strip(), "rb") as key:
+            private_key = key.read()
+
+        self._conn = snowflake.connector.connect(
+            user=os.getenv("SNOWFLAKE_USER").strip(),
+            account=os.getenv("SNOWFLAKE_ACCOUNT").strip(),
+            warehouse=os.getenv("SNOWFLAKE_WAREHOUSE").strip(),
+            database=os.getenv("SNOWFLAKE_DATABASE").strip(),
+            schema=schema_ if schema_ else os.getenv("SNOWFLAKE_SCHEMA", "PUBLIC").strip(),
+            private_key_file=os.getenv("SNOWFLAKE_PRIVATE_KEY_PATH").strip(),
+        )
 
     # ── connection lifecycle ────────────────────────────────────────────
-    def _get_conn(self):
-        if self._conn is None:
-            self._conn = self._hook.get_conn()
+    @property
+    def conn(self):
         return self._conn
 
     def close(self):
@@ -75,7 +89,7 @@ class SnowflakeClient:
 
     @contextmanager
     def _cursor(self):
-        cur = self._get_conn().cursor()
+        cur = self._conn.cursor()
         try:
             yield cur
         finally:
@@ -635,7 +649,7 @@ def copy_one_into_snowflake(**job_result):
     FILE_FORMAT = (FORMAT_NAME = {SF_FILE_FORMAT})
     ON_ERROR = 'CONTINUE';
     """
-    with SnowflakeClient() as sf:
+    with SnowflakeClient(schema_=sf_schema(facility, 'RAW')) as sf:
         sf.execute(sql, label=f"copy:{facility}:{source_table or 'events'}")
 
 def merge_clean(**context):
@@ -688,7 +702,7 @@ def merge_clean(**context):
         s.ingested_at
     );
     """
-    with SnowflakeClient() as sf:
+    with SnowflakeClient(schema_=sf_schema(facility, 'RAW')) as sf:
         sf.execute(sql, label=f"merge_clean:{facility}")
 
 with DAG(
