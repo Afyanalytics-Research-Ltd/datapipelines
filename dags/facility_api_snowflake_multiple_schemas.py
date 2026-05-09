@@ -30,7 +30,7 @@ load_dotenv(Path(__file__).parent.parent.parent.parent / ".env")
 log = logging.getLogger(__name__)
 p = inflect.engine()
 
-DAG_ID = "facility_api_to_snowflake"
+DAG_ID = "facility_api_to_snowflake_multiple_schemas"
 
 # facility -> api params
 FACILITIES = {
