@@ -1,11 +1,14 @@
 # dags/facility_api_to_snowflake.py
 from __future__ import annotations
 import gzip
+import hashlib
+from contextlib import contextmanager
 from io import BytesIO
 import json
 import time
 import inflect
 import logging
+import pandas as pd
 import requests
 from requests.exceptions import Timeout, ConnectionError, HTTPError
 import re
@@ -39,10 +42,104 @@ SNOWFLAKE_CONN_ID = "snowflake_default"
 S3_BUCKET = "collabmedbucket"
 S3_PREFIX = "raw/facilities"  # s3://bucket/raw/facilities/facility_id=.../dt=.../*.jsonl
 
-SF_DB = "HOSPITALS" 
+SF_DB = "HOSPITALS"
 SF_SHARED_SCHEMA = "SHARED"
 SF_STAGE = f"{SF_DB}.{SF_SHARED_SCHEMA}.FACILITY_RAW_STAGE"
 SF_FILE_FORMAT = f"{SF_DB}.{SF_SHARED_SCHEMA}.JSON_FF"
+
+
+# ── Snowflake client ────────────────────────────────────────────────────
+class SnowflakeClient:
+    """Thin wrapper around Airflow's SnowflakeHook with logging + a
+    consistent interface for both reads (`query`) and writes (`execute`).
+    Use one instance per task — connections are short-lived."""
+
+    def __init__(self, conn_id: str = SNOWFLAKE_CONN_ID):
+        self.conn_id = conn_id
+        self._hook = SnowflakeHook(snowflake_conn_id=conn_id)
+        self._conn = None
+
+    # ── connection lifecycle ────────────────────────────────────────────
+    def _get_conn(self):
+        if self._conn is None:
+            self._conn = self._hook.get_conn()
+        return self._conn
+
+    def close(self):
+        if self._conn is not None:
+            try:
+                self._conn.close()
+            except Exception:
+                pass
+            self._conn = None
+
+    @contextmanager
+    def _cursor(self):
+        cur = self._get_conn().cursor()
+        try:
+            yield cur
+        finally:
+            cur.close()
+
+    # ── public API ──────────────────────────────────────────────────────
+    def query(self, sql: str, label: str | None = None) -> pd.DataFrame:
+        """Run a SELECT and return a DataFrame. Decimal cols → float."""
+        label = label or f"q:{hashlib.md5(sql.encode()).hexdigest()[:8]}"
+        snippet = " ".join(sql.split())[:140]
+        log.info("▶ %-22s SELECT    | %s…", label, snippet)
+        t0 = time.perf_counter()
+        try:
+            with self._cursor() as cur:
+                cur.execute(sql)
+                df = cur.fetch_pandas_all()
+            elapsed = time.perf_counter() - t0
+
+            from decimal import Decimal
+            decimal_cols = []
+            for col in df.columns:
+                if df[col].dtype == "object":
+                    nn = df[col].dropna()
+                    if len(nn) and isinstance(nn.iloc[0], Decimal):
+                        df[col] = df[col].astype(float)
+                        decimal_cols.append(col)
+            log.info(
+                "✓ %-22s done      | %s rows · %d cols · %.2fs%s",
+                label, f"{len(df):,}", df.shape[1], elapsed,
+                f" · coerced {len(decimal_cols)} Decimal cols" if decimal_cols else "",
+            )
+            return df
+        except Exception as e:
+            log.exception("✗ %-22s SELECT failed | %.2fs · %s",
+                          label, time.perf_counter() - t0, e)
+            raise
+
+    def execute(self, sql: str, label: str | None = None) -> dict:
+        """Run a DDL/DML (COPY, MERGE, INSERT, etc.). Returns the
+        cursor's rowcount + sfqid so callers can audit / log."""
+        label = label or f"x:{hashlib.md5(sql.encode()).hexdigest()[:8]}"
+        snippet = " ".join(sql.split())[:140]
+        log.info("▶ %-22s WRITE     | %s…", label, snippet)
+        t0 = time.perf_counter()
+        try:
+            with self._cursor() as cur:
+                cur.execute(sql)
+                rowcount = cur.rowcount
+                sfqid = cur.sfqid
+            elapsed = time.perf_counter() - t0
+            log.info("✓ %-22s done      | rowcount=%s · sfqid=%s · %.2fs",
+                     label, rowcount, sfqid, elapsed)
+            if elapsed > 30:
+                log.warning("⚠ %-22s slow write | %.2fs", label, elapsed)
+            return {"rowcount": rowcount, "sfqid": sfqid, "elapsed_s": elapsed}
+        except Exception as e:
+            log.exception("✗ %-22s WRITE failed | %.2fs · %s",
+                          label, time.perf_counter() - t0, e)
+            raise
+
+    # context-manager sugar so you can `with SnowflakeClient() as sf:` if you want
+    def __enter__(self): return self
+    def __exit__(self, *a): self.close()
+
 
 def get_gsheet_client():
     # Store service account JSON in Airflow Variable GOOGLE_SA_JSON
@@ -402,15 +499,15 @@ def extract_one_model(job: dict, **context):
         "updated_since": job["updated_since"],
         "limit": job["limit"],
     }
-    
 
-    rows = extract_all_pages(url=url,headers=headers, body=body, 
-                             singular_body=singular_body, 
+
+    rows = extract_all_pages(url=url,headers=headers, body=body,
+                             singular_body=singular_body,
                              double_namespace_body=double_namespace_body,
                              double_namespace_singular_body=double_namespace_singular_body,
                              timeout=60, max_pages=10000)
 
-    
+
     # ✅ S3 key per model namespace
     ingested_at = datetime.now(timezone.utc)
     dt = ingested_at.date().isoformat()
@@ -538,7 +635,8 @@ def copy_one_into_snowflake(**job_result):
     FILE_FORMAT = (FORMAT_NAME = {SF_FILE_FORMAT})
     ON_ERROR = 'CONTINUE';
     """
-    SnowflakeHook(snowflake_conn_id=SNOWFLAKE_CONN_ID).run(sql)
+    with SnowflakeClient() as sf:
+        sf.execute(sql, label=f"copy:{facility}:{source_table or 'events'}")
 
 def merge_clean(**context):
     facility = context["params"]["facility"]
@@ -590,7 +688,8 @@ def merge_clean(**context):
         s.ingested_at
     );
     """
-    SnowflakeHook(snowflake_conn_id=SNOWFLAKE_CONN_ID).run(sql)    
+    with SnowflakeClient() as sf:
+        sf.execute(sql, label=f"merge_clean:{facility}")
 
 with DAG(
     dag_id=DAG_ID,
@@ -603,7 +702,7 @@ with DAG(
     },
     tags=["facility", "api", "snowflake"],
 ) as dag:
-    
+
     t_prepare = PythonOperator(
         task_id="prepare_model_jobs",
         python_callable=lambda **context: build_jobs_for_facility_wrapped(context["params"]["facility"]),
