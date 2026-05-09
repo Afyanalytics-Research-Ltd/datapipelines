@@ -8,7 +8,6 @@ from io import BytesIO
 from pathlib import Path
 import json
 import time
-import inflect
 import logging
 import pandas as pd
 import requests
@@ -28,7 +27,21 @@ from airflow.hooks.base import BaseHook
 load_dotenv(Path(__file__).parent.parent.parent.parent / ".env")
 
 log = logging.getLogger(__name__)
-p = inflect.engine()
+# at the top of the DAG file — DELETE both of these:
+# import inflect
+# p = inflect.engine()
+
+
+# instead, define this once near the other helpers:
+_inflect_engine = None
+def _get_inflect():
+    """Lazy-load inflect — its `import` triggers typeguard AST work
+    that's too slow for Airflow's DAG-parse budget."""
+    global _inflect_engine
+    if _inflect_engine is None:
+        import inflect                         # ← imported on first call only
+        _inflect_engine = inflect.engine()
+    return _inflect_engine
 
 DAG_ID = "facility_api_to_snowflake_multiple_schemas"
 
