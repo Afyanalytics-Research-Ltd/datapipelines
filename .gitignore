@@ -67,3 +67,4 @@ failed_mapped_logs/*
 !dags/jsons/*.json
 *.csv
 rsa_key*
+*.pdf

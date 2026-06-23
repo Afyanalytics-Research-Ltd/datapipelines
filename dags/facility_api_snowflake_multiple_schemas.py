@@ -197,7 +197,7 @@ def namespace_to_singular_model(namespace: str) -> str:
     if not parts:
         return namespace
     class_name = parts[-1]
-    singular = p.singular_noun(class_name)
+    singular = _get_inflect().singular_noun(class_name)
     parts[-1] = singular if singular else class_name
     return "\\".join(parts)
 
