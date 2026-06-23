@@ -165,7 +165,10 @@ NAMESPACE_MAP: dict[str, dict] = {
     r"Ignite\Finance\Entities\Dispatches":           {"v3": r"App\Models\Dispatch",             "transform": "generic"},
     r"Ignite\Finance\Entities\Dispatch":             {"v3": r"App\Models\Dispatch",             "transform": "generic"},
 
-    # Reception
+    # Reception — insertable models first, then read-only (no insert in V3 gateway)
+    r"Ignite\Reception\Entities\Customers":          {"v3": r"App\Models\Customer",             "transform": "generic"},
+    r"Ignite\Reception\Entities\Customer":           {"v3": r"App\Models\Customer",             "transform": "generic"},
+    # read-only in V3 reception gateway (no insert op) — kept for completeness / future enablement
     r"Ignite\Reception\Entities\Patients":           {"v3": r"App\Models\Patient",              "transform": "reception_patient"},
     r"Ignite\Reception\Entities\Patient":            {"v3": r"App\Models\Patient",              "transform": "reception_patient"},
     r"Ignite\Reception\Entities\Visits":             {"v3": r"App\Models\Visit",                "transform": "reception_visit"},
@@ -180,6 +183,26 @@ NAMESPACE_MAP: dict[str, dict] = {
     r"Ignite\Reception\Entities\PatientDocument":    {"v3": r"App\Models\PatientDocument",      "transform": "generic"},
     r"Ignite\Reception\Entities\PatientDependants":  {"v3": r"App\Models\PatientDependant",     "transform": "generic"},
     r"Ignite\Reception\Entities\PatientDependant":   {"v3": r"App\Models\PatientDependant",     "transform": "generic"},
+    r"Ignite\Reception\Entities\PatientGuarantors":  {"v3": r"App\Models\PatientGuarantor",     "transform": "generic"},
+    r"Ignite\Reception\Entities\PatientGuarantor":   {"v3": r"App\Models\PatientGuarantor",     "transform": "generic"},
+    r"Ignite\Reception\Entities\PatientFollowups":   {"v3": r"App\Models\PatientFollowup",      "transform": "generic"},
+    r"Ignite\Reception\Entities\PatientFollowup":    {"v3": r"App\Models\PatientFollowup",      "transform": "generic"},
+    r"Ignite\Reception\Entities\PatientSamples":     {"v3": r"App\Models\PatientSample",        "transform": "generic"},
+    r"Ignite\Reception\Entities\PatientSample":      {"v3": r"App\Models\PatientSample",        "transform": "generic"},
+    r"Ignite\Reception\Entities\PatientRandomNotes": {"v3": r"App\Models\PatientRandomNote",    "transform": "generic"},
+    r"Ignite\Reception\Entities\PatientRandomNote":  {"v3": r"App\Models\PatientRandomNote",    "transform": "generic"},
+    r"Ignite\Reception\Entities\PatientConsents":    {"v3": r"App\Models\PatientConsent",       "transform": "generic"},
+    r"Ignite\Reception\Entities\PatientConsent":     {"v3": r"App\Models\PatientConsent",       "transform": "generic"},
+    r"Ignite\Reception\Entities\MorgueAdmissions":   {"v3": r"App\Models\MorgueAdmission",      "transform": "generic"},
+    r"Ignite\Reception\Entities\MorgueAdmission":    {"v3": r"App\Models\MorgueAdmission",      "transform": "generic"},
+    r"Ignite\Reception\Entities\VisitDestinations":  {"v3": r"App\Models\VisitDestination",     "transform": "generic"},
+    r"Ignite\Reception\Entities\VisitDestination":   {"v3": r"App\Models\VisitDestination",     "transform": "generic"},
+    r"Ignite\Reception\Entities\VisitConsultants":   {"v3": r"App\Models\VisitConsultant",      "transform": "generic"},
+    r"Ignite\Reception\Entities\VisitConsultant":    {"v3": r"App\Models\VisitConsultant",      "transform": "generic"},
+    r"Ignite\Reception\Entities\VisitPrecharges":    {"v3": r"App\Models\VisitPrecharge",       "transform": "generic"},
+    r"Ignite\Reception\Entities\VisitPrecharge":     {"v3": r"App\Models\VisitPrecharge",       "transform": "generic"},
+    r"Ignite\Reception\Entities\Queues":             {"v3": r"App\Models\Queue",                "transform": "generic"},
+    r"Ignite\Reception\Entities\Queue":              {"v3": r"App\Models\Queue",                "transform": "generic"},
     r"Ignite\Reception\Entities\Referrals":          {"v3": r"App\Models\Referral",             "transform": "generic"},
     r"Ignite\Reception\Entities\Referral":           {"v3": r"App\Models\Referral",             "transform": "generic"},
 
@@ -254,15 +277,117 @@ NAMESPACE_MAP: dict[str, dict] = {
     r"Ignite\Users\Entities\Users":                  {"v3": r"App\Models\User",                 "transform": "settings_user"},
     r"Ignite\Users\Entities\User":                   {"v3": r"App\Models\User",                 "transform": "settings_user"},
 
-    # Theatre
-    r"Ignite\Theatre\Entities\TheatreBookings":      {"v3": r"App\Models\TheatreBooking",       "transform": "theatre_booking"},
-    r"Ignite\Theatre\Entities\TheatreBooking":       {"v3": r"App\Models\TheatreBooking",       "transform": "theatre_booking"},
-    r"Ignite\Theatre\Entities\Theatres":             {"v3": r"App\Models\Theatre",              "transform": "theatre_theatre"},
-    r"Ignite\Theatre\Entities\Theatre":              {"v3": r"App\Models\Theatre",              "transform": "theatre_theatre"},
-    r"Ignite\Theatre\Entities\TheatreOperations":    {"v3": r"App\Models\TheatreOperation",     "transform": "generic"},
-    r"Ignite\Theatre\Entities\TheatreOperation":     {"v3": r"App\Models\TheatreOperation",     "transform": "generic"},
-    r"Ignite\Theatre\Entities\TheatreSchedules":     {"v3": r"App\Models\TheatreSchedule",      "transform": "generic"},
-    r"Ignite\Theatre\Entities\TheatreSchedule":      {"v3": r"App\Models\TheatreSchedule",      "transform": "generic"},
+    # Theatre — lookup tables first, then transactional
+    r"Ignite\Theatre\Entities\TheatreTypes":             {"v3": r"App\Models\TheatreType",           "transform": "generic"},
+    r"Ignite\Theatre\Entities\TheatreType":              {"v3": r"App\Models\TheatreType",           "transform": "generic"},
+    r"Ignite\Theatre\Entities\TheatreMedicTypes":        {"v3": r"App\Models\TheatreMedicType",      "transform": "generic"},
+    r"Ignite\Theatre\Entities\TheatreMedicType":         {"v3": r"App\Models\TheatreMedicType",      "transform": "generic"},
+    r"Ignite\Theatre\Entities\TheatrePaymentTypes":      {"v3": r"App\Models\TheatrePaymentType",    "transform": "generic"},
+    r"Ignite\Theatre\Entities\TheatrePaymentType":       {"v3": r"App\Models\TheatrePaymentType",    "transform": "generic"},
+    r"Ignite\Theatre\Entities\TheatreSchedulingStatuses": {"v3": r"App\Models\TheatreSchedulingStatus", "transform": "generic"},
+    r"Ignite\Theatre\Entities\TheatreSchedulingStatus":  {"v3": r"App\Models\TheatreSchedulingStatus", "transform": "generic"},
+    r"Ignite\Theatre\Entities\Theatres":                 {"v3": r"App\Models\Theatre",              "transform": "theatre_theatre"},
+    r"Ignite\Theatre\Entities\Theatre":                  {"v3": r"App\Models\Theatre",              "transform": "theatre_theatre"},
+    r"Ignite\Theatre\Entities\TheatreBookings":          {"v3": r"App\Models\TheatreBooking",       "transform": "theatre_booking"},
+    r"Ignite\Theatre\Entities\TheatreBooking":           {"v3": r"App\Models\TheatreBooking",       "transform": "theatre_booking"},
+    r"Ignite\Theatre\Entities\TheatreOperations":        {"v3": r"App\Models\TheatreOperation",     "transform": "generic"},
+    r"Ignite\Theatre\Entities\TheatreOperation":         {"v3": r"App\Models\TheatreOperation",     "transform": "generic"},
+    r"Ignite\Theatre\Entities\TheatreSchedules":         {"v3": r"App\Models\TheatreSchedule",      "transform": "generic"},
+    r"Ignite\Theatre\Entities\TheatreSchedule":          {"v3": r"App\Models\TheatreSchedule",      "transform": "generic"},
+
+    # Inpatient — ward/bed lookup tables, then transactional
+    r"Ignite\Inpatient\Entities\AdmissionTypes":         {"v3": r"App\Models\AdmissionType",        "transform": "generic"},
+    r"Ignite\Inpatient\Entities\AdmissionType":          {"v3": r"App\Models\AdmissionType",        "transform": "generic"},
+    r"Ignite\Inpatient\Entities\DischargeTypes":         {"v3": r"App\Models\DischargeType",        "transform": "generic"},
+    r"Ignite\Inpatient\Entities\DischargeType":          {"v3": r"App\Models\DischargeType",        "transform": "generic"},
+    r"Ignite\Inpatient\Entities\BedTypes":               {"v3": r"App\Models\BedType",              "transform": "generic"},
+    r"Ignite\Inpatient\Entities\BedType":                {"v3": r"App\Models\BedType",              "transform": "generic"},
+    r"Ignite\Inpatient\Entities\Beds":                   {"v3": r"App\Models\Bed",                  "transform": "generic"},
+    r"Ignite\Inpatient\Entities\Bed":                    {"v3": r"App\Models\Bed",                  "transform": "generic"},
+    r"Ignite\Inpatient\Entities\Wards":                  {"v3": r"App\Models\Ward",                 "transform": "generic"},
+    r"Ignite\Inpatient\Entities\Ward":                   {"v3": r"App\Models\Ward",                 "transform": "generic"},
+    r"Ignite\Inpatient\Entities\WardCharges":            {"v3": r"App\Models\WardCharge",           "transform": "generic"},
+    r"Ignite\Inpatient\Entities\WardCharge":             {"v3": r"App\Models\WardCharge",           "transform": "generic"},
+
+    # Settings → Core (additional lookup tables from gateway list)
+    r"Ignite\Settings\Entities\ServiceDestinations":     {"v3": r"App\Models\ServiceDestination",   "transform": "generic"},
+    r"Ignite\Settings\Entities\ServiceDestination":      {"v3": r"App\Models\ServiceDestination",   "transform": "generic"},
+    r"Ignite\Settings\Entities\DestinationTypes":        {"v3": r"App\Models\DestinationType",      "transform": "generic"},
+    r"Ignite\Settings\Entities\DestinationType":         {"v3": r"App\Models\DestinationType",      "transform": "generic"},
+    r"Ignite\Settings\Entities\PurposeOfVisits":         {"v3": r"App\Models\PurposeOfVisit",       "transform": "generic"},
+    r"Ignite\Settings\Entities\PurposeOfVisit":          {"v3": r"App\Models\PurposeOfVisit",       "transform": "generic"},
+    r"Ignite\Settings\Entities\PartnerInstitutions":     {"v3": r"App\Models\PartnerInstitution",   "transform": "generic"},
+    r"Ignite\Settings\Entities\PartnerInstitution":      {"v3": r"App\Models\PartnerInstitution",   "transform": "generic"},
+    r"Ignite\Settings\Entities\PartnerStaff":            {"v3": r"App\Models\PartnerStaff",         "transform": "generic"},
+    r"Ignite\Settings\Entities\EmployeeCategories":      {"v3": r"App\Models\EmployeeCategory",     "transform": "generic"},
+    r"Ignite\Settings\Entities\EmployeeCategory":        {"v3": r"App\Models\EmployeeCategory",     "transform": "generic"},
+    r"Ignite\Settings\Entities\CategoryFilters":         {"v3": r"App\Models\CategoryFilter",       "transform": "generic"},
+    r"Ignite\Settings\Entities\CategoryFilter":          {"v3": r"App\Models\CategoryFilter",       "transform": "generic"},
+    r"Ignite\Settings\Entities\DocumentTypes":           {"v3": r"App\Models\DocumentType",         "transform": "generic"},
+    r"Ignite\Settings\Entities\DocumentType":            {"v3": r"App\Models\DocumentType",         "transform": "generic"},
+    r"Ignite\Settings\Entities\Themes":                  {"v3": r"App\Models\Theme",                "transform": "generic"},
+    r"Ignite\Settings\Entities\Theme":                   {"v3": r"App\Models\Theme",                "transform": "generic"},
+    r"Ignite\Settings\Entities\AgeGroups":               {"v3": r"App\Models\AgeGroup",             "transform": "generic"},
+    r"Ignite\Settings\Entities\AgeGroup":                {"v3": r"App\Models\AgeGroup",             "transform": "generic"},
+    r"Ignite\Settings\Entities\ApprovalLevels":          {"v3": r"App\Models\ApprovalLevel",        "transform": "generic"},
+    r"Ignite\Settings\Entities\ApprovalLevel":           {"v3": r"App\Models\ApprovalLevel",        "transform": "generic"},
+
+    # Finance → Finance service (additional lookup tables)
+    r"Ignite\Finance\Entities\PaymentModes":             {"v3": r"App\Models\PaymentMode",          "transform": "generic"},
+    r"Ignite\Finance\Entities\PaymentMode":              {"v3": r"App\Models\PaymentMode",          "transform": "generic"},
+    r"Ignite\Finance\Entities\PaymentTerms":             {"v3": r"App\Models\PaymentTerm",          "transform": "generic"},
+    r"Ignite\Finance\Entities\PaymentTerm":              {"v3": r"App\Models\PaymentTerm",          "transform": "generic"},
+    r"Ignite\Finance\Entities\TaxCategories":            {"v3": r"App\Models\TaxCategory",          "transform": "generic"},
+    r"Ignite\Finance\Entities\TaxCategory":              {"v3": r"App\Models\TaxCategory",          "transform": "generic"},
+    r"Ignite\Finance\Entities\GlAccountGroups":          {"v3": r"App\Models\GlAccountGroup",       "transform": "generic"},
+    r"Ignite\Finance\Entities\GlAccountGroup":           {"v3": r"App\Models\GlAccountGroup",       "transform": "generic"},
+    r"Ignite\Finance\Entities\GlAccountTypes":           {"v3": r"App\Models\GlAccountType",        "transform": "generic"},
+    r"Ignite\Finance\Entities\GlAccountType":            {"v3": r"App\Models\GlAccountType",        "transform": "generic"},
+    r"Ignite\Finance\Entities\Charges":                  {"v3": r"App\Models\Charge",               "transform": "generic"},
+    r"Ignite\Finance\Entities\Charge":                   {"v3": r"App\Models\Charge",               "transform": "generic"},
+    # Customer lives in reception service in V3 — V2 namespace may be Reception or Finance
+
+    # Evaluation → Evaluation service (additional lookup/reference tables)
+    r"Ignite\Evaluation\Entities\DiagnosisCodes":        {"v3": r"App\Models\DiagnosisCode",        "transform": "generic"},
+    r"Ignite\Evaluation\Entities\DiagnosisCode":         {"v3": r"App\Models\DiagnosisCode",        "transform": "generic"},
+    r"Ignite\Evaluation\Entities\CriticalValues":        {"v3": r"App\Models\CriticalValue",        "transform": "generic"},
+    r"Ignite\Evaluation\Entities\CriticalValue":         {"v3": r"App\Models\CriticalValue",        "transform": "generic"},
+    r"Ignite\Evaluation\Entities\Icd10Types":            {"v3": r"App\Models\Icd10Type",            "transform": "generic"},
+    r"Ignite\Evaluation\Entities\Icd10Type":             {"v3": r"App\Models\Icd10Type",            "transform": "generic"},
+    r"Ignite\Evaluation\Entities\Icd10Categories":       {"v3": r"App\Models\Icd10Category",        "transform": "generic"},
+    r"Ignite\Evaluation\Entities\Icd10Category":         {"v3": r"App\Models\Icd10Category",        "transform": "generic"},
+    r"Ignite\Evaluation\Entities\Icd10Subcategories":    {"v3": r"App\Models\Icd10Subcategory",     "transform": "generic"},
+    r"Ignite\Evaluation\Entities\Icd10Subcategory":      {"v3": r"App\Models\Icd10Subcategory",     "transform": "generic"},
+    r"Ignite\Evaluation\Entities\BioReferenceRanges":    {"v3": r"App\Models\BioReferenceRange",    "transform": "generic"},
+    r"Ignite\Evaluation\Entities\BioReferenceRange":     {"v3": r"App\Models\BioReferenceRange",    "transform": "generic"},
+    r"Ignite\Evaluation\Entities\LabTestCategories":     {"v3": r"App\Models\LabTestCategory",      "transform": "generic"},
+    r"Ignite\Evaluation\Entities\LabTestCategory":       {"v3": r"App\Models\LabTestCategory",      "transform": "generic"},
+    r"Ignite\Evaluation\Entities\LabTestAdditives":      {"v3": r"App\Models\LabTestAdditive",      "transform": "generic"},
+    r"Ignite\Evaluation\Entities\LabTestAdditive":       {"v3": r"App\Models\LabTestAdditive",      "transform": "generic"},
+    r"Ignite\Evaluation\Entities\LabTestUnits":          {"v3": r"App\Models\LabTestUnit",          "transform": "generic"},
+    r"Ignite\Evaluation\Entities\LabTestUnit":           {"v3": r"App\Models\LabTestUnit",          "transform": "generic"},
+    r"Ignite\Evaluation\Entities\EvaluationFormulae":    {"v3": r"App\Models\EvaluationFormula",    "transform": "generic"},
+    r"Ignite\Evaluation\Entities\EvaluationFormula":     {"v3": r"App\Models\EvaluationFormula",    "transform": "generic"},
+    r"Ignite\Evaluation\Entities\EvaluationMachines":    {"v3": r"App\Models\EvaluationMachine",    "transform": "generic"},
+    r"Ignite\Evaluation\Entities\EvaluationMachine":     {"v3": r"App\Models\EvaluationMachine",    "transform": "generic"},
+    r"Ignite\Evaluation\Entities\PrescriptionFrequencies": {"v3": r"App\Models\PrescriptionFrequency", "transform": "generic"},
+    r"Ignite\Evaluation\Entities\PrescriptionFrequency": {"v3": r"App\Models\PrescriptionFrequency", "transform": "generic"},
+    r"Ignite\Evaluation\Entities\PrescriptionMeasures":  {"v3": r"App\Models\PrescriptionMeasure",  "transform": "generic"},
+    r"Ignite\Evaluation\Entities\PrescriptionMeasure":   {"v3": r"App\Models\PrescriptionMeasure",  "transform": "generic"},
+    r"Ignite\Evaluation\Entities\PrescriptionRoutes":    {"v3": r"App\Models\PrescriptionRoute",    "transform": "generic"},
+    r"Ignite\Evaluation\Entities\PrescriptionRoute":     {"v3": r"App\Models\PrescriptionRoute",    "transform": "generic"},
+    r"Ignite\Evaluation\Entities\ProcedureCategoryTemplates": {"v3": r"App\Models\ProcedureCategoryTemplate", "transform": "generic"},
+    r"Ignite\Evaluation\Entities\ProcedureCategoryTemplate":  {"v3": r"App\Models\ProcedureCategoryTemplate", "transform": "generic"},
+    r"Ignite\Evaluation\Entities\ProcedureTemplates":    {"v3": r"App\Models\ProcedureTemplate",    "transform": "generic"},
+    r"Ignite\Evaluation\Entities\ProcedureTemplate":     {"v3": r"App\Models\ProcedureTemplate",    "transform": "generic"},
+    r"Ignite\Evaluation\Entities\TemplateLabs":          {"v3": r"App\Models\TemplateLab",          "transform": "generic"},
+    r"Ignite\Evaluation\Entities\TemplateLab":           {"v3": r"App\Models\TemplateLab",          "transform": "generic"},
+    r"Ignite\Evaluation\Entities\Formulations":          {"v3": r"App\Models\Formulation",          "transform": "generic"},
+    r"Ignite\Evaluation\Entities\Formulation":           {"v3": r"App\Models\Formulation",          "transform": "generic"},
+
+    # Reception → Core service (appointment categories are lookup tables)
+    r"Ignite\Reception\Entities\AppointmentCategories":  {"v3": r"App\Models\AppointmentCategory",  "transform": "generic"},
+    r"Ignite\Reception\Entities\AppointmentCategory":    {"v3": r"App\Models\AppointmentCategory",  "transform": "generic"},
 }
 
 # ─── FIELD TRANSFORMS ────────────────────────────────────────────────────────
@@ -869,14 +994,21 @@ def _fetch_available_models() -> set[str]:
 
 _IRREGULAR_PLURALS: dict[str, str] = {
     # y → ies
-    "facility":           "facilities",
-    "specialty":          "specialties",
-    "county":             "counties",
-    "category":           "categories",
-    "insurance_company":  "insurance_companies",
-    "procedure_category": "procedure_categories",
-    "product_category":   "product_categories",
-    "inventory_category": "inventory_categories",
+    "facility":                    "facilities",
+    "specialty":                   "specialties",
+    "county":                      "counties",
+    "category":                    "categories",
+    "insurance_company":           "insurance_companies",
+    "procedure_category":          "procedure_categories",
+    "product_category":            "product_categories",
+    "inventory_category":          "inventory_categories",
+    "icd10_category":              "icd10_categories",
+    "icd10_subcategory":           "icd10_subcategories",
+    "lab_test_category":           "lab_test_categories",
+    "employee_category":           "employee_categories",
+    "prescription_frequency":      "prescription_frequencies",
+    # Latin plural
+    "evaluation_formula":          "evaluation_formulae",
 }
 
 def _v3_alias(v3_namespace: str) -> str:
@@ -1468,9 +1600,10 @@ def run_migration(
     jobs: list[dict] = []
 
     # disposition buckets per facility|namespace
-    skipped_not_in_gateway: list[str] = []
-    skipped_already_done:   list[str] = []
-    skipped_dedup:          list[str] = []
+    skipped_no_insert:    list[str] = []   # in gateway but no insert permission
+    skipped_unregistered: list[str] = []   # alias not found in any gateway
+    skipped_already_done: list[str] = []
+    skipped_dedup:        list[str] = []
 
     for facility in facilities:
         cfg = V2_FACILITIES[facility]
@@ -1481,14 +1614,20 @@ def run_migration(
             v3_ns = NAMESPACE_MAP[ns]["v3"]
             alias = _v3_alias(v3_ns)
             if available_models and alias not in available_models:
-                # Show both forms that were tried so the user knows exactly what's missing
                 cls   = v3_ns.split("\\")[-1]
                 snake = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", cls).lower()
                 plurl = _IRREGULAR_PLURALS.get(snake, snake + "s")
-                tried = f"singular={snake!r}, plural={plurl!r}"
-                skipped_not_in_gateway.append(
-                    f"  {facility}|{ns}  →  tried {tried}  — neither in any gateway"
-                )
+                if alias in _gateway_model_meta:
+                    svc = _gateway_model_meta[alias].get("service", "?")
+                    ops = _gateway_model_meta[alias].get("operations", [])
+                    skipped_no_insert.append(
+                        f"  {facility}|{ns}  →  {alias!r} in {svc} [{', '.join(ops)}] — no insert op"
+                    )
+                else:
+                    tried = f"singular={snake!r}, plural={plurl!r}"
+                    skipped_unregistered.append(
+                        f"  {facility}|{ns}  →  tried {tried} — not registered in any gateway"
+                    )
                 continue
             dedup_key = (facility, v3_ns)
             if dedup_key in seen_v3:
@@ -1507,10 +1646,15 @@ def run_migration(
                 "limit":         DEFAULT_LIMIT,
             })
 
-    if skipped_not_in_gateway:
+    if skipped_no_insert:
+        log.info(
+            "SKIPPED — registered in gateway but no insert permission (%d):\n%s",
+            len(skipped_no_insert), "\n".join(skipped_no_insert),
+        )
+    if skipped_unregistered:
         log.warning(
             "SKIPPED — not registered in any gateway (%d):\n%s",
-            len(skipped_not_in_gateway), "\n".join(skipped_not_in_gateway),
+            len(skipped_unregistered), "\n".join(skipped_unregistered),
         )
     if skipped_already_done:
         log.info(
@@ -1524,9 +1668,9 @@ def run_migration(
         )
 
     log.info(
-        "Run %s — %d jobs queued | %d skipped (not in gateway) | %d already done%s",
-        run_id, len(jobs), len(skipped_not_in_gateway), len(skipped_already_done),
-        " | DRY-RUN" if dry_run else "",
+        "Run %s — %d jobs queued | %d no-insert | %d unregistered | %d already done%s",
+        run_id, len(jobs), len(skipped_no_insert), len(skipped_unregistered),
+        len(skipped_already_done), " | DRY-RUN" if dry_run else "",
     )
 
     failures: list[str] = []
@@ -1554,17 +1698,18 @@ def run_migration(
                     failures.append(_job_key(job["facility"], job["namespace"]))
 
     # ── End-of-run summary ───────────────────────────────────────────────────
-    n_ok      = len(jobs) - len(failures)
-    n_failed  = len(failures)
-    n_skipped = len(skipped_not_in_gateway)
-    n_done    = len(skipped_already_done)
+    n_ok           = len(jobs) - len(failures)
+    n_failed       = len(failures)
+    n_no_insert    = len(skipped_no_insert)
+    n_unregistered = len(skipped_unregistered)
+    n_done         = len(skipped_already_done)
 
     summary_lines = [
         "",
         "══════════════════════  MIGRATION SUMMARY  ══════════════════════",
         f"  Run ID   : {run_id}",
         f"  Queued   : {len(jobs)}   completed: {n_ok}   failed: {n_failed}",
-        f"  Skipped  : {n_skipped} not-in-gateway | {n_done} already-done",
+        f"  Skipped  : {n_no_insert} no-insert | {n_unregistered} unregistered | {n_done} already-done",
     ]
 
     if failures:
@@ -1573,11 +1718,17 @@ def run_migration(
         for f in failures:
             summary_lines.append(f"    ✗ {f}")
 
-    if skipped_not_in_gateway:
+    if skipped_no_insert:
         summary_lines.append("")
-        summary_lines.append(f"  NOT IN GATEWAY ({n_skipped}) — register these models in V3 to migrate:")
-        for line in skipped_not_in_gateway:
+        summary_lines.append(f"  READ-ONLY IN GATEWAY ({n_no_insert}) — no insert op; enable in V3 to migrate:")
+        for line in skipped_no_insert:
             summary_lines.append(f"    ⊘{line}")
+
+    if skipped_unregistered:
+        summary_lines.append("")
+        summary_lines.append(f"  NOT REGISTERED IN ANY GATEWAY ({n_unregistered}) — add model to V3 gateway:")
+        for line in skipped_unregistered:
+            summary_lines.append(f"    ✗{line}")
 
     summary_lines.append("═════════════════════════════════════════════════════════════════")
     log.info("\n".join(summary_lines))
