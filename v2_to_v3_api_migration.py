@@ -197,7 +197,16 @@ NAMESPACE_MAP: dict[str, dict] = {
     r"Ignite\Evaluation\Entities\EyeExams":          {"v3": r"App\Models\EyeExam",              "transform": "evaluation_eye_exam"},
     r"Ignite\Evaluation\Entities\EyeExam":           {"v3": r"App\Models\EyeExam",              "transform": "evaluation_eye_exam"},
 
-    # Inventory
+    # Inventory — lookup tables FIRST (products depend on units + categories)
+    r"Ignite\Inventory\Entities\Units":              {"v3": r"App\Models\Unit",                 "transform": "generic"},
+    r"Ignite\Inventory\Entities\Unit":               {"v3": r"App\Models\Unit",                 "transform": "generic"},
+    r"Ignite\Inventory\Entities\Categories":         {"v3": r"App\Models\ProductCategory",      "transform": "inventory_category"},
+    r"Ignite\Inventory\Entities\Category":           {"v3": r"App\Models\ProductCategory",      "transform": "inventory_category"},
+    r"Ignite\Inventory\Entities\Suppliers":          {"v3": r"App\Models\Supplier",             "transform": "generic"},
+    r"Ignite\Inventory\Entities\Supplier":           {"v3": r"App\Models\Supplier",             "transform": "generic"},
+    r"Ignite\Inventory\Entities\Stores":             {"v3": r"App\Models\Store",                "transform": "generic"},
+    r"Ignite\Inventory\Entities\Store":              {"v3": r"App\Models\Store",                "transform": "generic"},
+    # Products depend on units + categories — run after lookup tables above
     r"Ignite\Inventory\Entities\Products":           {"v3": r"App\Models\Product",              "transform": "inventory_product"},
     r"Ignite\Inventory\Entities\Product":            {"v3": r"App\Models\Product",              "transform": "inventory_product"},
     r"Ignite\Inventory\Entities\BatchPurchases":     {"v3": r"App\Models\Batch",                "transform": "inventory_batch"},
@@ -206,19 +215,11 @@ NAMESPACE_MAP: dict[str, dict] = {
     r"Ignite\Inventory\Entities\PurchaseOrder":      {"v3": r"App\Models\PurchaseOrder",        "transform": "inventory_purchase_order"},
     r"Ignite\Inventory\Entities\Requisitions":       {"v3": r"App\Models\Requisition",          "transform": "inventory_requisition"},
     r"Ignite\Inventory\Entities\Requisition":        {"v3": r"App\Models\Requisition",          "transform": "inventory_requisition"},
-    r"Ignite\Inventory\Entities\Categories":         {"v3": r"App\Models\ProductCategory",      "transform": "inventory_category"},
-    r"Ignite\Inventory\Entities\Category":           {"v3": r"App\Models\ProductCategory",      "transform": "inventory_category"},
-    r"Ignite\Inventory\Entities\Suppliers":          {"v3": r"App\Models\Supplier",             "transform": "generic"},
-    r"Ignite\Inventory\Entities\Supplier":           {"v3": r"App\Models\Supplier",             "transform": "generic"},
-    r"Ignite\Inventory\Entities\Stores":             {"v3": r"App\Models\Store",                "transform": "generic"},
-    r"Ignite\Inventory\Entities\Store":              {"v3": r"App\Models\Store",                "transform": "generic"},
     r"Ignite\Inventory\Entities\GoodsReceived":      {"v3": r"App\Models\GoodsReceivedNote",    "transform": "inventory_grn"},
-    r"Ignite\Inventory\Entities\Units":              {"v3": r"App\Models\Unit",                 "transform": "generic"},
-    r"Ignite\Inventory\Entities\Unit":               {"v3": r"App\Models\Unit",                 "transform": "generic"},
 
     # Settings → Core
-    r"Ignite\Settings\Entities\Clinics":             {"v3": r"App\Models\Facility",             "transform": "generic"},
-    r"Ignite\Settings\Entities\Clinic":              {"v3": r"App\Models\Facility",             "transform": "generic"},
+    r"Ignite\Settings\Entities\Clinics":             {"v3": r"App\Models\Clinic",               "transform": "generic"},
+    r"Ignite\Settings\Entities\Clinic":              {"v3": r"App\Models\Clinic",               "transform": "generic"},
     r"Ignite\Settings\Entities\Insurances":          {"v3": r"App\Models\InsuranceCompany",     "transform": "settings_insurance"},
     r"Ignite\Settings\Entities\Insurance":           {"v3": r"App\Models\InsuranceCompany",     "transform": "settings_insurance"},
     r"Ignite\Settings\Entities\Schemes":             {"v3": r"App\Models\InsuranceScheme",      "transform": "settings_scheme"},
@@ -235,20 +236,21 @@ NAMESPACE_MAP: dict[str, dict] = {
     # Evaluation → Core (lookup/config tables)
     r"Ignite\Evaluation\Entities\ProcedureCategories":        {"v3": r"App\Models\ProcedureCategory",       "transform": "eval_procedure_category"},
     r"Ignite\Evaluation\Entities\ProcedureCategory":          {"v3": r"App\Models\ProcedureCategory",       "transform": "eval_procedure_category"},
-    r"Ignite\Evaluation\Entities\EvaluationProcedures":       {"v3": r"App\Models\Procedure",               "transform": "eval_procedure"},
-    r"Ignite\Evaluation\Entities\EvaluationProcedure":        {"v3": r"App\Models\Procedure",               "transform": "eval_procedure"},
+    # V2 uses "Procedures" (not "EvaluationProcedures") — keep canonical names first so dedup
+    # claims the right slot; EvaluationProcedures variants are fallback only
     r"Ignite\Evaluation\Entities\Procedures":                 {"v3": r"App\Models\Procedure",               "transform": "eval_procedure"},
     r"Ignite\Evaluation\Entities\Procedure":                  {"v3": r"App\Models\Procedure",               "transform": "eval_procedure"},
     r"Ignite\Evaluation\Entities\SampleTypes":                {"v3": r"App\Models\SampleType",              "transform": "eval_sample_type"},
     r"Ignite\Evaluation\Entities\SampleType":                 {"v3": r"App\Models\SampleType",              "transform": "eval_sample_type"},
     r"Ignite\Evaluation\Entities\SampleCollectionMethods":    {"v3": r"App\Models\SampleCollectionMethod",  "transform": "generic"},
     r"Ignite\Evaluation\Entities\SampleCollectionMethod":     {"v3": r"App\Models\SampleCollectionMethod",  "transform": "generic"},
-    r"Ignite\Evaluation\Entities\TreatmentActions":           {"v3": r"App\Models\TreatmentAction",         "transform": "generic"},
-    r"Ignite\Evaluation\Entities\TreatmentAction":            {"v3": r"App\Models\TreatmentAction",         "transform": "generic"},
+    # TreatmentActions: try Settings module first (V2 may store these there)
+    r"Ignite\Settings\Entities\TreatmentActions":             {"v3": r"App\Models\TreatmentAction",         "transform": "generic"},
+    r"Ignite\Settings\Entities\TreatmentAction":              {"v3": r"App\Models\TreatmentAction",         "transform": "generic"},
 
-    # Users → Core
-    r"Ignite\Users\Entities\Specialties":            {"v3": r"App\Models\Specialty",            "transform": "generic"},
-    r"Ignite\Users\Entities\Specialty":              {"v3": r"App\Models\Specialty",            "transform": "generic"},
+    # Users → Core (Specialties: also try Settings module as V2 fallback)
+    r"Ignite\Settings\Entities\Specialties":         {"v3": r"App\Models\Specialty",            "transform": "generic"},
+    r"Ignite\Settings\Entities\Specialty":           {"v3": r"App\Models\Specialty",            "transform": "generic"},
     r"Ignite\Users\Entities\Users":                  {"v3": r"App\Models\User",                 "transform": "settings_user"},
     r"Ignite\Users\Entities\User":                   {"v3": r"App\Models\User",                 "transform": "settings_user"},
 
@@ -1192,6 +1194,11 @@ _FK_REMAP: dict[str, dict[str, str]] = {
     # sample_types.procedure_id → procedures V3 id
     "eval_sample_type": {
         "procedure_id": "procedures",
+    },
+    # products depend on units, product_categories (migrate those first)
+    "inventory_product": {
+        "unit_id":     "unit",
+        "category_id": "product_category",
     },
 }
 
