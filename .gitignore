@@ -68,3 +68,4 @@ failed_mapped_logs/*
 *.csv
 rsa_key*
 *.pdf
+*.jsonl

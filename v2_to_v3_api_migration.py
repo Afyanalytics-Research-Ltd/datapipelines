@@ -101,6 +101,7 @@ WATERMARK_FILE       = Path(__file__).resolve().parent / ".migration_watermarks.
 PROGRESS_FILE        = Path(__file__).resolve().parent / ".migration_progress.json"
 RECORD_PROGRESS_FILE = Path(__file__).resolve().parent / ".migration_record_progress.json"
 ID_MAP_FILE          = Path(__file__).resolve().parent / ".migration_id_map.json"
+DEAD_LETTER_FILE     = Path(__file__).resolve().parent / ".migration_failures.jsonl"
 
 # V2 source facilities
 V2_FACILITIES: dict[str, dict] = {
@@ -541,6 +542,18 @@ _PER_KEY_REQUIRED_FIELDS: dict[str, list] = {
     "settings_insurance":      ["name"],
     "eval_procedure_category": ["name"],
     "settings_user":           ["email"],
+}
+
+# Default values to inject when V3 returns a NOT NULL constraint violation for a column
+# that V2 didn't have. Add entries here as new columns appear in the error log.
+# Key = exact column name from the SQL error; value = the default to inject.
+_V3_NULL_DEFAULTS: dict[str, Any] = {
+    "credit_note_status": "none",        # V2 had no credit-note concept
+    "invoice_type":       "standard",    # V2 didn't distinguish invoice types
+    "currency":           "KES",         # default to Kenyan shilling
+    "payment_method":     "cash",
+    "created_by":         1,             # system/admin user for migrated records
+    "updated_by":         1,
 }
 
 # Layer 2: coercions — value-level transforms applied after renaming.
@@ -1047,6 +1060,25 @@ def _v3_alias(v3_namespace: str) -> str:
     return plural
 
 
+# ─── DEAD-LETTER ─────────────────────────────────────────────────────────────
+
+_dead_letter_lock = threading.Lock()
+
+
+def _write_dead_letter(v3_namespace: str, record: dict, error_body: dict) -> None:
+    """Append one failed record to the JSONL dead-letter file for later replay."""
+    entry = {
+        "ts":        datetime.now(timezone.utc).isoformat(),
+        "namespace": v3_namespace,
+        "record":    record,
+        "error":     error_body,
+    }
+    with _dead_letter_lock:
+        with DEAD_LETTER_FILE.open("a") as fh:
+            fh.write(_dumps(entry) + "\n")
+    log.warning("  Dead-letter → %s  (namespace=%s)", DEAD_LETTER_FILE.name, v3_namespace)
+
+
 # ─── V3 POST ─────────────────────────────────────────────────────────────────
 
 def _post_to_v3_batch(
@@ -1079,7 +1111,7 @@ def _post_to_v3_batch(
         "data":                  record,  # gateway expects a single object, not an array
     }
 
-    attempt, wait = 0, default_retry_wait
+    attempt, wait, _patched = 0, default_retry_wait, False
     while True:
         attempt += 1
         try:
@@ -1108,8 +1140,70 @@ def _post_to_v3_batch(
                 continue
 
             if r.status_code == 500:
-                log.warning("  V3 500 — skipping record (no retry): %s", r.text[:500])
-                return
+                try:
+                    err_body = r.json()
+                except Exception:
+                    err_body = {}
+                debug_msg = (err_body.get("debug") or {}).get("message", "")
+                log.error("  V3 500 reason: %s", debug_msg or r.text[:400])
+
+                # Category 1 — NOT NULL / missing-default constraint: patch and retry
+                # Catches both:
+                #   SQLSTATE[23000] "Column 'x' cannot be null"       (null sent explicitly)
+                #   SQLSTATE[HY000] "Field 'x' doesn't have a default value"  (column omitted)
+                null_col = re.search(
+                    r"(?:Column|Field) '(\w+)' (?:cannot be null|doesn't have a default value)",
+                    debug_msg,
+                )
+                if null_col:
+                    col     = null_col.group(1)
+                    default = _V3_NULL_DEFAULTS.get(col)
+                    if default is not None and body["data"].get(col) is None:
+                        log.warning(
+                            "  V3 500 NULL constraint on '%s' — injecting default %r and retrying",
+                            col, default,
+                        )
+                        body["data"] = {**body["data"], col: default}
+                        _patched = True
+                        continue  # one retry with the patched record
+                    # Column missing from defaults dict or already set — give up
+                    log.error(
+                        "  V3 500 NULL constraint on '%s' — no default configured, "
+                        "add it to _V3_NULL_DEFAULTS. Writing to dead-letter.", col,
+                    )
+                    _write_dead_letter(v3_namespace, record, err_body)
+                    return
+
+                # Category 2 — Duplicate entry: record already exists in V3, skip silently
+                if "Duplicate entry" in debug_msg:
+                    log.info("  V3 500 duplicate — record already exists in V3, skipping")
+                    return
+
+                # Category 3 — Generic server fault
+                # If we already patched this record and it still fails, the injected
+                # default is invalid for V3 — retrying won't help, dead-letter immediately.
+                if _patched:
+                    log.error(
+                        "  V3 500 after patch — default value rejected by V3. "
+                        "Check _V3_NULL_DEFAULTS for '%s'. Writing to dead-letter: %s",
+                        col if null_col else "?", r.text[:400],
+                    )
+                    _write_dead_letter(v3_namespace, record, err_body)
+                    return
+                if attempt >= max_retries:
+                    log.error(
+                        "  V3 500 server fault — max retries reached. Writing to dead-letter: %s",
+                        r.text[:400],
+                    )
+                    _write_dead_letter(v3_namespace, record, err_body)
+                    return
+                log.warning(
+                    "  V3 500 server fault — sleeping %ss (%s/%s)",
+                    wait, attempt, max_retries,
+                )
+                time.sleep(wait)
+                wait = min(wait * backoff_factor, 120)
+                continue
 
             if r.status_code in {502, 503, 504}:
                 log.error("  V3 %s response body: %s", r.status_code, r.text[:2000])
