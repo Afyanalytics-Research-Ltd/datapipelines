@@ -72,6 +72,7 @@ load_dotenv(Path(__file__).resolve().parent / ".env", override=False)
 
 # ─── LOGGING ─────────────────────────────────────────────────────────────────
 
+
 log = logging.getLogger("v2_to_v3_migration")
 if not log.handlers:
     h = logging.StreamHandler(sys.stdout)
@@ -87,12 +88,14 @@ if not log.handlers:
 
 PIPELINE_WORKERS   = int(os.getenv("PIPELINE_WORKERS", "8"))
 PAGE_WORKERS       = int(os.getenv("PAGE_WORKERS", "4"))
-RECORD_WORKERS     = int(os.getenv("RECORD_WORKERS", "12"))   # parallel POSTs per job
+RECORD_WORKERS     = int(os.getenv("RECORD_WORKERS", "3"))    # parallel POSTs per job — keep low to avoid 504s
 RECORD_LOG_EVERY   = int(os.getenv("RECORD_LOG_EVERY", "100")) # log progress every N records
 RECORD_FLUSH_EVERY = int(os.getenv("RECORD_FLUSH_EVERY", "50")) # flush progress file every N records
 TOKEN_TTL_SECONDS  = int(os.getenv("TOKEN_TTL_SECONDS", str(50 * 60)))
 DEFAULT_BATCH_SIZE = 200
 DEFAULT_LIMIT      = 500
+V3_POST_THROTTLE   = float(os.getenv("V3_POST_THROTTLE", "0"))   # seconds to sleep after each V3 POST
+V3_RETRY_WAIT      = int(os.getenv("V3_RETRY_WAIT", "30"))        # initial wait (s) before retrying 5xx
 
 WATERMARK_FILE       = Path(__file__).resolve().parent / ".migration_watermarks.json"
 PROGRESS_FILE        = Path(__file__).resolve().parent / ".migration_progress.json"
@@ -1052,7 +1055,7 @@ def _post_to_v3_batch(
     record: dict,
     *,
     max_retries: int = 6,
-    default_retry_wait: int = 10,
+    default_retry_wait: int = V3_RETRY_WAIT,
     backoff_factor: int = 2,
 ) -> None:
     """POST a single record object to the V3 gateway. Retries on 429/5xx/401."""
@@ -1124,6 +1127,8 @@ def _post_to_v3_batch(
             if not r.ok:
                 log.error("  V3 %s response body: %s", r.status_code, r.text[:2000])
             r.raise_for_status()
+            if V3_POST_THROTTLE > 0:
+                time.sleep(V3_POST_THROTTLE)
             # Extract V3-assigned ID from response for FK remapping
             try:
                 resp = r.json()
