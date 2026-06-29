@@ -101,7 +101,9 @@ WATERMARK_FILE       = Path(__file__).resolve().parent / ".migration_watermarks.
 PROGRESS_FILE        = Path(__file__).resolve().parent / ".migration_progress.json"
 RECORD_PROGRESS_FILE = Path(__file__).resolve().parent / ".migration_record_progress.json"
 ID_MAP_FILE          = Path(__file__).resolve().parent / ".migration_id_map.json"
+VISIT_PATIENT_FILE   = Path(__file__).resolve().parent / ".migration_visit_patient.json"
 DEAD_LETTER_FILE     = Path(__file__).resolve().parent / ".migration_failures.jsonl"
+DONE_FILE            = Path(__file__).resolve().parent / ".migration_done.json"   # cross-run completed jobs
 
 # V2 source facilities
 V2_FACILITIES: dict[str, dict] = {
@@ -144,255 +146,295 @@ FACILITY_V3_CONFIG: dict[str, dict] = {
 # The fallback chain (singular / double-namespace) is tried at extraction time,
 # so register the canonical plural form here.
 NAMESPACE_MAP: dict[str, dict] = {
-    # Finance
-    r"Ignite\Finance\Entities\Invoices":             {"v3": r"App\Models\Invoice",              "transform": "finance_invoice"},
-    r"Ignite\Finance\Entities\Invoice":              {"v3": r"App\Models\Invoice",              "transform": "finance_invoice"},
-    r"Ignite\Finance\Entities\Waivers":              {"v3": r"App\Models\Waiver",               "transform": "generic"},
-    r"Ignite\Finance\Entities\Waiver":               {"v3": r"App\Models\Waiver",               "transform": "generic"},
-    r"Ignite\Finance\Entities\Copays":               {"v3": r"App\Models\Copay",                "transform": "finance_copay"},
-    r"Ignite\Finance\Entities\Copay":                {"v3": r"App\Models\Copay",                "transform": "finance_copay"},
-    r"Ignite\Finance\Entities\PatientDeposits":      {"v3": r"App\Models\PatientDeposit",       "transform": "generic"},
-    r"Ignite\Finance\Entities\PatientDeposit":       {"v3": r"App\Models\PatientDeposit",       "transform": "generic"},
-    r"Ignite\Finance\Entities\PatientWithdrawals":   {"v3": r"App\Models\PatientWithdrawal",    "transform": "generic"},
-    r"Ignite\Finance\Entities\PatientWithdrawal":    {"v3": r"App\Models\PatientWithdrawal",    "transform": "generic"},
-    r"Ignite\Finance\Entities\EvaluationPayments":   {"v3": r"App\Models\EvaluationPayment",    "transform": "finance_eval_payment"},
-    r"Ignite\Finance\Entities\EvaluationPayment":    {"v3": r"App\Models\EvaluationPayment",    "transform": "finance_eval_payment"},
-    r"Ignite\Finance\Entities\InvoicePayments":      {"v3": r"App\Models\InvoicePayment",       "transform": "generic"},
-    r"Ignite\Finance\Entities\InvoicePayment":       {"v3": r"App\Models\InvoicePayment",       "transform": "generic"},
-    r"Ignite\Finance\Entities\PettyCash":            {"v3": r"App\Models\PettyCash",            "transform": "generic"},
-    r"Ignite\Finance\Entities\Banks":                {"v3": r"App\Models\Bank",                 "transform": "generic"},
-    r"Ignite\Finance\Entities\Bank":                 {"v3": r"App\Models\Bank",                 "transform": "generic"},
-    r"Ignite\Finance\Entities\Vouchers":             {"v3": r"App\Models\Voucher",              "transform": "finance_voucher"},
-    r"Ignite\Finance\Entities\Voucher":              {"v3": r"App\Models\Voucher",              "transform": "finance_voucher"},
-    r"Ignite\Finance\Entities\PatientAccounts":      {"v3": r"App\Models\PatientAccount",       "transform": "generic"},
-    r"Ignite\Finance\Entities\PatientAccount":       {"v3": r"App\Models\PatientAccount",       "transform": "generic"},
-    r"Ignite\Finance\Entities\Dispatches":           {"v3": r"App\Models\Dispatch",             "transform": "generic"},
-    r"Ignite\Finance\Entities\Dispatch":             {"v3": r"App\Models\Dispatch",             "transform": "generic"},
-
-    # Reception — insertable models first, then read-only (no insert in V3 gateway)
-    r"Ignite\Reception\Entities\Customers":          {"v3": r"App\Models\Customer",             "transform": "generic"},
-    r"Ignite\Reception\Entities\Customer":           {"v3": r"App\Models\Customer",             "transform": "generic"},
-    # read-only in V3 reception gateway (no insert op) — kept for completeness / future enablement
-    r"Ignite\Reception\Entities\Patients":           {"v3": r"App\Models\Patient",              "transform": "reception_patient"},
-    r"Ignite\Reception\Entities\Patient":            {"v3": r"App\Models\Patient",              "transform": "reception_patient"},
-    r"Ignite\Reception\Entities\Visits":             {"v3": r"App\Models\Visit",                "transform": "reception_visit"},
-    r"Ignite\Reception\Entities\Visit":              {"v3": r"App\Models\Visit",                "transform": "reception_visit"},
-    r"Ignite\Reception\Entities\Appointments":       {"v3": r"App\Models\Appointment",          "transform": "reception_appointment"},
-    r"Ignite\Reception\Entities\Appointment":        {"v3": r"App\Models\Appointment",          "transform": "reception_appointment"},
-    r"Ignite\Reception\Entities\PatientSchemes":     {"v3": r"App\Models\PatientInsurance",     "transform": "reception_patient_scheme"},
-    r"Ignite\Reception\Entities\PatientScheme":      {"v3": r"App\Models\PatientInsurance",     "transform": "reception_patient_scheme"},
-    r"Ignite\Reception\Entities\PatientNextOfKins":  {"v3": r"App\Models\PatientNextOfKin",     "transform": "generic"},
-    r"Ignite\Reception\Entities\PatientNextOfKin":   {"v3": r"App\Models\PatientNextOfKin",     "transform": "generic"},
-    r"Ignite\Reception\Entities\PatientDocuments":   {"v3": r"App\Models\PatientDocument",      "transform": "generic"},
-    r"Ignite\Reception\Entities\PatientDocument":    {"v3": r"App\Models\PatientDocument",      "transform": "generic"},
-    r"Ignite\Reception\Entities\PatientDependants":  {"v3": r"App\Models\PatientDependant",     "transform": "generic"},
-    r"Ignite\Reception\Entities\PatientDependant":   {"v3": r"App\Models\PatientDependant",     "transform": "generic"},
-    r"Ignite\Reception\Entities\PatientGuarantors":  {"v3": r"App\Models\PatientGuarantor",     "transform": "generic"},
-    r"Ignite\Reception\Entities\PatientGuarantor":   {"v3": r"App\Models\PatientGuarantor",     "transform": "generic"},
-    r"Ignite\Reception\Entities\PatientFollowups":   {"v3": r"App\Models\PatientFollowup",      "transform": "generic"},
-    r"Ignite\Reception\Entities\PatientFollowup":    {"v3": r"App\Models\PatientFollowup",      "transform": "generic"},
-    r"Ignite\Reception\Entities\PatientSamples":     {"v3": r"App\Models\PatientSample",        "transform": "generic"},
-    r"Ignite\Reception\Entities\PatientSample":      {"v3": r"App\Models\PatientSample",        "transform": "generic"},
-    r"Ignite\Reception\Entities\PatientRandomNotes": {"v3": r"App\Models\PatientRandomNote",    "transform": "generic"},
-    r"Ignite\Reception\Entities\PatientRandomNote":  {"v3": r"App\Models\PatientRandomNote",    "transform": "generic"},
-    r"Ignite\Reception\Entities\PatientConsents":    {"v3": r"App\Models\PatientConsent",       "transform": "generic"},
-    r"Ignite\Reception\Entities\PatientConsent":     {"v3": r"App\Models\PatientConsent",       "transform": "generic"},
-    r"Ignite\Reception\Entities\MorgueAdmissions":   {"v3": r"App\Models\MorgueAdmission",      "transform": "generic"},
-    r"Ignite\Reception\Entities\MorgueAdmission":    {"v3": r"App\Models\MorgueAdmission",      "transform": "generic"},
-    r"Ignite\Reception\Entities\VisitDestinations":  {"v3": r"App\Models\VisitDestination",     "transform": "generic"},
-    r"Ignite\Reception\Entities\VisitDestination":   {"v3": r"App\Models\VisitDestination",     "transform": "generic"},
-    r"Ignite\Reception\Entities\VisitConsultants":   {"v3": r"App\Models\VisitConsultant",      "transform": "generic"},
-    r"Ignite\Reception\Entities\VisitConsultant":    {"v3": r"App\Models\VisitConsultant",      "transform": "generic"},
-    r"Ignite\Reception\Entities\VisitPrecharges":    {"v3": r"App\Models\VisitPrecharge",       "transform": "generic"},
-    r"Ignite\Reception\Entities\VisitPrecharge":     {"v3": r"App\Models\VisitPrecharge",       "transform": "generic"},
-    r"Ignite\Reception\Entities\Queues":             {"v3": r"App\Models\Queue",                "transform": "generic"},
-    r"Ignite\Reception\Entities\Queue":              {"v3": r"App\Models\Queue",                "transform": "generic"},
-    r"Ignite\Reception\Entities\Referrals":          {"v3": r"App\Models\Referral",             "transform": "generic"},
-    r"Ignite\Reception\Entities\Referral":           {"v3": r"App\Models\Referral",             "transform": "generic"},
-
-    # Evaluation
-    r"Ignite\Evaluation\Entities\DoctorNotes":       {"v3": r"App\Models\DoctorNote",           "transform": "evaluation_doctor_note"},
-    r"Ignite\Evaluation\Entities\DoctorNote":        {"v3": r"App\Models\DoctorNote",           "transform": "evaluation_doctor_note"},
-    r"Ignite\Evaluation\Entities\Vitals":            {"v3": r"App\Models\Vital",                "transform": "generic"},
-    r"Ignite\Evaluation\Entities\Vital":             {"v3": r"App\Models\Vital",                "transform": "generic"},
-    r"Ignite\Evaluation\Entities\Prescriptions":     {"v3": r"App\Models\Prescription",         "transform": "generic"},
-    r"Ignite\Evaluation\Entities\Prescription":      {"v3": r"App\Models\Prescription",         "transform": "generic"},
-    r"Ignite\Evaluation\Entities\InvestigationResults": {"v3": r"App\Models\InvestigationResult", "transform": "evaluation_inv_result"},
-    r"Ignite\Evaluation\Entities\InvestigationResult":  {"v3": r"App\Models\InvestigationResult", "transform": "evaluation_inv_result"},
-    r"Ignite\Evaluation\Entities\ExaminationReviews":{"v3": r"App\Models\ExaminationReview",    "transform": "generic"},
-    r"Ignite\Evaluation\Entities\ExaminationReview": {"v3": r"App\Models\ExaminationReview",    "transform": "generic"},
-    r"Ignite\Evaluation\Entities\EyeExams":          {"v3": r"App\Models\EyeExam",              "transform": "evaluation_eye_exam"},
-    r"Ignite\Evaluation\Entities\EyeExam":           {"v3": r"App\Models\EyeExam",              "transform": "evaluation_eye_exam"},
-
-    # Inventory — lookup tables FIRST (products depend on units + categories)
-    r"Ignite\Inventory\Entities\Units":              {"v3": r"App\Models\Unit",                 "transform": "generic"},
-    r"Ignite\Inventory\Entities\Unit":               {"v3": r"App\Models\Unit",                 "transform": "generic"},
-    r"Ignite\Inventory\Entities\Categories":         {"v3": r"App\Models\ProductCategory",      "transform": "inventory_category"},
-    r"Ignite\Inventory\Entities\Category":           {"v3": r"App\Models\ProductCategory",      "transform": "inventory_category"},
-    r"Ignite\Inventory\Entities\Suppliers":          {"v3": r"App\Models\Supplier",             "transform": "generic"},
-    r"Ignite\Inventory\Entities\Supplier":           {"v3": r"App\Models\Supplier",             "transform": "generic"},
-    r"Ignite\Inventory\Entities\Stores":             {"v3": r"App\Models\Store",                "transform": "generic"},
-    r"Ignite\Inventory\Entities\Store":              {"v3": r"App\Models\Store",                "transform": "generic"},
-    # Products depend on units + categories — run after lookup tables above
-    r"Ignite\Inventory\Entities\Products":           {"v3": r"App\Models\Product",              "transform": "inventory_product"},
-    r"Ignite\Inventory\Entities\Product":            {"v3": r"App\Models\Product",              "transform": "inventory_product"},
-    r"Ignite\Inventory\Entities\BatchPurchases":     {"v3": r"App\Models\Batch",                "transform": "inventory_batch"},
-    r"Ignite\Inventory\Entities\BatchPurchase":      {"v3": r"App\Models\Batch",                "transform": "inventory_batch"},
-    r"Ignite\Inventory\Entities\PurchaseOrders":     {"v3": r"App\Models\PurchaseOrder",        "transform": "inventory_purchase_order"},
-    r"Ignite\Inventory\Entities\PurchaseOrder":      {"v3": r"App\Models\PurchaseOrder",        "transform": "inventory_purchase_order"},
-    r"Ignite\Inventory\Entities\Requisitions":       {"v3": r"App\Models\Requisition",          "transform": "inventory_requisition"},
-    r"Ignite\Inventory\Entities\Requisition":        {"v3": r"App\Models\Requisition",          "transform": "inventory_requisition"},
-    r"Ignite\Inventory\Entities\GoodsReceived":      {"v3": r"App\Models\GoodsReceivedNote",    "transform": "inventory_grn"},
+    # ── TIER 1: Root lookup / config tables (no FK deps) ─────────────────────
 
     # Settings → Core
-    r"Ignite\Settings\Entities\Clinics":             {"v3": r"App\Models\Clinic",               "transform": "generic"},
-    r"Ignite\Settings\Entities\Clinic":              {"v3": r"App\Models\Clinic",               "transform": "generic"},
-    r"Ignite\Settings\Entities\Insurances":          {"v3": r"App\Models\InsuranceCompany",     "transform": "settings_insurance"},
-    r"Ignite\Settings\Entities\Insurance":           {"v3": r"App\Models\InsuranceCompany",     "transform": "settings_insurance"},
-    r"Ignite\Settings\Entities\Schemes":             {"v3": r"App\Models\InsuranceScheme",      "transform": "settings_scheme"},
-    r"Ignite\Settings\Entities\Scheme":              {"v3": r"App\Models\InsuranceScheme",      "transform": "settings_scheme"},
-    r"Ignite\Settings\Entities\Departments":         {"v3": r"App\Models\Department",           "transform": "generic"},
-    r"Ignite\Settings\Entities\Department":          {"v3": r"App\Models\Department",           "transform": "generic"},
-    r"Ignite\Settings\Entities\Regions":             {"v3": r"App\Models\Region",               "transform": "generic"},
-    r"Ignite\Settings\Entities\Region":              {"v3": r"App\Models\Region",               "transform": "generic"},
-    r"Ignite\Settings\Entities\Counties":            {"v3": r"App\Models\County",               "transform": "generic"},
-    r"Ignite\Settings\Entities\County":              {"v3": r"App\Models\County",               "transform": "generic"},
-    r"Ignite\Settings\Entities\Rebates":             {"v3": r"App\Models\Rebate",               "transform": "settings_rebate"},
-    r"Ignite\Settings\Entities\Rebate":              {"v3": r"App\Models\Rebate",               "transform": "settings_rebate"},
+    r"Ignite\Settings\Entities\Regions":                     {"v3": r"App\Models\Region",                      "transform": "generic"},
+    r"Ignite\Settings\Entities\Region":                      {"v3": r"App\Models\Region",                      "transform": "generic"},
+    r"Ignite\Settings\Entities\Counties":                    {"v3": r"App\Models\County",                      "transform": "generic"},
+    r"Ignite\Settings\Entities\County":                      {"v3": r"App\Models\County",                      "transform": "generic"},
+    r"Ignite\Settings\Entities\Departments":                 {"v3": r"App\Models\Department",                  "transform": "generic"},
+    r"Ignite\Settings\Entities\Department":                  {"v3": r"App\Models\Department",                  "transform": "generic"},
+    r"Ignite\Settings\Entities\Clinics":                     {"v3": r"App\Models\Clinic",                      "transform": "generic"},
+    r"Ignite\Settings\Entities\Clinic":                      {"v3": r"App\Models\Clinic",                      "transform": "generic"},
+    r"Ignite\Settings\Entities\Specialties":                 {"v3": r"App\Models\Specialty",                   "transform": "generic"},
+    r"Ignite\Settings\Entities\Specialty":                   {"v3": r"App\Models\Specialty",                   "transform": "generic"},
+    r"Ignite\Settings\Entities\AgeGroups":                   {"v3": r"App\Models\AgeGroup",                    "transform": "generic"},
+    r"Ignite\Settings\Entities\AgeGroup":                    {"v3": r"App\Models\AgeGroup",                    "transform": "generic"},
+    r"Ignite\Settings\Entities\DocumentTypes":               {"v3": r"App\Models\DocumentType",                "transform": "generic"},
+    r"Ignite\Settings\Entities\DocumentType":                {"v3": r"App\Models\DocumentType",                "transform": "generic"},
+    r"Ignite\Settings\Entities\Themes":                      {"v3": r"App\Models\Theme",                       "transform": "generic"},
+    r"Ignite\Settings\Entities\Theme":                       {"v3": r"App\Models\Theme",                       "transform": "generic"},
+    r"Ignite\Settings\Entities\PurposeOfVisits":             {"v3": r"App\Models\PurposeOfVisit",              "transform": "generic"},
+    r"Ignite\Settings\Entities\PurposeOfVisit":              {"v3": r"App\Models\PurposeOfVisit",              "transform": "generic"},
+    r"Ignite\Settings\Entities\DestinationTypes":            {"v3": r"App\Models\DestinationType",             "transform": "generic"},
+    r"Ignite\Settings\Entities\DestinationType":             {"v3": r"App\Models\DestinationType",             "transform": "generic"},
+    r"Ignite\Settings\Entities\ServiceDestinations":         {"v3": r"App\Models\ServiceDestination",          "transform": "generic"},
+    r"Ignite\Settings\Entities\ServiceDestination":          {"v3": r"App\Models\ServiceDestination",          "transform": "generic"},
+    r"Ignite\Settings\Entities\PartnerInstitutions":         {"v3": r"App\Models\PartnerInstitution",          "transform": "generic"},
+    r"Ignite\Settings\Entities\PartnerInstitution":          {"v3": r"App\Models\PartnerInstitution",          "transform": "generic"},
+    r"Ignite\Settings\Entities\PartnerStaff":                {"v3": r"App\Models\PartnerStaff",                "transform": "generic"},
+    r"Ignite\Settings\Entities\EmployeeCategories":          {"v3": r"App\Models\EmployeeCategory",            "transform": "generic"},
+    r"Ignite\Settings\Entities\EmployeeCategory":            {"v3": r"App\Models\EmployeeCategory",            "transform": "generic"},
+    r"Ignite\Settings\Entities\CategoryFilters":             {"v3": r"App\Models\CategoryFilter",              "transform": "generic"},
+    r"Ignite\Settings\Entities\CategoryFilter":              {"v3": r"App\Models\CategoryFilter",              "transform": "generic"},
+    r"Ignite\Settings\Entities\ApprovalLevels":              {"v3": r"App\Models\ApprovalLevel",               "transform": "generic"},
+    r"Ignite\Settings\Entities\ApprovalLevel":               {"v3": r"App\Models\ApprovalLevel",               "transform": "generic"},
+    r"Ignite\Settings\Entities\TreatmentActions":            {"v3": r"App\Models\TreatmentAction",             "transform": "generic"},
+    r"Ignite\Settings\Entities\TreatmentAction":             {"v3": r"App\Models\TreatmentAction",             "transform": "generic"},
+    # Insurance chain: company → scheme → rebate
+    r"Ignite\Settings\Entities\Insurances":                  {"v3": r"App\Models\InsuranceCompany",            "transform": "settings_insurance"},
+    r"Ignite\Settings\Entities\Insurance":                   {"v3": r"App\Models\InsuranceCompany",            "transform": "settings_insurance"},
+    r"Ignite\Settings\Entities\Schemes":                     {"v3": r"App\Models\InsuranceScheme",             "transform": "settings_scheme"},
+    r"Ignite\Settings\Entities\Scheme":                      {"v3": r"App\Models\InsuranceScheme",             "transform": "settings_scheme"},
+    r"Ignite\Settings\Entities\Rebates":                     {"v3": r"App\Models\Rebate",                      "transform": "settings_rebate"},
+    r"Ignite\Settings\Entities\Rebate":                      {"v3": r"App\Models\Rebate",                      "transform": "settings_rebate"},
 
-    # Evaluation → Core (lookup/config tables)
-    r"Ignite\Evaluation\Entities\ProcedureCategories":        {"v3": r"App\Models\ProcedureCategory",       "transform": "eval_procedure_category"},
-    r"Ignite\Evaluation\Entities\ProcedureCategory":          {"v3": r"App\Models\ProcedureCategory",       "transform": "eval_procedure_category"},
-    # V2 uses "Procedures" (not "EvaluationProcedures") — keep canonical names first so dedup
-    # claims the right slot; EvaluationProcedures variants are fallback only
-    r"Ignite\Evaluation\Entities\Procedures":                 {"v3": r"App\Models\Procedure",               "transform": "eval_procedure"},
-    r"Ignite\Evaluation\Entities\Procedure":                  {"v3": r"App\Models\Procedure",               "transform": "eval_procedure"},
-    r"Ignite\Evaluation\Entities\SampleTypes":                {"v3": r"App\Models\SampleType",              "transform": "eval_sample_type"},
-    r"Ignite\Evaluation\Entities\SampleType":                 {"v3": r"App\Models\SampleType",              "transform": "eval_sample_type"},
-    r"Ignite\Evaluation\Entities\SampleCollectionMethods":    {"v3": r"App\Models\SampleCollectionMethod",  "transform": "generic"},
-    r"Ignite\Evaluation\Entities\SampleCollectionMethod":     {"v3": r"App\Models\SampleCollectionMethod",  "transform": "generic"},
-    # TreatmentActions: try Settings module first (V2 may store these there)
-    r"Ignite\Settings\Entities\TreatmentActions":             {"v3": r"App\Models\TreatmentAction",         "transform": "generic"},
-    r"Ignite\Settings\Entities\TreatmentAction":              {"v3": r"App\Models\TreatmentAction",         "transform": "generic"},
+    # Users
+    r"Ignite\Users\Entities\Users":                          {"v3": r"App\Models\User",                        "transform": "settings_user"},
+    r"Ignite\Users\Entities\User":                           {"v3": r"App\Models\User",                        "transform": "settings_user"},
 
-    # Users → Core (Specialties: also try Settings module as V2 fallback)
-    r"Ignite\Settings\Entities\Specialties":         {"v3": r"App\Models\Specialty",            "transform": "generic"},
-    r"Ignite\Settings\Entities\Specialty":           {"v3": r"App\Models\Specialty",            "transform": "generic"},
-    r"Ignite\Users\Entities\Users":                  {"v3": r"App\Models\User",                 "transform": "settings_user"},
-    r"Ignite\Users\Entities\User":                   {"v3": r"App\Models\User",                 "transform": "settings_user"},
+    # Evaluation → procedure chain: categories → procedures → sample_types
+    r"Ignite\Evaluation\Entities\ProcedureCategories":       {"v3": r"App\Models\ProcedureCategory",           "transform": "eval_procedure_category"},
+    r"Ignite\Evaluation\Entities\ProcedureCategory":         {"v3": r"App\Models\ProcedureCategory",           "transform": "eval_procedure_category"},
+    r"Ignite\Evaluation\Entities\Procedures":                {"v3": r"App\Models\Procedure",                   "transform": "eval_procedure"},
+    r"Ignite\Evaluation\Entities\Procedure":                 {"v3": r"App\Models\Procedure",                   "transform": "eval_procedure"},
+    r"Ignite\Evaluation\Entities\SampleCollectionMethods":   {"v3": r"App\Models\SampleCollectionMethod",      "transform": "generic"},
+    r"Ignite\Evaluation\Entities\SampleCollectionMethod":    {"v3": r"App\Models\SampleCollectionMethod",      "transform": "generic"},
+    r"Ignite\Evaluation\Entities\SampleTypes":               {"v3": r"App\Models\SampleType",                  "transform": "eval_sample_type"},
+    r"Ignite\Evaluation\Entities\SampleType":                {"v3": r"App\Models\SampleType",                  "transform": "eval_sample_type"},
+    # Evaluation reference / lookup tables
+    r"Ignite\Evaluation\Entities\DiagnosisCodes":            {"v3": r"App\Models\DiagnosisCode",               "transform": "generic"},
+    r"Ignite\Evaluation\Entities\DiagnosisCode":             {"v3": r"App\Models\DiagnosisCode",               "transform": "generic"},
+    r"Ignite\Evaluation\Entities\CriticalValues":            {"v3": r"App\Models\CriticalValue",               "transform": "generic"},
+    r"Ignite\Evaluation\Entities\CriticalValue":             {"v3": r"App\Models\CriticalValue",               "transform": "generic"},
+    r"Ignite\Evaluation\Entities\Icd10Types":                {"v3": r"App\Models\Icd10Type",                   "transform": "generic"},
+    r"Ignite\Evaluation\Entities\Icd10Type":                 {"v3": r"App\Models\Icd10Type",                   "transform": "generic"},
+    r"Ignite\Evaluation\Entities\Icd10Categories":           {"v3": r"App\Models\Icd10Category",               "transform": "generic"},
+    r"Ignite\Evaluation\Entities\Icd10Category":             {"v3": r"App\Models\Icd10Category",               "transform": "generic"},
+    r"Ignite\Evaluation\Entities\Icd10Subcategories":        {"v3": r"App\Models\Icd10Subcategory",            "transform": "generic"},
+    r"Ignite\Evaluation\Entities\Icd10Subcategory":          {"v3": r"App\Models\Icd10Subcategory",            "transform": "generic"},
+    r"Ignite\Evaluation\Entities\BioReferenceRanges":        {"v3": r"App\Models\BioReferenceRange",           "transform": "generic"},
+    r"Ignite\Evaluation\Entities\BioReferenceRange":         {"v3": r"App\Models\BioReferenceRange",           "transform": "generic"},
+    r"Ignite\Evaluation\Entities\LabTestCategories":         {"v3": r"App\Models\LabTestCategory",             "transform": "generic"},
+    r"Ignite\Evaluation\Entities\LabTestCategory":           {"v3": r"App\Models\LabTestCategory",             "transform": "generic"},
+    r"Ignite\Evaluation\Entities\LabTestAdditives":          {"v3": r"App\Models\LabTestAdditive",             "transform": "generic"},
+    r"Ignite\Evaluation\Entities\LabTestAdditive":           {"v3": r"App\Models\LabTestAdditive",             "transform": "generic"},
+    r"Ignite\Evaluation\Entities\LabTestUnits":              {"v3": r"App\Models\LabTestUnit",                 "transform": "generic"},
+    r"Ignite\Evaluation\Entities\LabTestUnit":               {"v3": r"App\Models\LabTestUnit",                 "transform": "generic"},
+    r"Ignite\Evaluation\Entities\EvaluationFormulae":        {"v3": r"App\Models\EvaluationFormula",           "transform": "generic"},
+    r"Ignite\Evaluation\Entities\EvaluationFormula":         {"v3": r"App\Models\EvaluationFormula",           "transform": "generic"},
+    r"Ignite\Evaluation\Entities\EvaluationMachines":        {"v3": r"App\Models\EvaluationMachine",          "transform": "generic"},
+    r"Ignite\Evaluation\Entities\EvaluationMachine":         {"v3": r"App\Models\EvaluationMachine",          "transform": "generic"},
+    r"Ignite\Evaluation\Entities\PrescriptionFrequencies":   {"v3": r"App\Models\PrescriptionFrequency",       "transform": "generic"},
+    r"Ignite\Evaluation\Entities\PrescriptionFrequency":     {"v3": r"App\Models\PrescriptionFrequency",       "transform": "generic"},
+    r"Ignite\Evaluation\Entities\PrescriptionMeasures":      {"v3": r"App\Models\PrescriptionMeasure",         "transform": "generic"},
+    r"Ignite\Evaluation\Entities\PrescriptionMeasure":       {"v3": r"App\Models\PrescriptionMeasure",         "transform": "generic"},
+    r"Ignite\Evaluation\Entities\PrescriptionRoutes":        {"v3": r"App\Models\PrescriptionRoute",           "transform": "generic"},
+    r"Ignite\Evaluation\Entities\PrescriptionRoute":         {"v3": r"App\Models\PrescriptionRoute",           "transform": "generic"},
+    r"Ignite\Evaluation\Entities\Formulations":              {"v3": r"App\Models\Formulation",                 "transform": "generic"},
+    r"Ignite\Evaluation\Entities\Formulation":               {"v3": r"App\Models\Formulation",                 "transform": "generic"},
+    r"Ignite\Evaluation\Entities\ProcedureCategoryTemplates": {"v3": r"App\Models\ProcedureCategoryTemplate",  "transform": "generic"},
+    r"Ignite\Evaluation\Entities\ProcedureCategoryTemplate": {"v3": r"App\Models\ProcedureCategoryTemplate",   "transform": "generic"},
+    r"Ignite\Evaluation\Entities\ProcedureTemplates":        {"v3": r"App\Models\ProcedureTemplate",           "transform": "generic"},
+    r"Ignite\Evaluation\Entities\ProcedureTemplate":         {"v3": r"App\Models\ProcedureTemplate",           "transform": "generic"},
+    r"Ignite\Evaluation\Entities\TemplateLabs":              {"v3": r"App\Models\TemplateLab",                 "transform": "generic"},
+    r"Ignite\Evaluation\Entities\TemplateLab":               {"v3": r"App\Models\TemplateLab",                 "transform": "generic"},
 
-    # Theatre — lookup tables first, then transactional
-    r"Ignite\Theatre\Entities\TheatreTypes":             {"v3": r"App\Models\TheatreType",           "transform": "generic"},
-    r"Ignite\Theatre\Entities\TheatreType":              {"v3": r"App\Models\TheatreType",           "transform": "generic"},
-    r"Ignite\Theatre\Entities\TheatreMedicTypes":        {"v3": r"App\Models\TheatreMedicType",      "transform": "generic"},
-    r"Ignite\Theatre\Entities\TheatreMedicType":         {"v3": r"App\Models\TheatreMedicType",      "transform": "generic"},
-    r"Ignite\Theatre\Entities\TheatrePaymentTypes":      {"v3": r"App\Models\TheatrePaymentType",    "transform": "generic"},
-    r"Ignite\Theatre\Entities\TheatrePaymentType":       {"v3": r"App\Models\TheatrePaymentType",    "transform": "generic"},
-    r"Ignite\Theatre\Entities\TheatreSchedulingStatuses": {"v3": r"App\Models\TheatreSchedulingStatus", "transform": "generic"},
-    r"Ignite\Theatre\Entities\TheatreSchedulingStatus":  {"v3": r"App\Models\TheatreSchedulingStatus", "transform": "generic"},
-    r"Ignite\Theatre\Entities\Theatres":                 {"v3": r"App\Models\Theatre",              "transform": "theatre_theatre"},
-    r"Ignite\Theatre\Entities\Theatre":                  {"v3": r"App\Models\Theatre",              "transform": "theatre_theatre"},
-    r"Ignite\Theatre\Entities\TheatreBookings":          {"v3": r"App\Models\TheatreBooking",       "transform": "theatre_booking"},
-    r"Ignite\Theatre\Entities\TheatreBooking":           {"v3": r"App\Models\TheatreBooking",       "transform": "theatre_booking"},
-    r"Ignite\Theatre\Entities\TheatreOperations":        {"v3": r"App\Models\TheatreOperation",     "transform": "generic"},
-    r"Ignite\Theatre\Entities\TheatreOperation":         {"v3": r"App\Models\TheatreOperation",     "transform": "generic"},
-    r"Ignite\Theatre\Entities\TheatreSchedules":         {"v3": r"App\Models\TheatreSchedule",      "transform": "generic"},
-    r"Ignite\Theatre\Entities\TheatreSchedule":          {"v3": r"App\Models\TheatreSchedule",      "transform": "generic"},
+    # Finance config (must precede transactional finance)
+    r"Ignite\Finance\Entities\Banks":                        {"v3": r"App\Models\Bank",                        "transform": "generic"},
+    r"Ignite\Finance\Entities\Bank":                         {"v3": r"App\Models\Bank",                        "transform": "generic"},
+    r"Ignite\Finance\Entities\PaymentModes":                 {"v3": r"App\Models\PaymentMode",                 "transform": "generic"},
+    r"Ignite\Finance\Entities\PaymentMode":                  {"v3": r"App\Models\PaymentMode",                 "transform": "generic"},
+    r"Ignite\Finance\Entities\PaymentTerms":                 {"v3": r"App\Models\PaymentTerm",                 "transform": "generic"},
+    r"Ignite\Finance\Entities\PaymentTerm":                  {"v3": r"App\Models\PaymentTerm",                 "transform": "generic"},
+    r"Ignite\Finance\Entities\TaxCategories":                {"v3": r"App\Models\TaxCategory",                 "transform": "generic"},
+    r"Ignite\Finance\Entities\TaxCategory":                  {"v3": r"App\Models\TaxCategory",                 "transform": "generic"},
+    r"Ignite\Finance\Entities\GlAccountTypes":               {"v3": r"App\Models\GlAccountType",               "transform": "generic"},
+    r"Ignite\Finance\Entities\GlAccountType":                {"v3": r"App\Models\GlAccountType",               "transform": "generic"},
+    r"Ignite\Finance\Entities\GlAccountGroups":              {"v3": r"App\Models\GlAccountGroup",              "transform": "generic"},
+    r"Ignite\Finance\Entities\GlAccountGroup":               {"v3": r"App\Models\GlAccountGroup",              "transform": "generic"},
+    r"Ignite\Finance\Entities\Charges":                      {"v3": r"App\Models\Charge",                      "transform": "generic"},
+    r"Ignite\Finance\Entities\Charge":                       {"v3": r"App\Models\Charge",                      "transform": "generic"},
 
-    # Inpatient — ward/bed lookup tables, then transactional
-    r"Ignite\Inpatient\Entities\AdmissionTypes":         {"v3": r"App\Models\AdmissionType",        "transform": "generic"},
-    r"Ignite\Inpatient\Entities\AdmissionType":          {"v3": r"App\Models\AdmissionType",        "transform": "generic"},
-    r"Ignite\Inpatient\Entities\DischargeTypes":         {"v3": r"App\Models\DischargeType",        "transform": "generic"},
-    r"Ignite\Inpatient\Entities\DischargeType":          {"v3": r"App\Models\DischargeType",        "transform": "generic"},
-    r"Ignite\Inpatient\Entities\BedTypes":               {"v3": r"App\Models\BedType",              "transform": "generic"},
-    r"Ignite\Inpatient\Entities\BedType":                {"v3": r"App\Models\BedType",              "transform": "generic"},
-    r"Ignite\Inpatient\Entities\Beds":                   {"v3": r"App\Models\Bed",                  "transform": "generic"},
-    r"Ignite\Inpatient\Entities\Bed":                    {"v3": r"App\Models\Bed",                  "transform": "generic"},
-    r"Ignite\Inpatient\Entities\Wards":                  {"v3": r"App\Models\Ward",                 "transform": "generic"},
-    r"Ignite\Inpatient\Entities\Ward":                   {"v3": r"App\Models\Ward",                 "transform": "generic"},
-    r"Ignite\Inpatient\Entities\WardCharges":            {"v3": r"App\Models\WardCharge",           "transform": "generic"},
-    r"Ignite\Inpatient\Entities\WardCharge":             {"v3": r"App\Models\WardCharge",           "transform": "generic"},
+    # Inventory config: units → categories (self-ref) → suppliers → stores
+    r"Ignite\Inventory\Entities\Units":                      {"v3": r"App\Models\Unit",                        "transform": "generic"},
+    r"Ignite\Inventory\Entities\Unit":                       {"v3": r"App\Models\Unit",                        "transform": "generic"},
+    r"Ignite\Inventory\Entities\Categories":                 {"v3": r"App\Models\ProductCategory",             "transform": "inventory_category"},
+    r"Ignite\Inventory\Entities\Category":                   {"v3": r"App\Models\ProductCategory",             "transform": "inventory_category"},
+    r"Ignite\Inventory\Entities\Suppliers":                  {"v3": r"App\Models\Supplier",                    "transform": "generic"},
+    r"Ignite\Inventory\Entities\Supplier":                   {"v3": r"App\Models\Supplier",                    "transform": "generic"},
+    r"Ignite\Inventory\Entities\Stores":                     {"v3": r"App\Models\Store",                       "transform": "generic"},
+    r"Ignite\Inventory\Entities\Store":                      {"v3": r"App\Models\Store",                       "transform": "generic"},
 
-    # Settings → Core (additional lookup tables from gateway list)
-    r"Ignite\Settings\Entities\ServiceDestinations":     {"v3": r"App\Models\ServiceDestination",   "transform": "generic"},
-    r"Ignite\Settings\Entities\ServiceDestination":      {"v3": r"App\Models\ServiceDestination",   "transform": "generic"},
-    r"Ignite\Settings\Entities\DestinationTypes":        {"v3": r"App\Models\DestinationType",      "transform": "generic"},
-    r"Ignite\Settings\Entities\DestinationType":         {"v3": r"App\Models\DestinationType",      "transform": "generic"},
-    r"Ignite\Settings\Entities\PurposeOfVisits":         {"v3": r"App\Models\PurposeOfVisit",       "transform": "generic"},
-    r"Ignite\Settings\Entities\PurposeOfVisit":          {"v3": r"App\Models\PurposeOfVisit",       "transform": "generic"},
-    r"Ignite\Settings\Entities\PartnerInstitutions":     {"v3": r"App\Models\PartnerInstitution",   "transform": "generic"},
-    r"Ignite\Settings\Entities\PartnerInstitution":      {"v3": r"App\Models\PartnerInstitution",   "transform": "generic"},
-    r"Ignite\Settings\Entities\PartnerStaff":            {"v3": r"App\Models\PartnerStaff",         "transform": "generic"},
-    r"Ignite\Settings\Entities\EmployeeCategories":      {"v3": r"App\Models\EmployeeCategory",     "transform": "generic"},
-    r"Ignite\Settings\Entities\EmployeeCategory":        {"v3": r"App\Models\EmployeeCategory",     "transform": "generic"},
-    r"Ignite\Settings\Entities\CategoryFilters":         {"v3": r"App\Models\CategoryFilter",       "transform": "generic"},
-    r"Ignite\Settings\Entities\CategoryFilter":          {"v3": r"App\Models\CategoryFilter",       "transform": "generic"},
-    r"Ignite\Settings\Entities\DocumentTypes":           {"v3": r"App\Models\DocumentType",         "transform": "generic"},
-    r"Ignite\Settings\Entities\DocumentType":            {"v3": r"App\Models\DocumentType",         "transform": "generic"},
-    r"Ignite\Settings\Entities\Themes":                  {"v3": r"App\Models\Theme",                "transform": "generic"},
-    r"Ignite\Settings\Entities\Theme":                   {"v3": r"App\Models\Theme",                "transform": "generic"},
-    r"Ignite\Settings\Entities\AgeGroups":               {"v3": r"App\Models\AgeGroup",             "transform": "generic"},
-    r"Ignite\Settings\Entities\AgeGroup":                {"v3": r"App\Models\AgeGroup",             "transform": "generic"},
-    r"Ignite\Settings\Entities\ApprovalLevels":          {"v3": r"App\Models\ApprovalLevel",        "transform": "generic"},
-    r"Ignite\Settings\Entities\ApprovalLevel":           {"v3": r"App\Models\ApprovalLevel",        "transform": "generic"},
+    # Theatre config
+    r"Ignite\Theatre\Entities\TheatreTypes":                 {"v3": r"App\Models\TheatreType",                 "transform": "generic"},
+    r"Ignite\Theatre\Entities\TheatreType":                  {"v3": r"App\Models\TheatreType",                 "transform": "generic"},
+    r"Ignite\Theatre\Entities\TheatreMedicTypes":            {"v3": r"App\Models\TheatreMedicType",            "transform": "generic"},
+    r"Ignite\Theatre\Entities\TheatreMedicType":             {"v3": r"App\Models\TheatreMedicType",            "transform": "generic"},
+    r"Ignite\Theatre\Entities\TheatrePaymentTypes":          {"v3": r"App\Models\TheatrePaymentType",          "transform": "generic"},
+    r"Ignite\Theatre\Entities\TheatrePaymentType":           {"v3": r"App\Models\TheatrePaymentType",          "transform": "generic"},
+    r"Ignite\Theatre\Entities\TheatreSchedulingStatuses":    {"v3": r"App\Models\TheatreSchedulingStatus",     "transform": "generic"},
+    r"Ignite\Theatre\Entities\TheatreSchedulingStatus":      {"v3": r"App\Models\TheatreSchedulingStatus",     "transform": "generic"},
 
-    # Finance → Finance service (additional lookup tables)
-    r"Ignite\Finance\Entities\PaymentModes":             {"v3": r"App\Models\PaymentMode",          "transform": "generic"},
-    r"Ignite\Finance\Entities\PaymentMode":              {"v3": r"App\Models\PaymentMode",          "transform": "generic"},
-    r"Ignite\Finance\Entities\PaymentTerms":             {"v3": r"App\Models\PaymentTerm",          "transform": "generic"},
-    r"Ignite\Finance\Entities\PaymentTerm":              {"v3": r"App\Models\PaymentTerm",          "transform": "generic"},
-    r"Ignite\Finance\Entities\TaxCategories":            {"v3": r"App\Models\TaxCategory",          "transform": "generic"},
-    r"Ignite\Finance\Entities\TaxCategory":              {"v3": r"App\Models\TaxCategory",          "transform": "generic"},
-    r"Ignite\Finance\Entities\GlAccountGroups":          {"v3": r"App\Models\GlAccountGroup",       "transform": "generic"},
-    r"Ignite\Finance\Entities\GlAccountGroup":           {"v3": r"App\Models\GlAccountGroup",       "transform": "generic"},
-    r"Ignite\Finance\Entities\GlAccountTypes":           {"v3": r"App\Models\GlAccountType",        "transform": "generic"},
-    r"Ignite\Finance\Entities\GlAccountType":            {"v3": r"App\Models\GlAccountType",        "transform": "generic"},
-    r"Ignite\Finance\Entities\Charges":                  {"v3": r"App\Models\Charge",               "transform": "generic"},
-    r"Ignite\Finance\Entities\Charge":                   {"v3": r"App\Models\Charge",               "transform": "generic"},
-    # Customer lives in reception service in V3 — V2 namespace may be Reception or Finance
+    # Inpatient config (must precede wards → beds → admissions chain)
+    r"Ignite\Inpatient\Entities\BedTypes":                   {"v3": r"App\Models\BedType",                     "transform": "generic"},
+    r"Ignite\Inpatient\Entities\BedType":                    {"v3": r"App\Models\BedType",                     "transform": "generic"},
+    r"Ignite\Inpatient\Entities\AdmissionTypes":             {"v3": r"App\Models\AdmissionType",               "transform": "generic"},
+    r"Ignite\Inpatient\Entities\AdmissionType":              {"v3": r"App\Models\AdmissionType",               "transform": "generic"},
+    r"Ignite\Inpatient\Entities\DischargeTypes":             {"v3": r"App\Models\DischargeType",               "transform": "generic"},
+    r"Ignite\Inpatient\Entities\DischargeType":              {"v3": r"App\Models\DischargeType",               "transform": "generic"},
 
-    # Evaluation → Evaluation service (additional lookup/reference tables)
-    r"Ignite\Evaluation\Entities\DiagnosisCodes":        {"v3": r"App\Models\DiagnosisCode",        "transform": "generic"},
-    r"Ignite\Evaluation\Entities\DiagnosisCode":         {"v3": r"App\Models\DiagnosisCode",        "transform": "generic"},
-    r"Ignite\Evaluation\Entities\CriticalValues":        {"v3": r"App\Models\CriticalValue",        "transform": "generic"},
-    r"Ignite\Evaluation\Entities\CriticalValue":         {"v3": r"App\Models\CriticalValue",        "transform": "generic"},
-    r"Ignite\Evaluation\Entities\Icd10Types":            {"v3": r"App\Models\Icd10Type",            "transform": "generic"},
-    r"Ignite\Evaluation\Entities\Icd10Type":             {"v3": r"App\Models\Icd10Type",            "transform": "generic"},
-    r"Ignite\Evaluation\Entities\Icd10Categories":       {"v3": r"App\Models\Icd10Category",        "transform": "generic"},
-    r"Ignite\Evaluation\Entities\Icd10Category":         {"v3": r"App\Models\Icd10Category",        "transform": "generic"},
-    r"Ignite\Evaluation\Entities\Icd10Subcategories":    {"v3": r"App\Models\Icd10Subcategory",     "transform": "generic"},
-    r"Ignite\Evaluation\Entities\Icd10Subcategory":      {"v3": r"App\Models\Icd10Subcategory",     "transform": "generic"},
-    r"Ignite\Evaluation\Entities\BioReferenceRanges":    {"v3": r"App\Models\BioReferenceRange",    "transform": "generic"},
-    r"Ignite\Evaluation\Entities\BioReferenceRange":     {"v3": r"App\Models\BioReferenceRange",    "transform": "generic"},
-    r"Ignite\Evaluation\Entities\LabTestCategories":     {"v3": r"App\Models\LabTestCategory",      "transform": "generic"},
-    r"Ignite\Evaluation\Entities\LabTestCategory":       {"v3": r"App\Models\LabTestCategory",      "transform": "generic"},
-    r"Ignite\Evaluation\Entities\LabTestAdditives":      {"v3": r"App\Models\LabTestAdditive",      "transform": "generic"},
-    r"Ignite\Evaluation\Entities\LabTestAdditive":       {"v3": r"App\Models\LabTestAdditive",      "transform": "generic"},
-    r"Ignite\Evaluation\Entities\LabTestUnits":          {"v3": r"App\Models\LabTestUnit",          "transform": "generic"},
-    r"Ignite\Evaluation\Entities\LabTestUnit":           {"v3": r"App\Models\LabTestUnit",          "transform": "generic"},
-    r"Ignite\Evaluation\Entities\EvaluationFormulae":    {"v3": r"App\Models\EvaluationFormula",    "transform": "generic"},
-    r"Ignite\Evaluation\Entities\EvaluationFormula":     {"v3": r"App\Models\EvaluationFormula",    "transform": "generic"},
-    r"Ignite\Evaluation\Entities\EvaluationMachines":    {"v3": r"App\Models\EvaluationMachine",    "transform": "generic"},
-    r"Ignite\Evaluation\Entities\EvaluationMachine":     {"v3": r"App\Models\EvaluationMachine",    "transform": "generic"},
-    r"Ignite\Evaluation\Entities\PrescriptionFrequencies": {"v3": r"App\Models\PrescriptionFrequency", "transform": "generic"},
-    r"Ignite\Evaluation\Entities\PrescriptionFrequency": {"v3": r"App\Models\PrescriptionFrequency", "transform": "generic"},
-    r"Ignite\Evaluation\Entities\PrescriptionMeasures":  {"v3": r"App\Models\PrescriptionMeasure",  "transform": "generic"},
-    r"Ignite\Evaluation\Entities\PrescriptionMeasure":   {"v3": r"App\Models\PrescriptionMeasure",  "transform": "generic"},
-    r"Ignite\Evaluation\Entities\PrescriptionRoutes":    {"v3": r"App\Models\PrescriptionRoute",    "transform": "generic"},
-    r"Ignite\Evaluation\Entities\PrescriptionRoute":     {"v3": r"App\Models\PrescriptionRoute",    "transform": "generic"},
-    r"Ignite\Evaluation\Entities\ProcedureCategoryTemplates": {"v3": r"App\Models\ProcedureCategoryTemplate", "transform": "generic"},
-    r"Ignite\Evaluation\Entities\ProcedureCategoryTemplate":  {"v3": r"App\Models\ProcedureCategoryTemplate", "transform": "generic"},
-    r"Ignite\Evaluation\Entities\ProcedureTemplates":    {"v3": r"App\Models\ProcedureTemplate",    "transform": "generic"},
-    r"Ignite\Evaluation\Entities\ProcedureTemplate":     {"v3": r"App\Models\ProcedureTemplate",    "transform": "generic"},
-    r"Ignite\Evaluation\Entities\TemplateLabs":          {"v3": r"App\Models\TemplateLab",          "transform": "generic"},
-    r"Ignite\Evaluation\Entities\TemplateLab":           {"v3": r"App\Models\TemplateLab",          "transform": "generic"},
-    r"Ignite\Evaluation\Entities\Formulations":          {"v3": r"App\Models\Formulation",          "transform": "generic"},
-    r"Ignite\Evaluation\Entities\Formulation":           {"v3": r"App\Models\Formulation",          "transform": "generic"},
+    # ── TIER 2: Reception — patients root, then all children ─────────────────
+    r"Ignite\Reception\Entities\Customers":                  {"v3": r"App\Models\Customer",                    "transform": "generic"},
+    r"Ignite\Reception\Entities\Customer":                   {"v3": r"App\Models\Customer",                    "transform": "generic"},
+    r"Ignite\Reception\Entities\Patients":                   {"v3": r"App\Models\Patient",                     "transform": "reception_patient"},
+    r"Ignite\Reception\Entities\Patient":                    {"v3": r"App\Models\Patient",                     "transform": "reception_patient"},
+    r"Ignite\Reception\Entities\AppointmentCategories":      {"v3": r"App\Models\AppointmentCategory",         "transform": "generic"},
+    r"Ignite\Reception\Entities\AppointmentCategory":        {"v3": r"App\Models\AppointmentCategory",         "transform": "generic"},
+    r"Ignite\Reception\Entities\Appointments":               {"v3": r"App\Models\Appointment",                 "transform": "reception_appointment"},
+    r"Ignite\Reception\Entities\Appointment":                {"v3": r"App\Models\Appointment",                 "transform": "reception_appointment"},
+    r"Ignite\Reception\Entities\Visits":                     {"v3": r"App\Models\Visit",                       "transform": "reception_visit"},
+    r"Ignite\Reception\Entities\Visit":                      {"v3": r"App\Models\Visit",                       "transform": "reception_visit"},
+    r"Ignite\Reception\Entities\PatientSchemes":             {"v3": r"App\Models\PatientInsurance",            "transform": "reception_patient_scheme"},
+    r"Ignite\Reception\Entities\PatientScheme":              {"v3": r"App\Models\PatientInsurance",            "transform": "reception_patient_scheme"},
+    r"Ignite\Reception\Entities\PatientNextOfKins":          {"v3": r"App\Models\PatientNextOfKin",            "transform": "generic"},
+    r"Ignite\Reception\Entities\PatientNextOfKin":           {"v3": r"App\Models\PatientNextOfKin",            "transform": "generic"},
+    r"Ignite\Reception\Entities\PatientDocuments":           {"v3": r"App\Models\PatientDocument",             "transform": "generic"},
+    r"Ignite\Reception\Entities\PatientDocument":            {"v3": r"App\Models\PatientDocument",             "transform": "generic"},
+    r"Ignite\Reception\Entities\PatientDependants":          {"v3": r"App\Models\PatientDependant",            "transform": "generic"},
+    r"Ignite\Reception\Entities\PatientDependant":           {"v3": r"App\Models\PatientDependant",            "transform": "generic"},
+    r"Ignite\Reception\Entities\PatientGuarantors":          {"v3": r"App\Models\PatientGuarantor",            "transform": "generic"},
+    r"Ignite\Reception\Entities\PatientGuarantor":           {"v3": r"App\Models\PatientGuarantor",            "transform": "generic"},
+    r"Ignite\Reception\Entities\PatientFollowups":           {"v3": r"App\Models\PatientFollowup",             "transform": "generic"},
+    r"Ignite\Reception\Entities\PatientFollowup":            {"v3": r"App\Models\PatientFollowup",             "transform": "generic"},
+    r"Ignite\Reception\Entities\PatientSamples":             {"v3": r"App\Models\PatientSample",               "transform": "generic"},
+    r"Ignite\Reception\Entities\PatientSample":              {"v3": r"App\Models\PatientSample",               "transform": "generic"},
+    r"Ignite\Reception\Entities\PatientRandomNotes":         {"v3": r"App\Models\PatientRandomNote",           "transform": "generic"},
+    r"Ignite\Reception\Entities\PatientRandomNote":          {"v3": r"App\Models\PatientRandomNote",           "transform": "generic"},
+    r"Ignite\Reception\Entities\PatientConsents":            {"v3": r"App\Models\PatientConsent",              "transform": "generic"},
+    r"Ignite\Reception\Entities\PatientConsent":             {"v3": r"App\Models\PatientConsent",              "transform": "generic"},
+    r"Ignite\Reception\Entities\MorgueAdmissions":           {"v3": r"App\Models\MorgueAdmission",             "transform": "generic"},
+    r"Ignite\Reception\Entities\MorgueAdmission":            {"v3": r"App\Models\MorgueAdmission",             "transform": "generic"},
+    r"Ignite\Reception\Entities\VisitDestinations":          {"v3": r"App\Models\VisitDestination",            "transform": "generic"},
+    r"Ignite\Reception\Entities\VisitDestination":           {"v3": r"App\Models\VisitDestination",            "transform": "generic"},
+    r"Ignite\Reception\Entities\VisitConsultants":           {"v3": r"App\Models\VisitConsultant",             "transform": "generic"},
+    r"Ignite\Reception\Entities\VisitConsultant":            {"v3": r"App\Models\VisitConsultant",             "transform": "generic"},
+    r"Ignite\Reception\Entities\VisitPrecharges":            {"v3": r"App\Models\VisitPrecharge",              "transform": "generic"},
+    r"Ignite\Reception\Entities\VisitPrecharge":             {"v3": r"App\Models\VisitPrecharge",              "transform": "generic"},
+    r"Ignite\Reception\Entities\Queues":                     {"v3": r"App\Models\Queue",                       "transform": "generic"},
+    r"Ignite\Reception\Entities\Queue":                      {"v3": r"App\Models\Queue",                       "transform": "generic"},
+    r"Ignite\Reception\Entities\Referrals":                  {"v3": r"App\Models\Referral",                    "transform": "generic"},
+    r"Ignite\Reception\Entities\Referral":                   {"v3": r"App\Models\Referral",                    "transform": "generic"},
 
-    # Reception → Core service (appointment categories are lookup tables)
-    r"Ignite\Reception\Entities\AppointmentCategories":  {"v3": r"App\Models\AppointmentCategory",  "transform": "generic"},
-    r"Ignite\Reception\Entities\AppointmentCategory":    {"v3": r"App\Models\AppointmentCategory",  "transform": "generic"},
+    # Inventory transactional (after config)
+    r"Ignite\Inventory\Entities\Products":                   {"v3": r"App\Models\Product",                     "transform": "inventory_product"},
+    r"Ignite\Inventory\Entities\Product":                    {"v3": r"App\Models\Product",                     "transform": "inventory_product"},
+    r"Ignite\Inventory\Entities\BatchPurchases":             {"v3": r"App\Models\Batch",                       "transform": "inventory_batch"},
+    r"Ignite\Inventory\Entities\BatchPurchase":              {"v3": r"App\Models\Batch",                       "transform": "inventory_batch"},
+    r"Ignite\Inventory\Entities\PurchaseOrders":             {"v3": r"App\Models\PurchaseOrder",               "transform": "inventory_purchase_order"},
+    r"Ignite\Inventory\Entities\PurchaseOrder":              {"v3": r"App\Models\PurchaseOrder",               "transform": "inventory_purchase_order"},
+    r"Ignite\Inventory\Entities\Requisitions":               {"v3": r"App\Models\Requisition",                 "transform": "inventory_requisition"},
+    r"Ignite\Inventory\Entities\Requisition":                {"v3": r"App\Models\Requisition",                 "transform": "inventory_requisition"},
+    r"Ignite\Inventory\Entities\GoodsReceived":              {"v3": r"App\Models\GoodsReceivedNote",           "transform": "inventory_grn"},
+
+    # Theatre transactional: types → theatres → bookings → schedules → operations
+    r"Ignite\Theatre\Entities\Theatres":                     {"v3": r"App\Models\Theatre",                     "transform": "theatre_theatre"},
+    r"Ignite\Theatre\Entities\Theatre":                      {"v3": r"App\Models\Theatre",                     "transform": "theatre_theatre"},
+    r"Ignite\Theatre\Entities\TheatreBookings":              {"v3": r"App\Models\TheatreBooking",              "transform": "theatre_booking"},
+    r"Ignite\Theatre\Entities\TheatreBooking":               {"v3": r"App\Models\TheatreBooking",              "transform": "theatre_booking"},
+    r"Ignite\Theatre\Entities\TheatreSchedules":             {"v3": r"App\Models\TheatreSchedule",             "transform": "generic"},
+    r"Ignite\Theatre\Entities\TheatreSchedule":              {"v3": r"App\Models\TheatreSchedule",             "transform": "generic"},
+    r"Ignite\Theatre\Entities\TheatreOperations":            {"v3": r"App\Models\TheatreOperation",            "transform": "generic"},
+    r"Ignite\Theatre\Entities\TheatreOperation":             {"v3": r"App\Models\TheatreOperation",            "transform": "generic"},
+
+    # ── TIER 3: Inpatient transactional ──────────────────────────────────────
+    # Order: wards → beds → admission_requests → admissions
+    # (vitals/notes/discharges in Tier 5 — all need admission_id)
+    r"Ignite\Inpatient\Entities\Wards":                      {"v3": r"App\Models\Ward",                        "transform": "generic"},
+    r"Ignite\Inpatient\Entities\Ward":                       {"v3": r"App\Models\Ward",                        "transform": "generic"},
+    r"Ignite\Inpatient\Entities\Beds":                       {"v3": r"App\Models\Bed",                         "transform": "inpatient_bed"},
+    r"Ignite\Inpatient\Entities\Bed":                        {"v3": r"App\Models\Bed",                         "transform": "inpatient_bed"},
+    r"Ignite\Inpatient\Entities\WardCharges":                {"v3": r"App\Models\WardCharge",                  "transform": "generic"},
+    r"Ignite\Inpatient\Entities\WardCharge":                 {"v3": r"App\Models\WardCharge",                  "transform": "generic"},
+    r"Ignite\Inpatient\Entities\AdmissionRequests":          {"v3": r"App\Models\AdmissionRequest",            "transform": "inpatient_admission_request"},
+    r"Ignite\Inpatient\Entities\AdmissionRequest":           {"v3": r"App\Models\AdmissionRequest",            "transform": "inpatient_admission_request"},
+    r"Ignite\Inpatient\Entities\Admissions":                 {"v3": r"App\Models\Admission",                   "transform": "inpatient_admission"},
+    r"Ignite\Inpatient\Entities\Admission":                  {"v3": r"App\Models\Admission",                   "transform": "inpatient_admission"},
+
+    # ── TIER 4: Evaluation clinical (visits must exist) ───────────────────────
+    r"Ignite\Evaluation\Entities\DoctorNotes":               {"v3": r"App\Models\DoctorNote",                  "transform": "evaluation_doctor_note"},
+    r"Ignite\Evaluation\Entities\DoctorNote":                {"v3": r"App\Models\DoctorNote",                  "transform": "evaluation_doctor_note"},
+    r"Ignite\Evaluation\Entities\Prescriptions":             {"v3": r"App\Models\Prescription",                "transform": "generic"},
+    r"Ignite\Evaluation\Entities\Prescription":              {"v3": r"App\Models\Prescription",                "transform": "generic"},
+    r"Ignite\Evaluation\Entities\ExaminationReviews":        {"v3": r"App\Models\ExaminationReview",           "transform": "generic"},
+    r"Ignite\Evaluation\Entities\ExaminationReview":         {"v3": r"App\Models\ExaminationReview",           "transform": "generic"},
+    r"Ignite\Evaluation\Entities\EyeExams":                  {"v3": r"App\Models\EyeExam",                     "transform": "evaluation_eye_exam"},
+    r"Ignite\Evaluation\Entities\EyeExam":                   {"v3": r"App\Models\EyeExam",                     "transform": "evaluation_eye_exam"},
+    # Investigations before results (result.investigation_id → investigations.id)
+    r"Ignite\Evaluation\Entities\Investigations":            {"v3": r"App\Models\Investigation",               "transform": "generic"},
+    r"Ignite\Evaluation\Entities\Investigation":             {"v3": r"App\Models\Investigation",               "transform": "generic"},
+    r"Ignite\Evaluation\Entities\InvestigationResults":      {"v3": r"App\Models\InvestigationResult",         "transform": "evaluation_inv_result"},
+    r"Ignite\Evaluation\Entities\InvestigationResult":       {"v3": r"App\Models\InvestigationResult",         "transform": "evaluation_inv_result"},
+
+    # ── TIER 5: Inpatient vitals / notes (admissions must exist first) ────────
+    # inp_vitals.admission_id → inp_admissions.id
+    r"Ignite\Evaluation\Entities\Vitals":                    {"v3": r"App\Models\Vital",                       "transform": "inpatient_vital"},
+    r"Ignite\Evaluation\Entities\Vital":                     {"v3": r"App\Models\Vital",                       "transform": "inpatient_vital"},
+
+    # ── TIER 6: Finance transactional (patients + insurance must exist) ───────
+    r"Ignite\Finance\Entities\PatientAccounts":              {"v3": r"App\Models\PatientAccount",              "transform": "generic"},
+    r"Ignite\Finance\Entities\PatientAccount":               {"v3": r"App\Models\PatientAccount",              "transform": "generic"},
+    r"Ignite\Finance\Entities\Invoices":                     {"v3": r"App\Models\Invoice",                     "transform": "finance_invoice"},
+    r"Ignite\Finance\Entities\Invoice":                      {"v3": r"App\Models\Invoice",                     "transform": "finance_invoice"},
+    r"Ignite\Finance\Entities\Waivers":                      {"v3": r"App\Models\Waiver",                      "transform": "generic"},
+    r"Ignite\Finance\Entities\Waiver":                       {"v3": r"App\Models\Waiver",                      "transform": "generic"},
+    r"Ignite\Finance\Entities\Copays":                       {"v3": r"App\Models\Copay",                       "transform": "finance_copay"},
+    r"Ignite\Finance\Entities\Copay":                        {"v3": r"App\Models\Copay",                       "transform": "finance_copay"},
+    r"Ignite\Finance\Entities\EvaluationPayments":           {"v3": r"App\Models\EvaluationPayment",           "transform": "finance_eval_payment"},
+    r"Ignite\Finance\Entities\EvaluationPayment":            {"v3": r"App\Models\EvaluationPayment",           "transform": "finance_eval_payment"},
+    r"Ignite\Finance\Entities\InvoicePayments":              {"v3": r"App\Models\InvoicePayment",              "transform": "generic"},
+    r"Ignite\Finance\Entities\InvoicePayment":               {"v3": r"App\Models\InvoicePayment",              "transform": "generic"},
+    r"Ignite\Finance\Entities\Vouchers":                     {"v3": r"App\Models\Voucher",                     "transform": "finance_voucher"},
+    r"Ignite\Finance\Entities\Voucher":                      {"v3": r"App\Models\Voucher",                     "transform": "finance_voucher"},
+    r"Ignite\Finance\Entities\PatientDeposits":              {"v3": r"App\Models\PatientDeposit",              "transform": "generic"},
+    r"Ignite\Finance\Entities\PatientDeposit":               {"v3": r"App\Models\PatientDeposit",              "transform": "generic"},
+    r"Ignite\Finance\Entities\PatientWithdrawals":           {"v3": r"App\Models\PatientWithdrawal",           "transform": "generic"},
+    r"Ignite\Finance\Entities\PatientWithdrawal":            {"v3": r"App\Models\PatientWithdrawal",           "transform": "generic"},
+    r"Ignite\Finance\Entities\PettyCash":                    {"v3": r"App\Models\PettyCash",                   "transform": "generic"},
+    r"Ignite\Finance\Entities\Dispatches":                   {"v3": r"App\Models\Dispatch",                    "transform": "generic"},
+    r"Ignite\Finance\Entities\Dispatch":                     {"v3": r"App\Models\Dispatch",                    "transform": "generic"},
 }
+
+# Tier boundary — the first namespace that opens each tier.
+# Jobs are dispatched tier-by-tier (all of tier N must finish before tier N+1 starts)
+# so that FK parents are always present in _id_map before children are posted.
+# Within a tier, jobs run in parallel up to --workers.
+_TIER_BOUNDARIES: list[str] = [
+    r"Ignite\Reception\Entities\Customers",     # Tier 2: reception / patients
+    r"Ignite\Inpatient\Entities\Wards",         # Tier 3: inpatient transactional
+    r"Ignite\Evaluation\Entities\DoctorNotes",  # Tier 4: evaluation clinical
+    r"Ignite\Evaluation\Entities\Vitals",       # Tier 5: vitals (needs admissions)
+    r"Ignite\Finance\Entities\PatientAccounts", # Tier 6: finance transactional
+]
+
+
+def _namespace_tier(ns: str) -> int:
+    """Return the tier number (1-6) for a namespace based on _TIER_BOUNDARIES."""
+    ns_keys = list(NAMESPACE_MAP.keys())
+    try:
+        ns_pos = ns_keys.index(ns)
+    except ValueError:
+        return 1
+    tier = 1
+    for boundary in _TIER_BOUNDARIES:
+        try:
+            if ns_keys.index(boundary) <= ns_pos:
+                tier += 1
+        except ValueError:
+            pass
+    return tier
+
 
 # ─── FIELD TRANSFORMS ────────────────────────────────────────────────────────
 
@@ -522,6 +564,10 @@ _PER_KEY_RENAMES: dict[str, dict[str, str]] = {
     "eval_procedure": {},
     "eval_sample_type": {},
     "settings_rebate": {},
+    "inpatient_vital": {},               # admission_id FK remapped via _FK_REMAP
+    "inpatient_bed": {},                 # ward_id / bed_type_id FK remapped via _FK_REMAP
+    "inpatient_admission": {},           # admission_type_id FK remapped via _FK_REMAP
+    "inpatient_admission_request": {},   # preferred_ward_id / preferred_bed_type_id via _FK_REMAP
     "settings_user": {
         "username":   "email",
         "first_name": "first_name",
@@ -535,6 +581,7 @@ _PER_KEY_DROP_FIELDS: dict[str, list] = {
     "settings_scheme":         ["companies", "type_name", "full_name", "disabled"],
     "eval_procedure_category": ["procedures"],   # nested relation array
     "settings_user":           ["password", "remember_token", "api_token", "roles", "permissions", "abilities"],
+    "evaluation_doctor_note":  ["nutrition_and_diatetics", "mohDiagnosis"],  # V2-only columns, not in V3 schema
 }
 
 # Fields that must be non-null for a record to be sent; records missing them are skipped
@@ -542,6 +589,7 @@ _PER_KEY_REQUIRED_FIELDS: dict[str, list] = {
     "settings_insurance":      ["name"],
     "eval_procedure_category": ["name"],
     "settings_user":           ["email"],
+    "evaluation_inv_result":   ["investigation_id"],
 }
 
 # Default values to inject when V3 returns a NOT NULL constraint violation for a column
@@ -552,8 +600,11 @@ _V3_NULL_DEFAULTS: dict[str, Any] = {
     "invoice_type":       "standard",    # V2 didn't distinguish invoice types
     "currency":           "KES",         # default to Kenyan shilling
     "payment_method":     "cash",
-    "created_by":         1,             # system/admin user for migrated records
-    "updated_by":         1,
+    "created_by":          1,             # system/admin user for migrated records
+    "updated_by":          1,
+    "recorded_by":         1,
+    "admitting_doctor_id":  1,
+    "admission_diagnosis":  "Not specified",
 }
 
 # Layer 2: coercions — value-level transforms applied after renaming.
@@ -568,6 +619,30 @@ def _wrap_in_list(v) -> list:
     if v is None:
         return []
     return v if isinstance(v, list) else [v]
+
+# Layer 3: field injections — generate V3-required fields that V2 never had.
+# Each entry: field_name → fn(record_dict) → value.
+# Only called when the field is absent or None in the record after all renames.
+# Use this (not _V3_NULL_DEFAULTS) whenever the default must be unique per row.
+_PER_KEY_INJECT: dict[str, dict[str, Any]] = {
+    "inpatient_admission_request": {
+        # V3 inp_admission_requests requires a unique request_number; V2 had none.
+        "request_number": lambda r: f"REQ-{r.get('id', 'unknown')}",
+    },
+    "inpatient_admission": {
+        # V3 inp_admissions requires a unique admission_number; V2 had none.
+        "admission_number": lambda r: f"ADM-{r.get('id', 'unknown')}",
+        # Fall back to created_at if V2 didn't carry an explicit admission_date.
+        "admission_date":   lambda r: r.get("created_at") or r.get("updated_at"),
+    },
+    "evaluation_doctor_note": {
+        # V2 DoctorNote has no patient_id column — it's visit → patient.
+        # Chain: V2 visit_id → V2 patient_id (persisted map) → V3 patient_id (id_map).
+        "patient_id": lambda r: _id_map.get("patient", {}).get(
+            _visit_patient_map.get(r.get("visit_id"))
+        ),
+    },
+}
 
 _PER_KEY_COERCIONS: dict[str, dict[str, Any]] = {
     "reception_patient_scheme": {
@@ -601,6 +676,7 @@ def transform_record(record: dict, transform_key: str, org_cfg: dict) -> dict | 
       3. Per-key renames
       4. Per-key field drops
       5. Per-key coercions
+      5b. Per-key injections (generate V3-required fields absent from V2)
       6. Required-field validation
     """
     out = dict(record)
@@ -641,6 +717,15 @@ def transform_record(record: dict, transform_key: str, org_cfg: dict) -> dict | 
             continue
         if field in out:
             out[field] = fn(out[field])
+
+    # 5b. Populate visit→patient side-channel so doctor_note can derive patient_id.
+    if tk == "reception_visit" and record.get("id") and record.get("patient_id"):
+        _record_visit_patient(int(record["id"]), int(record["patient_id"]))
+
+    # 5c. Per-key injections — add V3-required fields that V2 never had
+    for field, fn in _PER_KEY_INJECT.get(tk, {}).items():
+        if not out.get(field):
+            out[field] = fn(out)
 
     # 6. Required-field validation — skip records missing non-null required fields
     for field in _PER_KEY_REQUIRED_FIELDS.get(tk, []):
@@ -909,6 +994,7 @@ def extract_v2_records(job: dict) -> list[dict]:
     pagination = payload.get("pagination") or {}
     has_more   = bool(pagination.get("has_more_pages", False))
     last_page  = pagination.get("last_page")
+    max_pages  = job.get("max_pages")  # None = unlimited
 
     if not has_more:
         return all_rows
@@ -923,6 +1009,8 @@ def extract_v2_records(job: dict) -> list[dict]:
 
     if last_page is not None:
         last_page = min(int(last_page), 10_000)
+        if max_pages is not None:
+            last_page = min(last_page, max_pages)
         pages = list(range(2, last_page + 1))
         page_rows: dict[int, list] = {}
         with ThreadPoolExecutor(max_workers=max(1, PAGE_WORKERS)) as pool:
@@ -939,6 +1027,9 @@ def extract_v2_records(job: dict) -> list[dict]:
         page += 1
         if page > 10_000:
             log.warning("Pagination safety stop at page %s", page)
+            break
+        if max_pages is not None and page > max_pages:
+            log.info("Pagination capped at %s pages (--max-pages)", max_pages)
             break
         r2, _ = _post_with_retry(
             url=url, headers=headers,
@@ -997,6 +1088,7 @@ def _fetch_available_models() -> set[str]:
                     "service":    service_name,
                 }
                 _alias_to_service[alias] = service_name
+                # import pdb;pdb.set_trace()
                 if "insert" in ops:
                     available.add(alias)
             log.info("Gateway [%s]: %d insertable models", service_name,
@@ -1086,8 +1178,8 @@ def _post_to_v3_batch(
     org_cfg: dict,
     record: dict,
     *,
-    max_retries: int = 6,
-    default_retry_wait: int = V3_RETRY_WAIT,
+    max_retries: int = 3,
+    default_retry_wait: int = 5,
     backoff_factor: int = 2,
 ) -> None:
     """POST a single record object to the V3 gateway. Retries on 429/5xx/401."""
@@ -1145,7 +1237,8 @@ def _post_to_v3_batch(
                 except Exception:
                     err_body = {}
                 debug_msg = (err_body.get("debug") or {}).get("message", "")
-                log.error("  V3 500 reason: %s", debug_msg or r.text[:400])
+                rec_id    = record.get("id", "?")
+                reason    = debug_msg or r.text[:300]
 
                 # Category 1 — NOT NULL / missing-default constraint: patch and retry
                 # Catches both:
@@ -1160,50 +1253,56 @@ def _post_to_v3_batch(
                     default = _V3_NULL_DEFAULTS.get(col)
                     if default is not None and body["data"].get(col) is None:
                         log.warning(
-                            "  V3 500 NULL constraint on '%s' — injecting default %r and retrying",
-                            col, default,
+                            "  V3 500 id=%-6s NULL constraint on '%s' — injecting default %r and retrying",
+                            rec_id, col, default,
                         )
                         body["data"] = {**body["data"], col: default}
                         _patched = True
                         continue  # one retry with the patched record
-                    # Column missing from defaults dict or already set — give up
                     log.error(
-                        "  V3 500 NULL constraint on '%s' — no default configured, "
-                        "add it to _V3_NULL_DEFAULTS. Writing to dead-letter.", col,
+                        "  V3 500 id=%-6s NULL constraint on '%s' — no default in _V3_NULL_DEFAULTS "
+                        "→ dead-letter  |  reason: %s",
+                        rec_id, col, reason,
                     )
                     _write_dead_letter(v3_namespace, record, err_body)
                     return
 
                 # Category 2 — Duplicate entry: record already exists in V3, skip silently
                 if "Duplicate entry" in debug_msg:
-                    log.info("  V3 500 duplicate — record already exists in V3, skipping")
+                    log.info(
+                        "  V3 500 id=%-6s duplicate — already exists in V3, skipping  |  reason: %s",
+                        rec_id, reason,
+                    )
                     return
 
-                # Category 3 — Generic server fault
-                # If we already patched this record and it still fails, the injected
-                # default is invalid for V3 — retrying won't help, dead-letter immediately.
-                if _patched:
+                # Category 2.5 — Unknown column: V2 has a column V3 schema doesn't.
+                # Strip it from the payload and retry immediately.
+                unknown_col = re.search(r"Unknown column '(\w+)'", debug_msg)
+                if unknown_col:
+                    col = unknown_col.group(1)
+                    if col in body["data"]:
+                        log.warning(
+                            "  V3 500 id=%-6s Unknown column '%s' — dropping and retrying",
+                            rec_id, col,
+                        )
+                        body["data"] = {k: v for k, v in body["data"].items() if k != col}
+                        continue
+                    # Column isn't in our payload (computed by SQL) — nothing to strip
                     log.error(
-                        "  V3 500 after patch — default value rejected by V3. "
-                        "Check _V3_NULL_DEFAULTS for '%s'. Writing to dead-letter: %s",
-                        col if null_col else "?", r.text[:400],
+                        "  V3 500 id=%-6s Unknown column '%s' not in payload → dead-letter",
+                        rec_id, col,
                     )
                     _write_dead_letter(v3_namespace, record, err_body)
                     return
-                if attempt >= max_retries:
-                    log.error(
-                        "  V3 500 server fault — max retries reached. Writing to dead-letter: %s",
-                        r.text[:400],
-                    )
-                    _write_dead_letter(v3_namespace, record, err_body)
-                    return
-                log.warning(
-                    "  V3 500 server fault — sleeping %ss (%s/%s)",
-                    wait, attempt, max_retries,
+
+                # Category 3 — Generic server fault: dead-letter immediately, no retry.
+                # 500s on insert are almost always data issues, not transient faults.
+                log.error(
+                    "  V3 500 id=%-6s server fault → dead-letter  |  reason: %s",
+                    rec_id, reason,
                 )
-                time.sleep(wait)
-                wait = min(wait * backoff_factor, 120)
-                continue
+                _write_dead_letter(v3_namespace, record, err_body)
+                return
 
             if r.status_code in {502, 503, 504}:
                 log.error("  V3 %s response body: %s", r.status_code, r.text[:2000])
@@ -1211,12 +1310,23 @@ def _post_to_v3_batch(
                     r.raise_for_status()
                 log.warning("  V3 %s sleeping %ss (%s/%s)", r.status_code, wait, attempt, max_retries)
                 time.sleep(wait)
-                wait = min(wait * backoff_factor, 120)
+                wait = min(wait * backoff_factor, 15)
                 continue
 
             if r.status_code == 422:
-                log.error("  V3 422 response body: %s", r.text[:2000])
-                r.raise_for_status()
+                # Validation / schema error on this one record — dead-letter and move on.
+                # Do NOT raise: a single bad record must not kill the entire job.
+                try:
+                    err_body = r.json()
+                except Exception:
+                    err_body = {}
+                rec_id = record.get("id", "?")
+                log.error(
+                    "  V3 422 id=%-6s validation error → dead-letter  |  %s",
+                    rec_id, r.text[:500],
+                )
+                _write_dead_letter(v3_namespace, record, err_body)
+                return
 
             if not r.ok:
                 log.error("  V3 %s response body: %s", r.status_code, r.text[:2000])
@@ -1268,7 +1378,7 @@ def post_to_v3(
 
     def _post_one(record: dict) -> None:
         nonlocal done_count
-        remapped = _remap_fks(record, transform_key)
+        remapped = _remap_fks(record, transform_key, v3_namespace)
         v3_id = _post_to_v3_batch(v3_namespace, org_cfg, remapped)
         record_id = record.get("id")
         if record_id is not None:
@@ -1343,6 +1453,39 @@ def _mark_done(run_id: str, job_key: str) -> None:
             {"run_id": run_id, "completed": sorted(_completed_jobs)},
             indent=2,
         ))
+    _mark_permanently_done(job_key)
+
+
+# ─── CROSS-RUN DONE TRACKING ─────────────────────────────────────────────────
+# Jobs recorded here are skipped before V2 is even called on any future run.
+# Delete .migration_done.json (or use --no-resume) to force a full re-migration.
+
+_done_lock             = threading.Lock()
+_permanently_done: set[str] = set()
+
+
+def _load_permanently_done() -> None:
+    global _permanently_done
+    if DONE_FILE.exists():
+        try:
+            data = json.loads(DONE_FILE.read_text())
+            _permanently_done = set(data.get("done", []))
+            if _permanently_done:
+                log.info(
+                    "Skipping %d already-migrated jobs (delete %s to re-run them)",
+                    len(_permanently_done), DONE_FILE.name,
+                )
+        except Exception as e:
+            log.warning("Could not load %s: %s", DONE_FILE.name, e)
+            _permanently_done = set()
+
+
+def _mark_permanently_done(job_key: str) -> None:
+    with _done_lock:
+        _permanently_done.add(job_key)
+        DONE_FILE.write_text(json.dumps(
+            {"done": sorted(_permanently_done)}, indent=2,
+        ))
 
 
 def _job_key(facility: str, namespace: str) -> str:
@@ -1407,6 +1550,34 @@ def _mark_record_inserted(job_key: str, record_id) -> None:
 _id_map: dict[str, dict] = {}      # alias → {v2_id: v3_id}
 _id_map_lock = threading.Lock()
 
+# Secondary lookup: V2 visit_id → V2 patient_id.
+# Persisted to VISIT_PATIENT_FILE so it survives across interrupted/resumed runs.
+# Populated when reception_visit records are transformed; used by DoctorNote inject.
+_visit_patient_map: dict[int, int] = {}
+_visit_patient_dirty: int = 0
+
+
+def _load_visit_patient_map() -> None:
+    global _visit_patient_map
+    if VISIT_PATIENT_FILE.exists():
+        try:
+            raw = json.loads(VISIT_PATIENT_FILE.read_text())
+            _visit_patient_map = {int(k): int(v) for k, v in raw.items() if v is not None}
+            log.info("Visit→patient map loaded — %d entries", len(_visit_patient_map))
+        except Exception as e:
+            log.warning("Could not load visit→patient map: %s — starting fresh", e)
+            _visit_patient_map = {}
+    else:
+        _visit_patient_map = {}
+
+
+def _record_visit_patient(v2_visit_id: int, v2_patient_id: int) -> None:
+    global _visit_patient_dirty
+    _visit_patient_map[v2_visit_id] = v2_patient_id
+    _visit_patient_dirty += 1
+    if _visit_patient_dirty % 500 == 0:
+        VISIT_PATIENT_FILE.write_text(json.dumps(_visit_patient_map))
+
 
 # Which FK fields to remap, and which model alias holds their ID map.
 _FK_REMAP: dict[str, dict[str, str]] = {
@@ -1431,6 +1602,118 @@ _FK_REMAP: dict[str, dict[str, str]] = {
         "unit_id":     "unit",
         "category_id": "product_category",
     },
+
+    # ── Inpatient FK chain ────────────────────────────────────────────────────
+    # beds.ward_id → wards.id  |  beds.bed_type_id → bed_types.id
+    "inpatient_bed": {
+        "ward_id":     "ward",
+        "bed_type_id": "bed_type",
+    },
+    # admission_requests.preferred_ward_id / preferred_bed_type_id
+    "inpatient_admission_request": {
+        "preferred_ward_id":     "ward",
+        "preferred_bed_type_id": "bed_type",
+    },
+    # admissions.admission_type_id → admission_types.id
+    # admissions.admission_request_id → admission_requests.id
+    "inpatient_admission": {
+        "admission_type_id":    "admission_type",
+        "admission_request_id": "admission_request",
+    },
+    # inp_vitals.admission_id → inp_admissions.id  (THE critical blocker)
+    "inpatient_vital": {
+        "admission_id": "admission",
+    },
+
+    # ── Evaluation FK chain ───────────────────────────────────────────────────
+    # investigation_results.investigation_id → investigations.id
+    "evaluation_inv_result": {
+        "investigation_id": "investigation",
+    },
+    # doctor_notes.visit_id → visits.id  (patient_id is injected via _PER_KEY_INJECT)
+    "evaluation_doctor_note": {
+        "visit_id": "visit",
+    },
+
+    # ── Reception FK chain ────────────────────────────────────────────────────
+    # appointments.appointment_category_id → appointment_categories.id
+    "reception_appointment": {
+        "appointment_category_id": "appointment_category",
+    },
+    # visits.patient_id → patients.id  |  visits.appointment_id → appointments.id
+    "reception_visit": {
+        "patient_id":     "patient",
+        "appointment_id": "appointment",
+    },
+    # patient_insurance.patient_id + insurance_scheme_id
+    "reception_patient_scheme": {
+        "patient_id":          "patient",
+        "insurance_scheme_id": "insurance_scheme",
+    },
+
+    # ── Users / settings ─────────────────────────────────────────────────────
+    # user profiles carry department, employee_category, speciality FKs
+    "settings_user": {
+        "department_id":        "department",
+        "employee_category_id": "employee_category",
+        "speciality_id":        "specialty",
+    },
+}
+
+# FK remaps keyed by V3 namespace for tables whose transform is "generic".
+# _remap_fks merges this with _FK_REMAP so both dicts apply.
+_NS_FK_REMAP: dict[str, dict[str, str]] = {
+
+    # ── Reception: patient children ──────────────────────────────────────────
+    r"App\Models\Appointment":      {"appointment_category_id": "appointment_category"},
+    r"App\Models\PatientFollowup":  {"patient_id": "patient",  "visit_id": "visit"},
+    r"App\Models\PatientGuarantor": {"patient_id": "patient"},
+    r"App\Models\PatientNextOfKin": {"patient_id": "patient"},
+    r"App\Models\PatientConsent":   {"patient_id": "patient"},
+    r"App\Models\PatientSample":    {"patient_id": "patient",  "visit_id": "visit"},
+    r"App\Models\PatientDependant": {"patient_id": "patient"},
+    r"App\Models\PatientRandomNote":{"patient_id": "patient"},
+
+    # ── Reception: visit children ─────────────────────────────────────────────
+    r"App\Models\MorgueAdmission":  {"patient_id": "patient",  "visit_id": "visit"},
+    r"App\Models\Queue":            {"patient_id": "patient",  "visit_id": "visit"},
+    r"App\Models\VisitDestination": {"visit_id": "visit"},
+    r"App\Models\VisitConsultant":  {"visit_id": "visit"},
+    r"App\Models\VisitPrecharge":   {"visit_id": "visit"},
+
+    # ── Evaluation clinical ───────────────────────────────────────────────────
+    r"App\Models\Investigation":    {"visit_id": "visit"},
+    r"App\Models\Prescription":     {"visit_id": "visit",      "patient_id": "patient"},
+    r"App\Models\EyeExam":          {"visit_id": "visit"},
+    r"App\Models\Sample":           {"visit_id": "visit"},
+    r"App\Models\Diagnosis":        {"visit_id": "visit"},
+
+    # ── Evaluation reference chain ────────────────────────────────────────────
+    r"App\Models\Icd10Subcategory": {"category_id":    "icd10_category"},
+    r"App\Models\Icd10Type":        {"subcategory_id": "icd10_subcategory"},
+
+    # ── Finance GL chain ──────────────────────────────────────────────────────
+    r"App\Models\GlAccountGroup":   {"account_type_id":  "gl_account_type"},
+    r"App\Models\GlAccount":        {"account_group_id": "gl_account_group",
+                                     "account_type_id":  "gl_account_type"},
+    r"App\Models\PettyCash":        {"gl_account_id": "gl_account"},
+
+    # ── Finance invoices ──────────────────────────────────────────────────────
+    r"App\Models\InvoiceItem":      {"invoice_id": "invoice"},
+    r"App\Models\Payment":          {"invoice_id": "invoice"},
+    r"App\Models\CreditNote":       {"invoice_id": "invoice"},
+    r"App\Models\InsuranceClaim":   {"company_id": "insurance_company",
+                                     "scheme_id":  "insurance_scheme"},
+
+    # ── Settings ──────────────────────────────────────────────────────────────
+    r"App\Models\ServiceDestination": {"department_id": "department"},
+    r"App\Models\CategoryFilter":     {"treatment_action_id": "treatment_action"},
+
+    # ── Inpatient ─────────────────────────────────────────────────────────────
+    r"App\Models\WardCharge":       {"ward_id": "ward", "charge_id": "charge"},
+
+    # ── Patient account ───────────────────────────────────────────────────────
+    r"App\Models\PatientAccount":   {"patient_id": "patient"},
 }
 
 
@@ -1568,9 +1851,18 @@ def _ensure_id_maps(transform_key: str, facility: str) -> None:
                 log.warning("Cannot find V2 namespace for alias %s — skipping auto-sync", alias)
 
 
-def _remap_fks(record: dict, transform_key: str) -> dict:
-    """Replace V2 FK values with their V3-assigned IDs."""
-    fk_config = _FK_REMAP.get(transform_key, {})
+def _remap_fks(record: dict, transform_key: str, v3_namespace: str = "") -> dict:
+    """Replace V2 FK values with their V3-assigned IDs.
+
+    Merges two lookup sources:
+    - _FK_REMAP[transform_key]  — for tables with a specific transform
+    - _NS_FK_REMAP[v3_namespace] — for tables that use the generic transform
+    Transform-specific entries take precedence on conflict.
+    """
+    fk_config = {
+        **_NS_FK_REMAP.get(v3_namespace, {}),
+        **_FK_REMAP.get(transform_key, {}),
+    }
     if not fk_config:
         return record
     out = dict(record)
@@ -1578,7 +1870,7 @@ def _remap_fks(record: dict, transform_key: str) -> dict:
         v2_id = out.get(field)
         if v2_id is None:
             continue
-        v3_id = _id_map.get(alias, {}).get(v2_id)
+        v3_id = _id_map.get(alias, {}).get(int(v2_id) if str(v2_id).isdigit() else v2_id)
         if v3_id is not None:
             out[field] = v3_id
         else:
@@ -1676,12 +1968,15 @@ def run_migration(
     workers: int,
     batch_size: int,
     dry_run: bool,
+    max_pages: int | None = None,
 ) -> None:
     run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     global _completed_jobs
     _completed_jobs = _load_progress(run_id)
     _load_record_progress()
     _load_id_map()
+    _load_visit_patient_map()
+    _load_permanently_done()
     if _completed_jobs:
         log.info("Resuming run %s — %d jobs already done", run_id, len(_completed_jobs))
 
@@ -1717,24 +2012,28 @@ def run_migration(
                 snake = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", cls).lower()
                 plurl = _IRREGULAR_PLURALS.get(snake, snake + "s")
                 if alias in _gateway_model_meta:
+                    # Model is registered but gateway list doesn't advertise insert —
+                    # the operations list is unreliable (some services underreport).
+                    # Attempt the insert anyway; a genuine 422/403 will surface it.
                     svc = _gateway_model_meta[alias].get("service", "?")
                     ops = _gateway_model_meta[alias].get("operations", [])
-                    skipped_no_insert.append(
-                        f"  {facility}|{ns}  →  {alias!r} in {svc} [{', '.join(ops)}] — no insert op"
+                    log.debug(
+                        "  %s|%s → %r in %s [%s] — no insert in ops list, attempting anyway",
+                        facility, ns, alias, svc, ", ".join(ops),
                     )
                 else:
                     tried = f"singular={snake!r}, plural={plurl!r}"
                     skipped_unregistered.append(
                         f"  {facility}|{ns}  →  tried {tried} — not registered in any gateway"
                     )
-                continue
+                    continue
             dedup_key = (facility, v3_ns)
             if dedup_key in seen_v3:
                 skipped_dedup.append(f"  {facility}|{ns}  (same V3 target as {seen_v3[dedup_key]})")
                 continue
             seen_v3[dedup_key] = ns
             jk = _job_key(facility, ns)
-            if jk in _completed_jobs:
+            if jk in _completed_jobs or jk in _permanently_done:
                 skipped_already_done.append(f"  {jk}")
                 continue
             jobs.append({
@@ -1743,6 +2042,7 @@ def run_migration(
                 "database":      cfg["db"],
                 "updated_since": watermark,
                 "limit":         DEFAULT_LIMIT,
+                "max_pages":     max_pages,
             })
 
     if skipped_no_insert:
@@ -1774,27 +2074,39 @@ def run_migration(
 
     failures: list[str] = []
 
-    if workers <= 1:
-        for job in jobs:
-            ok = run_job(job, run_id, batch_size, dry_run)
-            if not ok:
-                failures.append(_job_key(job["facility"], job["namespace"]))
-    else:
-        with ThreadPoolExecutor(max_workers=workers) as pool:
-            future_to_job = {
-                pool.submit(run_job, job, run_id, batch_size, dry_run): job
-                for job in jobs
-            }
-            for fut in as_completed(future_to_job):
-                job = future_to_job[fut]
-                try:
-                    ok = fut.result()
-                except Exception as e:
-                    log.error("Unhandled error [%s] %s: %s",
-                              job["facility"], job["namespace"], e)
-                    ok = False
+    # Group jobs by tier so FK parents always finish before children start.
+    # Within a tier jobs still run in parallel up to `workers`.
+    from collections import defaultdict as _ddict
+    tier_groups: dict[int, list] = _ddict(list)
+    for job in jobs:
+        tier_groups[_namespace_tier(job["namespace"])].append(job)
+
+    for tier_num in sorted(tier_groups):
+        tier_jobs = tier_groups[tier_num]
+        if not tier_jobs:
+            continue
+        log.info("── Tier %d ── %d job(s)", tier_num, len(tier_jobs))
+        if workers <= 1:
+            for job in tier_jobs:
+                ok = run_job(job, run_id, batch_size, dry_run)
                 if not ok:
                     failures.append(_job_key(job["facility"], job["namespace"]))
+        else:
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                future_to_job = {
+                    pool.submit(run_job, job, run_id, batch_size, dry_run): job
+                    for job in tier_jobs
+                }
+                for fut in as_completed(future_to_job):
+                    job = future_to_job[fut]
+                    try:
+                        ok = fut.result()
+                    except Exception as e:
+                        log.error("Unhandled error [%s] %s: %s",
+                                  job["facility"], job["namespace"], e)
+                        ok = False
+                    if not ok:
+                        failures.append(_job_key(job["facility"], job["namespace"]))
 
     # ── End-of-run summary ───────────────────────────────────────────────────
     n_ok           = len(jobs) - len(failures)
@@ -1831,6 +2143,10 @@ def run_migration(
 
     summary_lines.append("═════════════════════════════════════════════════════════════════")
     log.info("\n".join(summary_lines))
+
+    # Flush any unsaved visit→patient map entries
+    if _visit_patient_dirty:
+        VISIT_PATIENT_FILE.write_text(json.dumps(_visit_patient_map))
 
     # Advance watermarks only if zero failures
     if not failures and not dry_run:
@@ -1895,6 +2211,13 @@ def main() -> None:
         help="Fetch from V2 and show transformed records without posting to V3",
     )
     parser.add_argument(
+        "--max-pages",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Stop V2 pagination after N pages (useful for testing)",
+    )
+    parser.add_argument(
         "--list-namespaces",
         action="store_true",
         help="Print all configured namespace mappings and exit",
@@ -1921,6 +2244,7 @@ def main() -> None:
         workers=args.workers,
         batch_size=args.batch_size,
         dry_run=args.dry_run,
+        max_pages=args.max_pages,
     )
 
 

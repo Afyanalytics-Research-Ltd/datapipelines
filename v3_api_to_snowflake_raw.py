@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """
-v3_api_to_snowflake_raw.py  —  Afya Extraction API (Model Gateway) → S3 → Snowflake RAW
+v3_api_to_snowflake_raw.py  —  Afya V3 multi-service gateway → S3 → Snowflake RAW
 
 Flow:
-  1. Authenticate against the Afya Extraction API  →  cache bearer token (50-min TTL)
-  2. Discover facilities/systems via the lookup cascade:
-       GET /lookup/counties → GET /lookup/facilities?county_id=X → GET /lookup/systems?facility_id=Y
-  3. Build one job per (facility, system, namespace) triple.
-  4. For each job: POST /gateway action=get → paginate all pages → gzipped JSONL → S3 → COPY INTO Snowflake RAW
+  1. Authenticate against core.afyaanalytics.ai/api/v1/login  →  cache bearer token (50-min TTL).
+     Login also captures organization_id as tenant_id (used in X-Tenant-Id / source_tenant_id).
+  2. For each configured service (core, finance, evaluation, reception, inventory,
+     theatre, inpatient, dialysis) optionally discover models via action=list.
+  3. Build one job per (service, model) pair.
+  4. For each job: POST {service_url}/api/v1/gateway action=read → paginate all pages
+     → gzipped JSONL → S3 → COPY INTO Snowflake RAW.
   5. Resume-aware: every completed job is checkpointed to .v3_progress.json;
      a re-run skips already-done work so no records are missed.
   6. Watermark only advances when the run completes with ZERO failures.
@@ -22,31 +24,38 @@ MISSING-DATA GUARANTEE
 
 USAGE
   python v3_api_to_snowflake_raw.py
-  python v3_api_to_snowflake_raw.py --facility-ids 2,3
-  python v3_api_to_snowflake_raw.py --system-ids 5,6
-  python v3_api_to_snowflake_raw.py --namespaces "App\\\\Models\\\\User,App\\\\Models\\\\Store\\\\InventoryItem"
+  python v3_api_to_snowflake_raw.py --services reception,finance
+  python v3_api_to_snowflake_raw.py --models "reception:patient,finance:invoice"
   python v3_api_to_snowflake_raw.py --since 2025-01-01
   python v3_api_to_snowflake_raw.py --dry-run
   python v3_api_to_snowflake_raw.py --no-resume
-  python v3_api_to_snowflake_raw.py --skip-discovery --namespaces "App\\\\Models\\\\User"
   python v3_api_to_snowflake_raw.py --workers 4 --page-workers 4
 
 ENV VARS  (place in a .env file next to this script)
-  # Afya Extraction API
-  AFYA_API_BASE_URL=https://afyapi.afyaanalytics.ai/api
-  AFYA_USERNAME=admin
-  AFYA_PASSWORD=Afya@extract26
+  # Afya credentials
+  afya_username=martin
+  afya_password=Qwerty123!!
 
-  # Snowflake (key-pair auth — same as the facility pipeline)
+  # Service URLs (optional — defaults shown)
+  CORE_URL=https://core.afyaanalytics.ai
+  FINANCE_URL=https://finance.afyaanalytics.ai
+  EVALUATION_URL=https://evaluation.afyaanalytics.ai
+  RECEPTION_URL=https://reception.afyaanalytics.ai
+  INVENTORY_URL=https://inventory.afyaanalytics.ai
+  THEATRE_URL=https://theatre.afyaanalytics.ai
+  INPATIENT_URL=https://inpatient.afyaanalytics.ai
+  DIALYSIS_URL=https://dialysis.afyaanalytics.ai
+
+  # Snowflake (key-pair auth)
   SNOWFLAKE_USER, SNOWFLAKE_ACCOUNT, SNOWFLAKE_WAREHOUSE,
   SNOWFLAKE_DATABASE, SNOWFLAKE_SCHEMA, SNOWFLAKE_PRIVATE_KEY_PATH
 
   # AWS
   AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_REGION
 
-  # Optional: path to a JSON file containing the list of namespaces to extract
-  # e.g. ["App\\\\Models\\\\User", "App\\\\Models\\\\Store\\\\InventoryItem"]
-  NAMESPACES_FILE=namespaces.json
+  # Optional: path to a JSON file listing service:model pairs to extract
+  # e.g. ["reception:patient", "finance:invoice"]
+  MODELS_FILE=models.json
 
   # Tuning
   PIPELINE_WORKERS=8   # parallel jobs
@@ -79,7 +88,7 @@ import requests
 import requests.adapters
 import snowflake.connector
 from dotenv import load_dotenv
-from requests.exceptions import ConnectionError, HTTPError, Timeout
+from requests.exceptions import ConnectionError, Timeout
 
 try:
     import orjson
@@ -108,7 +117,26 @@ if not log.handlers:
 
 PIPELINE_NAME = "v3_api_to_snowflake_raw"
 
-AFYA_BASE_URL = os.getenv("AFYA_API_BASE_URL", "https://afyapi.afyaanalytics.ai/api").rstrip("/")
+# Per-service base URLs — each ends with /api/ so gateway is {url}/v1/gateway
+# and login is {core_url}/v1/login.  This mirrors the exact pattern used in
+# v2_to_v3_api_migration.py.
+def _svc_url(env_key: str, default_host: str) -> str:
+    raw = os.getenv(env_key, f"https://{default_host}/api/")
+    return raw.rstrip("/") + "/"      # guarantee exactly one trailing slash
+
+V3_SERVICES: dict[str, str] = {
+    "core":       _svc_url("CORE_URL",       "core.afyaanalytics.ai"),
+    "finance":    _svc_url("FINANCE_URL",    "finance.afyaanalytics.ai"),
+    "evaluation": _svc_url("EVALUATION_URL", "evaluation.afyaanalytics.ai"),
+    "reception":  _svc_url("RECEPTION_URL",  "reception.afyaanalytics.ai"),
+    "inventory":  _svc_url("INVENTORY_URL",  "inventory.afyaanalytics.ai"),
+    "theatre":    _svc_url("THEATRE_URL",    "theatre.afyaanalytics.ai"),
+    "inpatient":  _svc_url("INPATIENT_URL",  "inpatient.afyaanalytics.ai"),
+    "dialysis":   _svc_url("DIALYSIS_URL",   "dialysis.afyaanalytics.ai"),
+}
+
+# Auth always against core: {AFYA_CORE_URL}v1/login
+AFYA_CORE_URL = V3_SERVICES["core"]
 
 S3_BUCKET = os.getenv("S3_BUCKET", "collabmedbucket")
 S3_PREFIX  = "raw/v3_gateway"
@@ -127,6 +155,9 @@ DEFAULT_PIPELINE_WORKERS = int(os.getenv("PIPELINE_WORKERS", "8"))
 DEFAULT_PAGE_WORKERS     = int(os.getenv("PAGE_WORKERS", "4"))
 DEFAULT_PER_PAGE         = int(os.getenv("PER_PAGE", "100"))
 TOKEN_TTL_SECONDS        = int(os.getenv("TOKEN_TTL_SECONDS", str(50 * 60)))
+# Fallback tenant ID used when the login response does not include organization_id.
+# Matches FACILITY_V3_CONFIG["kisumu"]["organization_id"] = 1 in the migration script.
+DEFAULT_SOURCE_TENANT_ID = int(os.getenv("SOURCE_TENANT_ID", "1"))
 
 # ─── JSON FILE HELPERS ───────────────────────────────────────────────────
 
@@ -143,9 +174,9 @@ def _save_json(path: Path, data: dict) -> None:
 
 # ─── WATERMARKS ──────────────────────────────────────────────────────────
 
-def _wm_key(facility_id: int, system_id: int, namespace: str) -> str:
-    slug = re.sub(r"[^a-zA-Z0-9]", "_", namespace)
-    return f"f{facility_id}_s{system_id}_{slug}"
+def _wm_key(service: str, model: str) -> str:
+    slug = re.sub(r"[^a-zA-Z0-9]", "_", model)
+    return f"{service}_{slug}"
 
 def get_watermark(key: str, default: str = "1970-01-01T00:00:00Z") -> str:
     return _load_json(WATERMARK_FILE).get(key, default)
@@ -161,18 +192,18 @@ def set_watermark(key: str, ts_iso: str) -> None:
 _progress_lock = threading.Lock()
 
 def _job_key(job: dict) -> str:
-    return f"{job['facility_id']}|{job['system_id']}|{job['namespace']}"
+    return f"{job['service']}|{job['model']}"
 
 def _mark_done(run_id: str, job: dict, s3_key: str | None) -> None:
     """Checkpoint a completed job so a re-run can skip it."""
     with _progress_lock:
-        prog = _load_json(PROGRESS_FILE)
+        prog   = _load_json(PROGRESS_FILE)
         bucket = prog.setdefault("current_run", {"run_id": run_id, "completed": {}})
         if bucket.get("run_id") != run_id:
             bucket["run_id"] = run_id
         bucket["completed"][_job_key(job)] = {
             "s3_key": s3_key,
-            "at": datetime.now(timezone.utc).isoformat(),
+            "at":     datetime.now(timezone.utc).isoformat(),
         }
         _save_json(PROGRESS_FILE, prog)
 
@@ -187,16 +218,43 @@ def _completed_keys() -> set[str]:
 
 class SnowflakeClient:
     def __init__(self, schema_: str | None = None):
-        with open(os.getenv("SNOWFLAKE_PRIVATE_KEY_PATH").strip(), "rb") as f:
-            f.read()  # presence check
-        self._conn = snowflake.connector.connect(
-            user=os.getenv("SNOWFLAKE_USER").strip(),
-            account=os.getenv("SNOWFLAKE_ACCOUNT").strip(),
-            warehouse=os.getenv("SNOWFLAKE_WAREHOUSE").strip(),
-            database=os.getenv("SNOWFLAKE_DATABASE").strip(),
-            schema=schema_ or os.getenv("SNOWFLAKE_SCHEMA", "PUBLIC").strip(),
-            private_key_file=os.getenv("SNOWFLAKE_PRIVATE_KEY_PATH").strip(),
-        )
+        required = {
+            "SNOWFLAKE_USER":            os.getenv("SNOWFLAKE_USER"),
+            "SNOWFLAKE_ACCOUNT":         os.getenv("SNOWFLAKE_ACCOUNT"),
+            "SNOWFLAKE_WAREHOUSE":       os.getenv("SNOWFLAKE_WAREHOUSE"),
+            "SNOWFLAKE_DATABASE":        os.getenv("SNOWFLAKE_DATABASE"),
+            "SNOWFLAKE_PRIVATE_KEY_PATH": os.getenv("SNOWFLAKE_PRIVATE_KEY_PATH"),
+        }
+        missing = [k for k, v in required.items() if not v]
+        if missing:
+            raise RuntimeError(
+                f"Missing Snowflake env var(s): {', '.join(missing)} — "
+                f"add them to your .env file."
+            )
+        key_path = required["SNOWFLAKE_PRIVATE_KEY_PATH"].strip()
+        if not Path(key_path).exists():
+            raise RuntimeError(
+                f"Snowflake private key file not found: {key_path} — "
+                f"check SNOWFLAKE_PRIVATE_KEY_PATH in your .env."
+            )
+        try:
+            self._conn = snowflake.connector.connect(
+                user=required["SNOWFLAKE_USER"].strip(),
+                account=required["SNOWFLAKE_ACCOUNT"].strip(),
+                warehouse=required["SNOWFLAKE_WAREHOUSE"].strip(),
+                database=required["SNOWFLAKE_DATABASE"].strip(),
+                schema=schema_ or os.getenv("SNOWFLAKE_SCHEMA", "PUBLIC").strip(),
+                private_key_file=key_path,
+            )
+        except Exception as e:
+            raise RuntimeError(
+                f"Snowflake connection failed — "
+                f"account={required['SNOWFLAKE_ACCOUNT']}, "
+                f"user={required['SNOWFLAKE_USER']}, "
+                f"warehouse={required['SNOWFLAKE_WAREHOUSE']}, "
+                f"database={required['SNOWFLAKE_DATABASE']}. "
+                f"Cause: {e}"
+            ) from e
         self._lock = threading.Lock()
 
     def close(self):
@@ -246,12 +304,13 @@ class SnowflakeClient:
     def __enter__(self): return self
     def __exit__(self, *a): self.close()
 
-# ─── HTTP SESSION + TOKEN CACHE ──────────────────────────────────────────
+# ─── HTTP SESSION + TOKEN / TENANT CACHE ────────────────────────────────
 
 _session_singleton: requests.Session | None = None
 _session_lock = threading.Lock()
-_token_cache: tuple[str, float] | None = None  # (token, fetched_at)
-_token_lock = threading.Lock()
+_token_cache:  tuple[str, float] | None = None  # (token, fetched_at)
+_token_lock   = threading.Lock()
+_tenant_id:    int | None = None  # from login data.organization_id
 
 def _session() -> requests.Session:
     global _session_singleton
@@ -277,50 +336,96 @@ def _get_token() -> str:
         return token
 
 def _login() -> str:
-    username = os.getenv("AFYA_USERNAME")
-    password = os.getenv("AFYA_PASSWORD")
-    if not username or not password:
-        raise RuntimeError("Set AFYA_USERNAME + AFYA_PASSWORD in .env")
-    r = _session().post(
-        f"{AFYA_BASE_URL}/auth/login",
-        json={"username": username, "password": password},
-        headers={"Accept": "application/json"},
-        timeout=30,
-    )
+    global _tenant_id
+    username = os.getenv("afya_username") or os.getenv("AFYA_USERNAME")
+    password = os.getenv("afya_password") or os.getenv("AFYA_PASSWORD")
+    if not username:
+        raise RuntimeError(
+            "Missing afya_username env var — add it to your .env file. "
+            "This is the Afya platform username used to authenticate against "
+            f"{AFYA_CORE_URL}v1/login."
+        )
+    if not password:
+        raise RuntimeError(
+            "Missing afya_password env var — add it to your .env file. "
+            "This is the Afya platform password for the account: %s." % username
+        )
+    url = f"{AFYA_CORE_URL}v1/login"
+    log.info("Authenticating as %s → %s", username, url)
+    try:
+        r = _session().post(
+            url,
+            json={"username": username, "password": password, "facility_id": 6},
+            headers={"Accept": "application/json", "Content-Type": "application/json"},
+            timeout=30,
+        )
+    except Exception as e:
+        raise RuntimeError(
+            f"Network error reaching login endpoint {url} — "
+            f"check that {AFYA_CORE_URL} is reachable. Cause: {e}"
+        ) from e
+
+    if r.status_code == 401:
+        raise RuntimeError(
+            f"Login rejected (401) — wrong username or password for account '{username}'. "
+            f"Response: {r.text[:300]}"
+        )
+    if r.status_code == 422:
+        raise RuntimeError(
+            f"Login request rejected (422 Unprocessable) — the request body was invalid. "
+            f"Possibly facility_id=6 does not exist or is wrong. Response: {r.text[:300]}"
+        )
     if r.status_code != 200:
-        raise RuntimeError(f"Afya login failed: {r.status_code} · {r.text[:300]}")
-    token = r.json().get("token")
+        raise RuntimeError(
+            f"Login failed with unexpected status {r.status_code} from {url}. "
+            f"Response body: {r.text[:300]}"
+        )
+    try:
+        body = r.json()
+    except Exception:
+        raise RuntimeError(
+            f"Login returned status 200 but the response is not valid JSON. "
+            f"Raw response: {r.text[:300]}"
+        )
+    token = body.get("access_token")
     if not token:
-        raise RuntimeError(f"No token in login response: {r.text[:300]}")
-    log.info("Authenticated to Afya API as %s", username)
+        raise RuntimeError(
+            f"Login succeeded (200) but no 'access_token' field in response. "
+            f"Keys present: {list(body.keys())}. "
+            f"Full response: {r.text[:500]}"
+        )
+    tenant_id = (body.get("data") or {}).get("organization_id") or body.get("organization_id")
+    if tenant_id is not None:
+        _tenant_id = int(tenant_id)
+        log.info("Authenticated as %s  (tenant_id=%s from login response)", username, _tenant_id)
+    else:
+        _tenant_id = DEFAULT_SOURCE_TENANT_ID
+        log.warning(
+            "Login response has no 'organization_id' — "
+            "falling back to SOURCE_TENANT_ID=%s (set SOURCE_TENANT_ID in .env to override). "
+            "Response keys: %s",
+            _tenant_id, list(body.keys()),
+        )
+        log.info("Authenticated as %s  (tenant_id=%s from fallback)", username, _tenant_id)
     return token
 
 def _auth_headers() -> dict:
-    return {
+    """Build gateway request headers — mirrors v2_to_v3_api_migration._post_to_v3_batch."""
+    headers = {
         "Authorization": f"Bearer {_get_token()}",
-        "Accept": "application/json",
-        "Content-Type": "application/json",
+        "Content-Type":  "application/json",
     }
+    if _tenant_id is not None:
+        headers["X-Tenant-Id"] = str(_tenant_id)
+    return headers
 
-# ─── LOOKUP / DISCOVERY ──────────────────────────────────────────────────
+# ─── SERVICE MODEL DISCOVERY ─────────────────────────────────────────────
 
-def _get(path: str, params: dict | None = None, timeout: int = 30) -> list | dict:
-    r = _session().get(
-        f"{AFYA_BASE_URL}/{path.lstrip('/')}",
-        headers=_auth_headers(),
-        params=params,
-        timeout=timeout,
-    )
-    r.raise_for_status()
-    return r.json()
-
-def _as_list(payload) -> list[dict]:
-    """Normalize various response shapes to a plain list."""
+def _as_list(payload) -> list:
     if isinstance(payload, list):
         return payload
     if isinstance(payload, dict):
-        for key in ("data", "items", "results",
-                    "counties", "facilities", "systems", "models"):
+        for key in ("data", "items", "results", "models"):
             val = payload.get(key)
             if isinstance(val, list):
                 return val
@@ -333,120 +438,188 @@ def _as_list(payload) -> list[dict]:
                     return sv[key]
     return []
 
-def discover_facilities_and_systems(
-    only_facility_ids: set[int] | None = None,
-    only_system_ids: set[int] | None = None,
-) -> list[dict]:
+def discover_service_models(service: str, service_url: str) -> list[str]:
+    """POST action=list to a service gateway and return readable model aliases.
+
+    Response shape (same as v2_to_v3_api_migration._fetch_available_models):
+      {"data": [{"alias": "patient", "operations": ["read","insert"], ...}, ...]}
     """
-    Walk the county → facility → system cascade.
-    Returns a list of dicts with facility_id, facility_name, system_id, system_name.
+    url = f"{service_url.rstrip('/')}/v1/gateway"
+    try:
+        r = _session().post(
+            url,
+            headers={"Authorization": f"Bearer {_get_token()}", "Content-Type": "application/json"},
+            json={"action": "list"},
+            timeout=30,
+        )
+        if r.status_code == 401:
+            log.warning(
+                "Discovery service=%-12s → 401 Unauthorized at %s — "
+                "token may have been rejected by this service. Skipping.",
+                service, url,
+            )
+            return []
+        if r.status_code == 404:
+            log.warning(
+                "Discovery service=%-12s → 404 Not Found at %s — "
+                "this service URL may be wrong or the /api/v1/gateway endpoint does not exist. "
+                "Check %s_URL in your .env. Skipping.",
+                service, url, service.upper(),
+            )
+            return []
+        if not r.ok:
+            log.warning(
+                "Discovery service=%-12s → status=%s at %s — "
+                "response: %s. Skipping.",
+                service, r.status_code, url, r.text[:200],
+            )
+            return []
+        try:
+            body = r.json()
+        except Exception:
+            log.warning(
+                "Discovery service=%-12s → 200 OK but response is not valid JSON. "
+                "Raw: %s. Skipping.",
+                service, r.text[:200],
+            )
+            return []
+        entries = body.get("data") or []
+        if not isinstance(entries, list):
+            log.warning(
+                "Discovery service=%-12s → 'data' field is %s, expected list. "
+                "Full response keys: %s. Skipping.",
+                service, type(entries).__name__, list(body.keys()),
+            )
+            return []
+        models = []
+        for e in entries:
+            alias = e.get("alias")
+            if alias:
+                models.append(alias)
+        log.info("Discovery: service=%-12s  %d models: %s",
+                 service, len(models), ", ".join(sorted(models)))
+        return models
+    except (Timeout, ConnectionError) as e:
+        log.warning(
+            "Discovery service=%-12s → could not reach %s — "
+            "service may be down or URL is wrong. Check %s_URL in .env. "
+            "Error: %s. Skipping.",
+            service, url, service.upper(), e,
+        )
+        return []
+    except Exception as e:
+        log.warning("Discovery service=%-12s → unexpected error: %s. Skipping.", service, e)
+        return []
+
+# ─── MODEL LIST LOADER ───────────────────────────────────────────────────
+
+def load_service_models(
+    from_cli: list[str] | None = None,
+    only_services: set[str] | None = None,
+) -> list[tuple[str, str]]:
     """
-    results = []
-    counties = _as_list(_get("/lookup/counties"))
-    log.info("Discovery: %d counties", len(counties))
+    Return a deduplicated list of (service, model) pairs.
 
-    for county in counties:
-        county_id   = county.get("id")
-        county_name = county.get("name", str(county_id))
-        facilities  = _as_list(_get("/lookup/facilities", {"county_id": county_id}))
-
-        for facility in facilities:
-            fid   = facility.get("id")
-            fname = facility.get("name", str(fid))
-
-            if only_facility_ids and fid not in only_facility_ids:
-                continue
-
-            systems = _as_list(_get("/lookup/systems", {"facility_id": fid}))
-            for system in systems:
-                sid   = system.get("id")
-                sname = system.get("name", str(sid))
-
-                if only_system_ids and sid not in only_system_ids:
-                    continue
-
-                results.append({
-                    "county_id":     county_id,
-                    "county_name":   county_name,
-                    "facility_id":   fid,
-                    "facility_name": fname,
-                    "system_id":     sid,
-                    "system_name":   sname,
-                })
-
-    log.info("Discovery complete: %d (facility, system) pairs", len(results))
-    return results
-
-# ─── NAMESPACE LOADER ────────────────────────────────────────────────────
-
-def load_namespaces(from_cli: list[str] | None = None) -> list[str]:
+    Priority: CLI --models > MODELS_FILE env var > auto-discover from every service.
+    Expected format for CLI / file: "service:model" strings.
     """
-    Priority: CLI --namespaces > NAMESPACES_FILE env var > default examples.
-    Returns de-duplicated list.
-    """
+    def _parse(raw: list[str]) -> list[tuple[str, str]]:
+        pairs = []
+        for entry in raw:
+            entry = entry.strip()
+            if ":" in entry:
+                svc, mdl = entry.split(":", 1)
+                pairs.append((svc.strip(), mdl.strip()))
+            else:
+                log.warning("Ignoring malformed entry (expected service:model): %s", entry)
+        return pairs
+
     if from_cli:
-        ns = [n.strip() for n in from_cli if n.strip()]
-        log.info("Using %d namespaces from CLI", len(ns))
-        return ns
+        pairs = _parse(from_cli)
+        log.info("Using %d (service, model) pairs from CLI", len(pairs))
+        return pairs
 
-    ns_file = os.getenv("NAMESPACES_FILE")
-    if ns_file and Path(ns_file).exists():
-        raw = json.loads(Path(ns_file).read_text())
-        ns  = [n.strip() for n in raw if isinstance(n, str) and n.strip()]
-        log.info("Loaded %d namespaces from %s", len(ns), ns_file)
-        return ns
+    models_file = os.getenv("MODELS_FILE")
+    if models_file:
+        p = Path(models_file)
+        if not p.exists():
+            raise RuntimeError(
+                f"MODELS_FILE={models_file} does not exist — "
+                f"check the path or remove MODELS_FILE from your .env."
+            )
+        try:
+            raw = json.loads(p.read_text())
+        except Exception as e:
+            raise RuntimeError(
+                f"MODELS_FILE={models_file} is not valid JSON — "
+                f"expected a list of 'service:model' strings like "
+                f'["reception:patient", "finance:invoice"]. '
+                f"Parse error: {e}"
+            ) from e
+        if not isinstance(raw, list):
+            raise RuntimeError(
+                f"MODELS_FILE={models_file} must be a JSON array, got {type(raw).__name__}. "
+                f'Expected format: ["reception:patient", "finance:invoice"]'
+            )
+        pairs = _parse([n for n in raw if isinstance(n, str)])
+        log.info("Loaded %d (service, model) pairs from %s", len(pairs), models_file)
+        return pairs
 
-    log.warning(
-        "No namespaces configured — set NAMESPACES_FILE or pass --namespaces. "
-        "Running with built-in examples only."
-    )
-    return [
-        "App\\Models\\User",
-        "App\\Models\\Store\\InventoryItem",
-    ]
+    log.info("No MODELS_FILE or --models — auto-discovering from all services...")
+    pairs = []
+    services_to_scan = {
+        k: v for k, v in V3_SERVICES.items()
+        if only_services is None or k in only_services
+    }
+    for svc, url in services_to_scan.items():
+        for model in discover_service_models(svc, url):
+            pairs.append((svc, model))
+
+    if not pairs:
+        log.warning("Discovery returned no models. Pass --models service:model to run manually.")
+    return pairs
 
 # ─── JOB BUILDER ─────────────────────────────────────────────────────────
 
 def build_jobs(
-    facility_system_pairs: list[dict],
-    namespaces: list[str],
+    service_model_pairs: list[tuple[str, str]],
     since: str | None = None,
 ) -> list[dict]:
+    _get_token()  # ensure _tenant_id is populated before building jobs
     jobs = []
-    for pair in facility_system_pairs:
-        fid, sid = pair["facility_id"], pair["system_id"]
-        for namespace in namespaces:
-            wm = since or get_watermark(_wm_key(fid, sid, namespace))
-            jobs.append({
-                **pair,
-                "namespace":     namespace,
-                "updated_since": wm,
-                "per_page":      DEFAULT_PER_PAGE,
-            })
+    for service, model in service_model_pairs:
+        service_url = V3_SERVICES.get(service)
+        if not service_url:
+            log.warning("Unknown service '%s' for model '%s' — skipping", service, model)
+            continue
+        wm = since or get_watermark(_wm_key(service, model))
+        jobs.append({
+            "service":          service,
+            "service_url":      service_url,
+            "model":            model,
+            "source_tenant_id": _tenant_id,
+            "updated_since":    wm,
+            "per_page":         DEFAULT_PER_PAGE,
+        })
     log.info("Built %d jobs", len(jobs))
     return jobs
 
 # ─── GATEWAY PAGINATION ──────────────────────────────────────────────────
 
 def _extract_gateway_rows(payload: dict) -> tuple[list, dict]:
-    """Return (rows_list, pagination_dict) from a gateway response."""
-    rows = None
-    pagination = {}
+    """Return (rows_list, pagination_dict) from a gateway read response.
 
-    if isinstance(payload, dict):
-        rows       = payload.get("data")
-        pagination = payload.get("pagination") or payload.get("meta") or {}
+    Matches the pattern in v2_to_v3_api_migration._fetch_v3_records:
+      rows = payload.get("data") or []
+    with a fallback for nested shapes and pagination metadata.
+    """
+    rows       = payload.get("data") or []
+    pagination = payload.get("pagination") or payload.get("meta") or {}
 
-        if rows is None:
-            sv = payload.get("success")
-            if isinstance(sv, dict):
-                rows       = sv.get("data")
-                pagination = sv.get("pagination") or sv.get("meta") or pagination
-            elif isinstance(sv, list):
-                rows = sv
-
-        if isinstance(rows, dict):
-            rows = rows.get("data") or list(rows.values())
+    # Handle nested data dict: {"data": {"data": [...], "current_page": 1, ...}}
+    if isinstance(rows, dict):
+        pagination = {**rows, **pagination}          # merge — outer wins
+        rows       = rows.get("data") or list(rows.values())
 
     return (rows if isinstance(rows, list) else []), pagination
 
@@ -456,40 +629,68 @@ def _gateway_request(
     default_wait: int = 10,
     backoff: int = 2,
 ) -> dict:
-    """Single POST to /gateway with retry for 429/5xx/network errors."""
+    """Single POST to {service_url}/api/v1/gateway with retry for 401/429/5xx/network."""
     body: dict = {
-        "namespace":   job["namespace"],
-        "action":      "get",
-        "facility_id": job["facility_id"],
-        "system_id":   job["system_id"],
-        "page":        page,
-        "per_page":    job["per_page"],
+        "action":   "read",
+        "model":    job["model"],
+        "page":     page,
+        "per_page": job["per_page"],
     }
+    if job.get("source_tenant_id") is not None:
+        body["source_tenant_id"] = job["source_tenant_id"]
     if job.get("updated_since") and job["updated_since"] != "1970-01-01T00:00:00Z":
         body["updated_since"] = job["updated_since"]
 
+    # URL pattern mirrors v2_to_v3_api_migration: {base}/v1/gateway
+    # base already ends with /api/ so this becomes https://service.../api/v1/gateway
+    gateway_url = f"{job['service_url'].rstrip('/')}/v1/gateway"
     attempt, wait = 0, default_wait
     while True:
         attempt += 1
         try:
             r = _session().post(
-                f"{AFYA_BASE_URL}/gateway",
+                gateway_url,
                 headers=_auth_headers(),
                 json=body,
                 timeout=60,
             )
-            ns_short = job["namespace"].split("\\")[-1]
-            log.info("· f=%s s=%s ns=%s page=%s status=%s",
-                     job["facility_id"], job["system_id"], ns_short, page, r.status_code)
+            log.info("· service=%-12s model=%-25s page=%-4s status=%s",
+                     job["service"], job["model"], page, r.status_code)
 
             if r.status_code == 401:
-                # Token may have expired mid-run — force a refresh
                 global _token_cache
                 with _token_lock:
                     _token_cache = None
                 if attempt >= max_retries:
-                    r.raise_for_status()
+                    raise RuntimeError(
+                        f"Gateway 401 Unauthorized after {max_retries} token refreshes — "
+                        f"service={job['service']} model={job['model']} page={page} url={gateway_url}. "
+                        f"The token is being rejected by this service. "
+                        f"Response: {r.text[:300]}"
+                    )
+                log.warning(
+                    "  401 Unauthorized — refreshing token and retrying (%s/%s)",
+                    attempt, max_retries,
+                )
                 continue
+
+            if r.status_code == 404:
+                raise RuntimeError(
+                    f"Gateway 404 Not Found — "
+                    f"service={job['service']} model={job['model']} url={gateway_url}. "
+                    f"The model alias '{job['model']}' may not exist on this service, "
+                    f"or the service URL ({job['service_url']}) is wrong. "
+                    f"Response: {r.text[:300]}"
+                )
+
+            if r.status_code == 422:
+                raise RuntimeError(
+                    f"Gateway 422 Unprocessable — "
+                    f"service={job['service']} model={job['model']} page={page}. "
+                    f"The request body was rejected. "
+                    f"Request body sent: {body}. "
+                    f"Response: {r.text[:300]}"
+                )
 
             if r.status_code == 429:
                 retry_after = default_wait
@@ -498,27 +699,61 @@ def _gateway_request(
                 except Exception:
                     pass
                 if attempt >= max_retries:
-                    r.raise_for_status()
-                log.warning("429 — sleeping %ss (%s/%s)", retry_after, attempt, max_retries)
+                    raise RuntimeError(
+                        f"Gateway 429 rate-limited after {max_retries} retries — "
+                        f"service={job['service']} model={job['model']} page={page}. "
+                        f"Response: {r.text[:200]}"
+                    )
+                log.warning(
+                    "  429 rate-limited — sleeping %ss then retrying (%s/%s)",
+                    retry_after, attempt, max_retries,
+                )
                 time.sleep(retry_after)
                 continue
 
             if r.status_code in {500, 502, 503, 504}:
                 if attempt >= max_retries:
-                    r.raise_for_status()
-                log.warning("5xx(%s) — sleeping %ss (%s/%s)", r.status_code, wait, attempt, max_retries)
+                    raise RuntimeError(
+                        f"Gateway {r.status_code} server error after {max_retries} retries — "
+                        f"service={job['service']} model={job['model']} page={page} url={gateway_url}. "
+                        f"The service is returning errors. "
+                        f"Response: {r.text[:300]}"
+                    )
+                log.warning(
+                    "  %s server error — sleeping %ss then retrying (%s/%s) — %s",
+                    r.status_code, wait, attempt, max_retries, r.text[:150],
+                )
                 time.sleep(wait)
                 wait = min(wait * backoff, 120)
                 continue
 
-            r.raise_for_status()
-            return r.json()
+            if not r.ok:
+                raise RuntimeError(
+                    f"Gateway unexpected status {r.status_code} — "
+                    f"service={job['service']} model={job['model']} page={page} url={gateway_url}. "
+                    f"Response: {r.text[:300]}"
+                )
+
+            try:
+                return r.json()
+            except Exception:
+                raise RuntimeError(
+                    f"Gateway returned status 200 but response is not valid JSON — "
+                    f"service={job['service']} model={job['model']} page={page}. "
+                    f"Raw response: {r.text[:300]}"
+                )
 
         except (Timeout, ConnectionError) as e:
             if attempt >= max_retries:
-                raise
-            log.warning("Network error page=%s · %s · sleeping %ss (%s/%s)",
-                        page, e, wait, attempt, max_retries)
+                raise RuntimeError(
+                    f"Network error after {max_retries} retries — "
+                    f"service={job['service']} model={job['model']} page={page} url={gateway_url}. "
+                    f"The service may be unreachable. Cause: {e}"
+                ) from e
+            log.warning(
+                "  Network error page=%s — sleeping %ss then retrying (%s/%s): %s",
+                page, wait, attempt, max_retries, e,
+            )
             time.sleep(wait)
             wait = min(wait * backoff, 120)
 
@@ -531,7 +766,7 @@ def fetch_all_pages(
     Page 1 fetched sequentially (discovers last_page), then pages 2..N
     fetched concurrently.  Falls back to sequential if last_page unknown.
     """
-    payload1 = _gateway_request(job, 1)
+    payload1          = _gateway_request(job, 1)
     all_rows, pagination = _extract_gateway_rows(payload1)
 
     last_page = (
@@ -545,7 +780,11 @@ def fetch_all_pages(
         or (last_page is not None and int(last_page) > 1)
     )
 
-    if not has_more or not all_rows:
+    # If page 1 returned fewer rows than per_page it's the only page
+    if not all_rows or len(all_rows) < job["per_page"]:
+        return all_rows
+
+    if not has_more:
         return all_rows
 
     # ── Fan-out when we know last_page ───────────────────────────────────
@@ -567,27 +806,28 @@ def fetch_all_pages(
             all_rows.extend(page_rows.get(p, []))
         return all_rows
 
-    # ── Sequential fallback ───────────────────────────────────────────────
+    # ── Sequential fallback (mirrors _fetch_v3_records in migration script) ──
+    # Stop when the page returns fewer rows than per_page — that's the last page.
     page = 1
+    per_page = job["per_page"]
     while has_more and page < max_pages:
         page += 1
         rows, pagination = _extract_gateway_rows(_gateway_request(job, page))
         all_rows.extend(rows)
-        last_page = pagination.get("last_page") or pagination.get("total_pages")
-        has_more  = (
+        if not rows or len(rows) < per_page:
+            break
+        has_more = (
             bool(pagination.get("has_more_pages"))
             or bool(pagination.get("hasMorePages"))
-            or (bool(rows) and not pagination)
+            or bool(rows)
         )
-        if not rows:
-            break
 
     return all_rows
 
 # ─── S3 ──────────────────────────────────────────────────────────────────
 
 _s3_singleton = None
-_s3_lock = threading.Lock()
+_s3_lock      = threading.Lock()
 
 def _s3():
     global _s3_singleton
@@ -596,14 +836,27 @@ def _s3():
             if _s3_singleton is None:
                 ak = os.getenv("AWS_ACCESS_KEY_ID")
                 sk = os.getenv("AWS_SECRET_ACCESS_KEY")
-                if not (ak and sk):
-                    raise RuntimeError("Set AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY")
-                _s3_singleton = boto3.client(
-                    "s3",
-                    aws_access_key_id=ak,
-                    aws_secret_access_key=sk,
-                    region_name=os.getenv("AWS_REGION", "us-east-1"),
-                )
+                if not ak:
+                    raise RuntimeError(
+                        "Missing AWS_ACCESS_KEY_ID env var — add it to your .env file."
+                    )
+                if not sk:
+                    raise RuntimeError(
+                        "Missing AWS_SECRET_ACCESS_KEY env var — add it to your .env file."
+                    )
+                region = os.getenv("AWS_REGION", "us-east-1")
+                try:
+                    _s3_singleton = boto3.client(
+                        "s3",
+                        aws_access_key_id=ak,
+                        aws_secret_access_key=sk,
+                        region_name=region,
+                    )
+                except Exception as e:
+                    raise RuntimeError(
+                        f"Failed to create S3 client — "
+                        f"region={region}. Cause: {e}"
+                    ) from e
     return _s3_singleton
 
 def _safe(s: str) -> str:
@@ -622,18 +875,17 @@ def extract_one_job(
     rows = fetch_all_pages(job, page_workers=page_workers)
 
     if not rows:
-        log.info("    f=%s s=%s ns=%s — 0 rows, skipping",
-                 job["facility_id"], job["system_id"], job["namespace"].split("\\")[-1])
+        log.info("    service=%-12s model=%-25s — 0 rows, skipping",
+                 job["service"], job["model"])
         return None
 
     ingested_at = datetime.now(timezone.utc)
     dt          = ingested_at.date().isoformat()
-    ns_safe     = _safe(job["namespace"].replace("\\", "_"))
+    model_safe  = _safe(job["model"])
     key = (
         f"{S3_PREFIX}/"
-        f"facility_id={job['facility_id']}/"
-        f"system_id={job['system_id']}/"
-        f"namespace={ns_safe}/"
+        f"service={job['service']}/"
+        f"model={model_safe}/"
         f"dt={dt}/"
         f"{run_id}.jsonl.gz"
     )
@@ -641,23 +893,26 @@ def extract_one_job(
     jsonl_bytes = b"\n".join(_dumps_bytes(r) for r in rows) + b"\n"
 
     if dry_run:
-        log.info("DRY-RUN ✓ f=%s s=%s ns=%s — %d rows (would → s3://%s/%s)",
-                 job["facility_id"], job["system_id"],
-                 job["namespace"].split("\\")[-1], len(rows), S3_BUCKET, key)
+        log.info("DRY-RUN ✓ service=%-12s model=%-25s %d rows → s3://%s/%s",
+                 job["service"], job["model"], len(rows), S3_BUCKET, key)
         return None
 
     buf = BytesIO()
     with gzip.GzipFile(fileobj=buf, mode="wb") as gz:
         gz.write(jsonl_bytes)
-    _s3().put_object(Bucket=S3_BUCKET, Key=key, Body=buf.getvalue())
+    try:
+        _s3().put_object(Bucket=S3_BUCKET, Key=key, Body=buf.getvalue())
+    except Exception as e:
+        raise RuntimeError(
+            f"S3 upload failed — bucket={S3_BUCKET} key={key} "
+            f"service={job['service']} model={job['model']} rows={len(rows)}. "
+            f"Cause: {e}"
+        ) from e
     log.info("Uploaded s3://%s/%s  rows=%d", S3_BUCKET, key, len(rows))
 
     return {
-        "facility_id":   job["facility_id"],
-        "facility_name": job.get("facility_name", ""),
-        "system_id":     job["system_id"],
-        "system_name":   job.get("system_name", ""),
-        "namespace":     job["namespace"],
+        "service":       job["service"],
+        "model":         job["model"],
         "updated_since": job.get("updated_since", ""),
         "ingested_at":   ingested_at.isoformat(),
         "s3_key":        key,
@@ -668,19 +923,17 @@ def extract_one_job(
 
 def copy_into_snowflake(result: dict, sf: SnowflakeClient | None = None) -> None:
     table       = f"{SF_DB}.{SF_RAW_SCHEMA}.{SF_RAW_TABLE}"
+    service     = result["service"].replace("'", "\\'")
+    model       = result["model"].replace("'", "\\'")
     ingested_at = result["ingested_at"]
-    facility_id = result["facility_id"]
-    system_id   = result["system_id"]
-    namespace   = result["namespace"].replace("'", "\\'")
     s3_key      = result["s3_key"]
 
     sql = f"""
-    COPY INTO {table} (facility_id, system_id, namespace, ingested_at, payload)
+    COPY INTO {table} (service, model, ingested_at, payload)
     FROM (
       SELECT
-        {facility_id}::INTEGER            AS facility_id,
-        {system_id}::INTEGER              AS system_id,
-        '{namespace}'::STRING             AS namespace,
+        '{service}'::STRING               AS service,
+        '{model}'::STRING                 AS model,
         '{ingested_at}'::TIMESTAMP_TZ     AS ingested_at,
         PARSE_JSON($1)                    AS payload
       FROM @{SF_STAGE}
@@ -689,22 +942,50 @@ def copy_into_snowflake(result: dict, sf: SnowflakeClient | None = None) -> None
     FILE_FORMAT = (FORMAT_NAME = {SF_FILE_FORMAT})
     ON_ERROR = 'CONTINUE';
     """
-    label = f"copy:f{facility_id}:s{system_id}:{namespace.split(chr(92))[-1]}"
-    if sf is not None:
-        sf.execute(sql, label=label)
-    else:
-        with SnowflakeClient(schema_=f"{SF_DB}.{SF_RAW_SCHEMA}") as new_sf:
-            new_sf.execute(sql, label=label)
+    label = f"copy:{service}:{model}"
+    try:
+        if sf is not None:
+            sf.execute(sql, label=label)
+        else:
+            with SnowflakeClient(schema_=f"{SF_DB}.{SF_RAW_SCHEMA}") as new_sf:
+                new_sf.execute(sql, label=label)
+    except Exception as e:
+        raise RuntimeError(
+            f"Snowflake COPY INTO failed — "
+            f"table={SF_DB}.{SF_RAW_SCHEMA}.{SF_RAW_TABLE} "
+            f"service={service} model={model} s3_key={s3_key}. "
+            f"Cause: {e}"
+        ) from e
+
+# ─── SNOWFLAKE TABLE BOOTSTRAP ───────────────────────────────────────────
+
+def _ensure_table(sf: SnowflakeClient) -> None:
+    """Create the raw schema and GATEWAY_RAW table if they don't already exist."""
+    table  = f"{SF_DB}.{SF_RAW_SCHEMA}.{SF_RAW_TABLE}"
+    schema = f"{SF_DB}.{SF_RAW_SCHEMA}"
+
+    sf.execute(
+        f"CREATE SCHEMA IF NOT EXISTS {schema};",
+        label="ensure_schema",
+    )
+    sf.execute(
+        f"""
+        CREATE TABLE IF NOT EXISTS {table} (
+            service      STRING        NOT NULL,
+            model        STRING        NOT NULL,
+            ingested_at  TIMESTAMP_TZ  NOT NULL,
+            payload      VARIANT
+        );
+        """,
+        label="ensure_table",
+    )
+    log.info("Table ready: %s", table)
 
 # ─── ORCHESTRATOR ────────────────────────────────────────────────────────
 
 def run_pipeline(
-    namespaces: list[str],
+    service_model_pairs: list[tuple[str, str]],
     *,
-    only_facility_ids: set[int] | None = None,
-    only_system_ids: set[int] | None = None,
-    skip_discovery: bool = False,
-    manual_pairs: list[dict] | None = None,
     since: str | None = None,
     dry_run: bool = False,
     update_watermark: bool = True,
@@ -716,26 +997,11 @@ def run_pipeline(
     run_id     = datetime.now(timezone.utc).strftime("v3__%Y-%m-%dT%H-%M-%SZ")
     started_at = datetime.now(timezone.utc)
 
-    # 1. Discover facilities / systems
-    if skip_discovery and manual_pairs:
-        pairs = manual_pairs
-    else:
-        pairs = discover_facilities_and_systems(
-            only_facility_ids=only_facility_ids,
-            only_system_ids=only_system_ids,
-        )
-
-    if not pairs:
-        log.warning("No (facility, system) pairs found — nothing to do.")
-        return
-
-    # 2. Build full job list
-    all_jobs = build_jobs(pairs, namespaces, since=since)
+    all_jobs = build_jobs(service_model_pairs, since=since)
     if not all_jobs:
         log.warning("No jobs to run.")
         return
 
-    # 3. Resume filter
     if not resume and not dry_run:
         _clear_progress()
         log.info("⟲ Resume disabled — cleared previous progress")
@@ -762,16 +1028,13 @@ def run_pipeline(
     try:
         if not dry_run:
             sf_client = SnowflakeClient(schema_=f"{SF_DB}.{SF_RAW_SCHEMA}")
+            _ensure_table(sf_client)
 
         def _do_one(idx_and_job):
             idx, job = idx_and_job
-            log.info(
-                "──[%d/%d] start · f=%s(%s) s=%s(%s) ns=%s",
-                idx, len(jobs),
-                job["facility_id"], job.get("facility_name", ""),
-                job["system_id"],   job.get("system_name", ""),
-                job["namespace"].split("\\")[-1],
-            )
+            svc, mdl = job["service"], job["model"]
+            log.info("──[%d/%d] start · service=%-12s model=%s", idx, len(jobs), svc, mdl)
+            stage = "api_fetch"
             try:
                 result = extract_one_job(job, run_id=run_id,
                                          dry_run=dry_run, page_workers=page_workers)
@@ -779,14 +1042,18 @@ def run_pipeline(
                     if not dry_run:
                         _mark_done(run_id, job, s3_key=None)
                     return ("skip", None, job)
+
+                stage = "snowflake_copy"
                 copy_into_snowflake(result, sf=sf_client)
                 _mark_done(run_id, job, s3_key=result["s3_key"])
                 return ("ok", result, job)
+
             except Exception as e:
-                log.error("✗ f=%s s=%s ns=%s · %s",
-                          job["facility_id"], job["system_id"],
-                          job["namespace"].split("\\")[-1], e, exc_info=True)
-                return ("err", str(e), job)
+                log.error(
+                    "✗ [%s] service=%-12s model=%-25s FAILED at stage=%s — %s",
+                    idx, svc, mdl, stage, e, exc_info=True,
+                )
+                return ("err", f"[{stage}] {e}", job)
 
         if jobs:
             with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
@@ -802,11 +1069,11 @@ def run_pipeline(
         if sf_client is not None:
             sf_client.close()
 
-    # 4. Advance per-job watermarks only on a clean run
+    # Advance per-job watermarks only on a completely clean run
     if not dry_run and update_watermark and not failures:
         ts = started_at.isoformat().replace("+00:00", "Z")
         for job in all_jobs:
-            set_watermark(_wm_key(job["facility_id"], job["system_id"], job["namespace"]), ts)
+            set_watermark(_wm_key(job["service"], job["model"]), ts)
         _clear_progress()
         log.info("✓ Clean run — watermarks advanced, progress file cleared.")
 
@@ -815,14 +1082,18 @@ def run_pipeline(
 
     if failures:
         log.warning(
-            "Failed jobs (watermark NOT advanced — re-run will retry them):"
+            "%d job(s) failed — watermark NOT advanced, re-run will retry them:",
+            len(failures),
         )
         for f in failures[:10]:
             job = f.get("job", {})
-            log.warning("  · f=%s s=%s ns=%s  err=%s",
-                        job.get("facility_id"), job.get("system_id"),
-                        (job.get("namespace") or "").split("\\")[-1],
-                        str(f.get("error", ""))[:120])
+            err = str(f.get("error", ""))
+            log.warning(
+                "  · service=%-12s model=%-25s  %s",
+                job.get("service"), job.get("model"), err[:200],
+            )
+        if len(failures) > 10:
+            log.warning("  … and %d more (see logs above for details)", len(failures) - 10)
         sys.exit(1)
 
 # ─── CLI ─────────────────────────────────────────────────────────────────
@@ -833,20 +1104,19 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     ap.add_argument(
-        "--namespaces",
+        "--models",
         help=(
-            'Comma-separated full class paths to extract, e.g. '
-            '"App\\\\Models\\\\User,App\\\\Models\\\\Store\\\\InventoryItem". '
-            "Overrides NAMESPACES_FILE."
+            'Comma-separated service:model pairs, '
+            'e.g. "reception:patient,finance:invoice". '
+            "Overrides MODELS_FILE."
         ),
     )
     ap.add_argument(
-        "--facility-ids",
-        help="Comma-separated integer facility IDs to restrict the run to.",
-    )
-    ap.add_argument(
-        "--system-ids",
-        help="Comma-separated integer system IDs to restrict the run to.",
+        "--services",
+        help=(
+            "Comma-separated service names to restrict to when auto-discovering, "
+            "e.g. reception,finance."
+        ),
     )
     ap.add_argument(
         "--since",
@@ -865,13 +1135,6 @@ def main():
         help="Do not advance watermarks on a clean run.",
     )
     ap.add_argument(
-        "--skip-discovery", action="store_true",
-        help=(
-            "Skip the county/facility/system lookup cascade. "
-            "Requires --facility-ids and --system-ids."
-        ),
-    )
-    ap.add_argument(
         "--workers", type=int, default=DEFAULT_PIPELINE_WORKERS,
         help=f"Parallel jobs (default {DEFAULT_PIPELINE_WORKERS}).",
     )
@@ -881,40 +1144,23 @@ def main():
     )
     args = ap.parse_args()
 
-    ns_list = None
-    if args.namespaces:
-        ns_list = [n.strip() for n in args.namespaces.split(",") if n.strip()]
+    models_from_cli = None
+    if args.models:
+        models_from_cli = [m.strip() for m in args.models.split(",") if m.strip()]
 
-    facility_ids = None
-    if args.facility_ids:
-        facility_ids = {int(x) for x in args.facility_ids.split(",") if x.strip()}
+    only_services = None
+    if args.services:
+        only_services = {s.strip() for s in args.services.split(",") if s.strip()}
 
-    system_ids = None
-    if args.system_ids:
-        system_ids = {int(x) for x in args.system_ids.split(",") if x.strip()}
-
-    manual_pairs = None
-    if args.skip_discovery:
-        if not facility_ids or not system_ids:
-            ap.error("--skip-discovery requires both --facility-ids and --system-ids")
-        manual_pairs = [
-            {"facility_id": fid, "system_id": sid,
-             "facility_name": str(fid), "system_name": str(sid),
-             "county_id": None, "county_name": ""}
-            for fid in facility_ids
-            for sid in system_ids
-        ]
-
-    namespaces = load_namespaces(ns_list)
-    if not namespaces:
-        ap.error("No namespaces to extract. Use --namespaces or set NAMESPACES_FILE.")
+    pairs = load_service_models(from_cli=models_from_cli, only_services=only_services)
+    if not pairs:
+        ap.error(
+            "No (service, model) pairs to extract. "
+            "Use --models, set MODELS_FILE, or configure service URLs for auto-discovery."
+        )
 
     run_pipeline(
-        namespaces=namespaces,
-        only_facility_ids=facility_ids,
-        only_system_ids=system_ids,
-        skip_discovery=args.skip_discovery,
-        manual_pairs=manual_pairs,
+        service_model_pairs=pairs,
         since=args.since,
         dry_run=args.dry_run,
         update_watermark=not args.no_watermark_update,
