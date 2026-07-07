@@ -27,3 +27,4 @@ selenium==4.41.0
 bs4==0.0.2
 urllib3==2.6.3
 snowflake-connector-python==4.4.0
+pypdf
