@@ -198,7 +198,7 @@ SCHEMA_PATH = os.getenv("SCHEMA_PATH", "./schema.json")
 
 SERVICE_ACCOUNT_FILE = os.getenv("GDRIVE_SERVICE_ACCOUNT_FILE", "./gdrive-sa.json")
 
-PAGE_PARSE_WORKERS = int(os.getenv("PAGE_PARSE_WORKERS", "4"))
+PAGE_PARSE_WORKERS = int(os.getenv("PAGE_PARSE_WORKERS", "2"))
 FILE_WORKERS = int(os.getenv("FILE_WORKERS", "1"))
 MAX_RETRIES = int(os.getenv("MAX_RETRIES", "4"))
 RETRY_BACKOFF_SECONDS = 5
