@@ -131,8 +131,8 @@ SCOPES = [
     "https://www.googleapis.com/auth/drive.file",
 ]
 
-SOURCE_FOLDER_ID = os.getenv("GDRIVE_SOURCE_FOLDER_ID", "val")
-DEST_FOLDER_ID = os.getenv("GDRIVE_DEST_FOLDER_ID", "val")
+SOURCE_FOLDER_ID = Variable.get("GDRIVE_SOURCE_FOLDER_ID")
+DEST_FOLDER_ID = Variable.get("GDRIVE_DEST_FOLDER_ID")
 
 VA_API_KEY = os.getenv("VA_API_KEY")
 if not VA_API_KEY:
