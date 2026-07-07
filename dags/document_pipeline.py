@@ -110,6 +110,7 @@ from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaIoBaseDownload
 
 from airflow.decorators import dag, task
+from airflow.models import Variable
 
 try:
     import fcntl  # POSIX only -- true cross-process file locking
@@ -145,9 +146,7 @@ EXTRACT_MODEL = os.getenv("LANDINGAI_EXTRACT_MODEL", "extract-latest")
 OUTPUT_DIR = os.getenv("LANDING_OUTPUT_DIR", "./output")
 JSON_OUTPUT_DIR = os.getenv("LANDING_JSON_OUTPUT_DIR", "./output/json")
 STATE_DIR = os.getenv("LANDING_STATE_DIR", "./state")
-SCHEMA_PATH = os.getenv("SCHEMA_PATH", "./dags/jsons/schema.json")
-
-SERVICE_ACCOUNT_FILE = os.getenv("GDRIVE_SERVICE_ACCOUNT_FILE", "./dags/jsons/gdrive-sa.json")
+SCHEMA_PATH = os.getenv("SCHEMA_PATH", "./schema.json")
 
 # Lower per-file defaults than the standalone script (3 vs 4) -- file-level
 # parallelism via Airflow now does a big share of the scaling, so per-file
@@ -194,26 +193,34 @@ CSV_FIELDS = ["filename", "record_index", "page_range", "patient_label", "status
 # --------------------------------------------------------------------------
 # GOOGLE DRIVE HELPERS
 # --------------------------------------------------------------------------
-def write_service_account_file(path: str = SERVICE_ACCOUNT_FILE) -> None:
-    sa_json = {
-        "type": os.getenv("GCP_SA_TYPE", "service_account"),
-        "project_id": os.getenv("GCP_SA_PROJECT_ID", "default"),
-        "private_key_id": os.getenv("GCP_SA_PRIVATE_KEY_ID", "default"),
-        "private_key": os.getenv("GCP_SA_PRIVATE_KEY", "default").replace("\\n", "\n"),
-        "client_email": os.getenv("GCP_SA_CLIENT_EMAIL", "default"),
-        "client_id": os.getenv("GCP_SA_CLIENT_ID", "default"),
-        "token_uri": os.getenv("GCP_SA_TOKEN_URI", "https://oauth2.googleapis.com/token"),
-    }
-    with open(path, "w") as f:
-        json.dump(sa_json, f)
+def _get_service_account_info() -> Dict[str, Any]:
+    """Load the service-account JSON from the Airflow Variable GOOGLE_SA_JSON
+    (Admin -> Variables in the Airflow UI), which holds the full contents of
+    gdrive-sa.json as a single JSON string. Falls back to an OS environment
+    variable of the same name (e.g. if you're testing a task function
+    outside Airflow, or your deployment injects it that way instead)."""
+    sa_json_str = None
+    try:
+        sa_json_str = Variable.get("GOOGLE_SA_JSON")
+    except KeyError:
+        pass
+    if not sa_json_str:
+        sa_json_str = os.getenv("GOOGLE_SA_JSON")
+    if not sa_json_str:
+        raise RuntimeError(
+            "GOOGLE_SA_JSON not found -- set it as an Airflow Variable "
+            "(Admin > Variables, value = the full contents of gdrive-sa.json) "
+            "or as an environment variable on your workers."
+        )
+    try:
+        return json.loads(sa_json_str)
+    except json.JSONDecodeError as e:
+        raise RuntimeError(f"GOOGLE_SA_JSON is not valid JSON: {e}")
 
 
 def get_drive_service():
-    if not os.path.exists(SERVICE_ACCOUNT_FILE):
-        write_service_account_file()
-    creds = service_account.Credentials.from_service_account_file(
-        SERVICE_ACCOUNT_FILE, scopes=SCOPES
-    )
+    sa_info = _get_service_account_info()
+    creds = service_account.Credentials.from_service_account_info(sa_info, scopes=SCOPES)
     return build("drive", "v3", credentials=creds)
 
 
