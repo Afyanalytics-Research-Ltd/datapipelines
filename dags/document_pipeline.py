@@ -145,7 +145,7 @@ EXTRACT_MODEL = os.getenv("LANDINGAI_EXTRACT_MODEL", "extract-latest")
 OUTPUT_DIR = os.getenv("LANDING_OUTPUT_DIR", "./output")
 JSON_OUTPUT_DIR = os.getenv("LANDING_JSON_OUTPUT_DIR", "./output/json")
 STATE_DIR = os.getenv("LANDING_STATE_DIR", "./state")
-SCHEMA_PATH = os.getenv("SCHEMA_PATH", "./jsons/schema.json")
+SCHEMA_PATH = os.getenv("SCHEMA_PATH", "./dags/jsons/schema.json")
 
 SERVICE_ACCOUNT_FILE = os.getenv("GDRIVE_SERVICE_ACCOUNT_FILE", "./gdrive-sa.json")
 
