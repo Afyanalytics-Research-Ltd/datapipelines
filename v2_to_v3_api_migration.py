@@ -102,6 +102,7 @@ PROGRESS_FILE        = Path(__file__).resolve().parent / ".migration_progress.js
 RECORD_PROGRESS_FILE = Path(__file__).resolve().parent / ".migration_record_progress.json"
 ID_MAP_FILE          = Path(__file__).resolve().parent / ".migration_id_map.json"
 VISIT_PATIENT_FILE   = Path(__file__).resolve().parent / ".migration_visit_patient.json"
+VISIT_ADMISSION_FILE = Path(__file__).resolve().parent / ".migration_visit_admission.json"
 DEAD_LETTER_FILE     = Path(__file__).resolve().parent / ".migration_failures.jsonl"
 DONE_FILE            = Path(__file__).resolve().parent / ".migration_done.json"   # cross-run completed jobs
 
@@ -127,6 +128,22 @@ V3_SERVICES: dict[str, str] = {
 }
 # Runtime dict built in run_migration: alias → service name
 _alias_to_service: dict[str, str] = {}
+
+# V3 splits vitals into two separate tables: inp_vitals (inpatient-service,
+# tied to an admission) vs a distinct vitals table for outpatient visits
+# (patient-evaluation-service). V2 never had this distinction — every V2
+# Vitals record just carries a visit_id, so the split is done at migration
+# time based on whether that visit has a corresponding V2 Admission.
+# NEEDS VERIFICATION: the exact V3 model class/gateway alias used by
+# patient-evaluation-service for outpatient vitals — assumed identical name
+# to the inpatient one (each microservice has its own model namespace) and
+# disambiguated purely via service_override rather than alias discovery,
+# since the discovery-based alias→service map can only hold one winner when
+# two services register the same alias.
+OUTPATIENT_VITAL_V3_NAMESPACE = r"App\Models\Vital"
+OUTPATIENT_VITAL_TRANSFORM    = "outpatient_vital"
+OUTPATIENT_VITAL_SERVICE      = "evaluation"
+INPATIENT_VITAL_SERVICE       = "inpatient"
 # ─── FACILITY → V3 ORG MAPPING ──────────────────────────────────────────────
 # Fill in organization_id and facility_id from the V3 core_organizations /
 # core_facilities tables before running. application_id is typically 1.
@@ -365,8 +382,8 @@ NAMESPACE_MAP: dict[str, dict] = {
     # ── TIER 4: Evaluation clinical (visits must exist) ───────────────────────
     r"Ignite\Evaluation\Entities\DoctorNotes":               {"v3": r"App\Models\DoctorNote",                  "transform": "evaluation_doctor_note"},
     r"Ignite\Evaluation\Entities\DoctorNote":                {"v3": r"App\Models\DoctorNote",                  "transform": "evaluation_doctor_note"},
-    r"Ignite\Evaluation\Entities\Prescriptions":             {"v3": r"App\Models\Prescription",                "transform": "generic"},
-    r"Ignite\Evaluation\Entities\Prescription":              {"v3": r"App\Models\Prescription",                "transform": "generic"},
+    r"Ignite\Evaluation\Entities\Prescriptions":             {"v3": r"App\Models\Prescription",                "transform": "evaluation_prescription"},
+    r"Ignite\Evaluation\Entities\Prescription":              {"v3": r"App\Models\Prescription",                "transform": "evaluation_prescription"},
     r"Ignite\Evaluation\Entities\ExaminationReviews":        {"v3": r"App\Models\ExaminationReview",           "transform": "generic"},
     r"Ignite\Evaluation\Entities\ExaminationReview":         {"v3": r"App\Models\ExaminationReview",           "transform": "generic"},
     r"Ignite\Evaluation\Entities\EyeExams":                  {"v3": r"App\Models\EyeExam",                     "transform": "evaluation_eye_exam"},
@@ -565,9 +582,11 @@ _PER_KEY_RENAMES: dict[str, dict[str, str]] = {
     "eval_sample_type": {},
     "settings_rebate": {},
     "inpatient_vital": {},               # admission_id FK remapped via _FK_REMAP
+    "outpatient_vital": {},              # visit_id remapped via _FK_REMAP; patient_id injected below
     "inpatient_bed": {},                 # ward_id / bed_type_id FK remapped via _FK_REMAP
     "inpatient_admission": {},           # admission_type_id FK remapped via _FK_REMAP
     "inpatient_admission_request": {},   # preferred_ward_id / preferred_bed_type_id via _FK_REMAP
+    "evaluation_prescription": {},       # prescribed_by dropped+reinjected as V3 user id below
     "settings_user": {
         "username":   "email",
         "first_name": "first_name",
@@ -582,6 +601,13 @@ _PER_KEY_DROP_FIELDS: dict[str, list] = {
     "eval_procedure_category": ["procedures"],   # nested relation array
     "settings_user":           ["password", "remember_token", "api_token", "roles", "permissions", "abilities"],
     "evaluation_doctor_note":  ["nutrition_and_diatetics", "mohDiagnosis"],  # V2-only columns, not in V3 schema
+    # V2's "prescribed_by" is a free-text name ("Dr. Christine Atolo") but V3's
+    # column of the same name is an integer user id — drop the string here so
+    # _PER_KEY_INJECT can populate the real id from "user_id" instead. Do NOT
+    # drop "user_id" here — the injection below still needs to read it; it's
+    # left in the payload afterwards and self-heals via the unknown-column
+    # auto-strip-and-retry path, same as the nested "users"/"payment" blobs.
+    "evaluation_prescription": ["prescribed_by"],
 }
 
 # Fields that must be non-null for a record to be sent; records missing them are skipped
@@ -590,6 +616,7 @@ _PER_KEY_REQUIRED_FIELDS: dict[str, list] = {
     "eval_procedure_category": ["name"],
     "settings_user":           ["email"],
     "evaluation_inv_result":   ["investigation_id"],
+    "outpatient_vital":        ["patient_id"],
 }
 
 # Default values to inject when V3 returns a NOT NULL constraint violation for a column
@@ -605,6 +632,7 @@ _V3_NULL_DEFAULTS: dict[str, Any] = {
     "recorded_by":         1,
     "admitting_doctor_id":  1,
     "admission_diagnosis":  "Not specified",
+    "is_a_split":           0,            # V2 had no split-prescription concept
 }
 
 # Layer 2: coercions — value-level transforms applied after renaming.
@@ -641,6 +669,23 @@ _PER_KEY_INJECT: dict[str, dict[str, Any]] = {
         "patient_id": lambda r: _id_map.get("patient", {}).get(
             _visit_patient_map.get(r.get("visit_id"))
         ),
+    },
+    "outpatient_vital": {
+        # Same visit → patient chain as doctor_note — outpatient vitals need
+        # patient_id explicitly; V3 derives it from the visit for other tables
+        # but this table's schema requires it directly.
+        "patient_id": lambda r: _id_map.get("patient", {}).get(
+            _visit_patient_map.get(r.get("visit_id"))
+        ),
+    },
+    "evaluation_prescription": {
+        # V2 sends the prescriber as a free-text name in "prescribed_by"
+        # (dropped in _PER_KEY_DROP_FIELDS) but V3's prescribed_by column is
+        # an integer user id. The real V2 prescriber id is in "user_id" —
+        # resolve it through the Users id map (bootstrapped by email, since
+        # users have no "name" field to match on and are usually provisioned
+        # outside this pipeline's generic insert).
+        "prescribed_by": lambda r: _id_map.get(_v3_alias(r"App\Models\User"), {}).get(r.get("user_id")),
     },
 }
 
@@ -721,6 +766,11 @@ def transform_record(record: dict, transform_key: str, org_cfg: dict) -> dict | 
     # 5b. Populate visit→patient side-channel so doctor_note can derive patient_id.
     if tk == "reception_visit" and record.get("id") and record.get("patient_id"):
         _record_visit_patient(int(record["id"]), int(record["patient_id"]))
+
+    # Populate visit→admission side-channel so Vitals can be split into
+    # inpatient (has an admission) vs outpatient (visit only).
+    if tk == "inpatient_admission" and record.get("id") and record.get("visit_id"):
+        _record_visit_admission(int(record["visit_id"]), int(record["id"]))
 
     # 5c. Per-key injections — add V3-required fields that V2 never had
     for field, fn in _PER_KEY_INJECT.get(tk, {}).items():
@@ -962,8 +1012,15 @@ def _namespace_variants(namespace: str) -> list[str]:
     return seen
 
 
-def extract_v2_records(job: dict) -> list[dict]:
-    """Paginate V2 API and return all rows for the given job."""
+def extract_v2_records(job: dict) -> tuple[list[dict], list[int]]:
+    """Paginate V2 API and return (rows, failed_pages) for the given job.
+
+    A page that exhausts all retries is skipped rather than aborting the whole
+    job — one permanently-broken page (e.g. a corrupt V2 record crashing the
+    server) would otherwise block every other page's data forever. Skipped
+    page numbers are returned in failed_pages so the caller can avoid marking
+    the job fully done (watermark must not advance on incomplete data).
+    """
     facility = job["facility"]
     cfg      = V2_FACILITIES[facility]
     url      = f"{cfg['base_url'].rstrip('/')}/api/finance/access/data/point"
@@ -997,15 +1054,20 @@ def extract_v2_records(job: dict) -> list[dict]:
     max_pages  = job.get("max_pages")  # None = unlimited
 
     if not has_more:
-        return all_rows
+        return all_rows, []
 
-    def _fetch_page(p: int) -> tuple[int, list]:
-        r2, _ = _post_with_retry(
-            url=url, headers=headers,
-            bodies=[{**chosen_body, "page": p}],
-            facility=facility, session=session,
-        )
-        return p, _extract_rows_from_payload(r2.json())
+    def _fetch_page(p: int) -> tuple[int, list, str | None]:
+        try:
+            r2, _ = _post_with_retry(
+                url=url, headers=headers,
+                bodies=[{**chosen_body, "page": p}],
+                facility=facility, session=session,
+            )
+            return p, _extract_rows_from_payload(r2.json()), None
+        except Exception as e:
+            log.error("  ✗ ns=%s page=%s permanently failed after retries — skipping page: %s",
+                       job["namespace"], p, e)
+            return p, [], str(e)
 
     if last_page is not None:
         last_page = min(int(last_page), 10_000)
@@ -1013,16 +1075,24 @@ def extract_v2_records(job: dict) -> list[dict]:
             last_page = min(last_page, max_pages)
         pages = list(range(2, last_page + 1))
         page_rows: dict[int, list] = {}
+        failed_pages: list[int] = []
         with ThreadPoolExecutor(max_workers=max(1, PAGE_WORKERS)) as pool:
             for fut in as_completed(pool.submit(_fetch_page, p) for p in pages):
-                p, rows = fut.result()
+                p, rows, err = fut.result()
                 page_rows[p] = rows
+                if err is not None:
+                    failed_pages.append(p)
         for p in pages:
             all_rows.extend(page_rows.get(p, []))
-        return all_rows
+        if failed_pages:
+            failed_pages.sort()
+            log.warning("  ns=%s — %d/%d page(s) failed and were skipped: %s",
+                        job["namespace"], len(failed_pages), len(pages), failed_pages)
+        return all_rows, failed_pages
 
     # Sequential fallback when last_page unknown
     page = 1
+    failed_pages = []
     while has_more:
         page += 1
         if page > 10_000:
@@ -1031,11 +1101,17 @@ def extract_v2_records(job: dict) -> list[dict]:
         if max_pages is not None and page > max_pages:
             log.info("Pagination capped at %s pages (--max-pages)", max_pages)
             break
-        r2, _ = _post_with_retry(
-            url=url, headers=headers,
-            bodies=[{**chosen_body, "page": page}],
-            facility=facility, session=session,
-        )
+        try:
+            r2, _ = _post_with_retry(
+                url=url, headers=headers,
+                bodies=[{**chosen_body, "page": page}],
+                facility=facility, session=session,
+            )
+        except Exception as e:
+            log.error("  ✗ ns=%s page=%s permanently failed after retries — stopping pagination early: %s",
+                       job["namespace"], page, e)
+            failed_pages.append(page)
+            break
         payload2 = r2.json()
         rows = _extract_rows_from_payload(payload2)
         all_rows.extend(rows)
@@ -1044,7 +1120,7 @@ def extract_v2_records(job: dict) -> list[dict]:
         if not rows:
             break
 
-    return all_rows
+    return all_rows, failed_pages
 
 
 class GatewayModelNotRegistered(Exception):
@@ -1157,6 +1233,15 @@ def _v3_alias(v3_namespace: str) -> str:
 _dead_letter_lock = threading.Lock()
 
 
+class RecordDeadLettered(Exception):
+    """Raised when a record is written to the dead-letter file instead of inserted.
+
+    Distinct from a plain return so the caller (post_to_v3._post_one) can avoid
+    marking the record as inserted — a dead-lettered record must be retried on
+    the next run once the underlying data issue is fixed, not skipped forever.
+    """
+
+
 def _write_dead_letter(v3_namespace: str, record: dict, error_body: dict) -> None:
     """Append one failed record to the JSONL dead-letter file for later replay."""
     entry = {
@@ -1181,10 +1266,17 @@ def _post_to_v3_batch(
     max_retries: int = 3,
     default_retry_wait: int = 5,
     backoff_factor: int = 2,
+    service_override: str | None = None,
 ) -> None:
-    """POST a single record object to the V3 gateway. Retries on 429/5xx/401."""
+    """POST a single record object to the V3 gateway. Retries on 429/5xx/401.
+
+    service_override bypasses the alias→service discovery lookup — required
+    whenever two services register the same model alias (e.g. "vital" exists
+    in both inpatient-service and patient-evaluation-service with different
+    schemas); the discovery-based lookup can only remember one winner.
+    """
     alias    = _v3_alias(v3_namespace)
-    svc_url  = V3_SERVICES.get(_alias_to_service.get(alias, "core"), V3_SERVICES["core"])
+    svc_url  = V3_SERVICES.get(service_override or _alias_to_service.get(alias, "core"), V3_SERVICES["core"])
     url      = f"{svc_url.rstrip('/')}/v1/gateway"
     session  = _v3_session()
     meta     = _gateway_model_meta.get(alias, {})
@@ -1236,7 +1328,15 @@ def _post_to_v3_batch(
                     err_body = r.json()
                 except Exception:
                     err_body = {}
-                debug_msg = (err_body.get("debug") or {}).get("message", "")
+                # Gateway error shape is {"message", "error", "exception", "details": "<SQL error>"}
+                # — there is no "debug" key. Fall back through every shape we've seen so the
+                # NOT NULL / duplicate / unknown-column pattern matches below actually run.
+                debug_msg = (
+                    (err_body.get("debug") or {}).get("message")
+                    or err_body.get("details")
+                    or err_body.get("message")
+                    or ""
+                )
                 rec_id    = record.get("id", "?")
                 reason    = debug_msg or r.text[:300]
 
@@ -1265,7 +1365,7 @@ def _post_to_v3_batch(
                         rec_id, col, reason,
                     )
                     _write_dead_letter(v3_namespace, record, err_body)
-                    return
+                    raise RecordDeadLettered()
 
                 # Category 2 — Duplicate entry: record already exists in V3, skip silently
                 if "Duplicate entry" in debug_msg:
@@ -1293,7 +1393,7 @@ def _post_to_v3_batch(
                         rec_id, col,
                     )
                     _write_dead_letter(v3_namespace, record, err_body)
-                    return
+                    raise RecordDeadLettered()
 
                 # Category 3 — Generic server fault: dead-letter immediately, no retry.
                 # 500s on insert are almost always data issues, not transient faults.
@@ -1302,7 +1402,7 @@ def _post_to_v3_batch(
                     rec_id, reason,
                 )
                 _write_dead_letter(v3_namespace, record, err_body)
-                return
+                raise RecordDeadLettered()
 
             if r.status_code in {502, 503, 504}:
                 log.error("  V3 %s response body: %s", r.status_code, r.text[:2000])
@@ -1326,7 +1426,7 @@ def _post_to_v3_batch(
                     rec_id, r.text[:500],
                 )
                 _write_dead_letter(v3_namespace, record, err_body)
-                return
+                raise RecordDeadLettered()
 
             if not r.ok:
                 log.error("  V3 %s response body: %s", r.status_code, r.text[:2000])
@@ -1358,6 +1458,7 @@ def post_to_v3(
     batch_size: int = DEFAULT_BATCH_SIZE,
     job_key: str = "",
     transform_key: str = "",
+    service_override: str | None = None,
 ) -> None:
     """POST records to V3 in parallel (gateway requires one object per request).
 
@@ -1379,13 +1480,19 @@ def post_to_v3(
     def _post_one(record: dict) -> None:
         nonlocal done_count
         remapped = _remap_fks(record, transform_key, v3_namespace)
-        v3_id = _post_to_v3_batch(v3_namespace, org_cfg, remapped)
         record_id = record.get("id")
-        if record_id is not None:
-            if job_key:
-                _mark_record_inserted(job_key, record_id)
-            if v3_id is not None:
-                _store_id_mapping(alias, record_id, v3_id)
+        try:
+            v3_id = _post_to_v3_batch(v3_namespace, org_cfg, remapped, service_override=service_override)
+        except RecordDeadLettered:
+            # Not inserted — do NOT mark as done, so the next run retries it
+            # once the underlying data issue is fixed instead of skipping it forever.
+            pass
+        else:
+            if record_id is not None:
+                if job_key:
+                    _mark_record_inserted(job_key, record_id)
+                if v3_id is not None:
+                    _store_id_mapping(alias, record_id, v3_id)
         with _record_progress_lock:
             done_count += 1
             n = done_count
@@ -1579,6 +1686,37 @@ def _record_visit_patient(v2_visit_id: int, v2_patient_id: int) -> None:
         VISIT_PATIENT_FILE.write_text(json.dumps(_visit_patient_map))
 
 
+# Secondary lookup: V2 visit_id → V2 admission_id.
+# Persisted to VISIT_ADMISSION_FILE. Populated when Admission records are
+# transformed. Used to split V2 Vitals into inpatient (has an admission)
+# vs outpatient (visit only, no admission) before posting — V3 has two
+# separate vitals tables (inp_vitals vs patient-evaluation vitals).
+_visit_admission_map: dict[int, int] = {}
+_visit_admission_dirty: int = 0
+
+
+def _load_visit_admission_map() -> None:
+    global _visit_admission_map
+    if VISIT_ADMISSION_FILE.exists():
+        try:
+            raw = json.loads(VISIT_ADMISSION_FILE.read_text())
+            _visit_admission_map = {int(k): int(v) for k, v in raw.items() if v is not None}
+            log.info("Visit→admission map loaded — %d entries", len(_visit_admission_map))
+        except Exception as e:
+            log.warning("Could not load visit→admission map: %s — starting fresh", e)
+            _visit_admission_map = {}
+    else:
+        _visit_admission_map = {}
+
+
+def _record_visit_admission(v2_visit_id: int, v2_admission_id: int) -> None:
+    global _visit_admission_dirty
+    _visit_admission_map[v2_visit_id] = v2_admission_id
+    _visit_admission_dirty += 1
+    if _visit_admission_dirty % 500 == 0:
+        VISIT_ADMISSION_FILE.write_text(json.dumps(_visit_admission_map))
+
+
 # Which FK fields to remap, and which model alias holds their ID map.
 _FK_REMAP: dict[str, dict[str, str]] = {
     # insurance_schemes.company_id → insurance_companies V3 id
@@ -1632,6 +1770,10 @@ _FK_REMAP: dict[str, dict[str, str]] = {
     },
     # doctor_notes.visit_id → visits.id  (patient_id is injected via _PER_KEY_INJECT)
     "evaluation_doctor_note": {
+        "visit_id": "visit",
+    },
+    # patient-evaluation vitals.visit_id → visits.id  (patient_id is injected via _PER_KEY_INJECT)
+    "outpatient_vital": {
         "visit_id": "visit",
     },
 
@@ -1783,10 +1925,30 @@ def _fetch_v3_records(alias: str, org_cfg: dict) -> list[dict]:
     return records
 
 
-def sync_id_map(alias: str, v2_namespace: str, facility: str) -> int:
-    """Match existing V3 records to V2 records by name and populate the ID map.
+# Match field override per V3 namespace — most V2/V3 tables share a "name"
+# field, but some (e.g. users) don't and need a different unique key to
+# match on. Keyed by v3 namespace (static) rather than the discovered gateway
+# alias (singular/plural varies by service) so lookups can't get out of sync.
+_SYNC_MATCH_FIELD_BY_NS: dict[str, str] = {
+    r"App\Models\User": "email",
+}
 
-    Used when a model was migrated before the ID-mapping system existed.
+# Extra id-map dependencies (by v3 namespace) a transform's _PER_KEY_INJECT
+# relies on, beyond what _FK_REMAP already declares. _remap_fks never touches
+# these fields directly (they're populated by injection, not FK remap), so
+# _ensure_id_maps needs an explicit hint to bootstrap them too.
+_PER_KEY_EXTRA_ID_DEPS: dict[str, list[str]] = {
+    "evaluation_prescription": [r"App\Models\User"],
+}
+
+
+def sync_id_map(alias: str, v2_namespace: str, facility: str, match_field: str = "name") -> int:
+    """Match existing V3 records to V2 records by match_field and populate the ID map.
+
+    Used when a model was migrated before the ID-mapping system existed, or
+    (for users) is provisioned entirely outside this pipeline (e.g. a
+    separate auth/onboarding flow) so it can never appear in _id_map any
+    other way.
     Returns the number of mappings added.
     """
     org_cfg = FACILITY_V3_CONFIG.get(facility, {})
@@ -1796,13 +1958,13 @@ def sync_id_map(alias: str, v2_namespace: str, facility: str) -> int:
         log.warning("sync_id_map: no V3 records found for %s — cannot build map", alias)
         return 0
 
-    # Build name → V3 id lookup (name is the universal match key)
-    v3_by_name: dict[str, int] = {}
+    # Build match_field → V3 id lookup
+    v3_by_key: dict[str, int] = {}
     for rec in v3_records:
-        name = rec.get("name")
+        key   = rec.get(match_field)
         v3_id = rec.get("id")
-        if name and v3_id:
-            v3_by_name[str(name).strip()] = v3_id
+        if key and v3_id:
+            v3_by_key[str(key).strip().lower()] = v3_id
 
     # Extract V2 records
     cfg = V2_FACILITIES[facility]
@@ -1814,41 +1976,56 @@ def sync_id_map(alias: str, v2_namespace: str, facility: str) -> int:
         "limit":         DEFAULT_LIMIT,
     }
     try:
-        v2_records = extract_v2_records(job)
+        v2_records, failed_pages = extract_v2_records(job)
     except Exception as e:
         log.error("sync_id_map: V2 extraction failed for %s: %s", v2_namespace, e)
         return 0
+    if failed_pages:
+        log.warning("sync_id_map: %s — %d page(s) failed to extract and were skipped: %s",
+                    v2_namespace, len(failed_pages), failed_pages)
 
     matched = 0
     for rec in v2_records:
         v2_id = rec.get("id")
-        name  = str(rec.get("name") or "").strip()
-        if v2_id and name:
-            v3_id = v3_by_name.get(name)
+        key   = str(rec.get(match_field) or "").strip().lower()
+        if v2_id and key:
+            v3_id = v3_by_key.get(key)
             if v3_id:
                 _store_id_mapping(alias, v2_id, v3_id)
                 matched += 1
 
-    log.info("sync_id_map %s [%s]: matched %d / %d V2 records to V3 ids",
-             alias, facility, matched, len(v2_records))
+    log.info("sync_id_map %s [%s] (match on %s): matched %d / %d V2 records to V3 ids",
+             alias, facility, match_field, matched, len(v2_records))
     return matched
 
 
 def _ensure_id_maps(transform_key: str, facility: str) -> None:
     """Auto-sync any FK dependency maps that are empty before a job runs."""
-    for field, alias in _FK_REMAP.get(transform_key, {}).items():
-        if not _id_map.get(alias):
-            log.info("ID map for %s is empty — auto-syncing from V3 before %s job",
-                     alias, transform_key)
-            # Find the V2 namespace that produces this alias
-            v2_ns = next(
-                (ns for ns, m in NAMESPACE_MAP.items() if _v3_alias(m["v3"]) == alias),
-                None,
-            )
-            if v2_ns:
-                sync_id_map(alias, v2_ns, facility)
-            else:
-                log.warning("Cannot find V2 namespace for alias %s — skipping auto-sync", alias)
+    # (alias, v3_namespace) pairs from _FK_REMAP (alias already resolved at
+    # dict-authoring time) plus any extra injection-only deps (v3_namespace
+    # only — alias resolved here, since discovery may prefer singular/plural
+    # and the two lookups must agree on the same key).
+    aliases: list[tuple[str, str | None]] = [
+        (alias, None) for alias in _FK_REMAP.get(transform_key, {}).values()
+    ]
+    for v3_ns in _PER_KEY_EXTRA_ID_DEPS.get(transform_key, []):
+        aliases.append((_v3_alias(v3_ns), v3_ns))
+
+    for alias, known_v3_ns in aliases:
+        if _id_map.get(alias):
+            continue
+        log.info("ID map for %s is empty — auto-syncing from V3 before %s job",
+                 alias, transform_key)
+        v2_ns = next(
+            (ns for ns, m in NAMESPACE_MAP.items()
+             if (known_v3_ns and m["v3"] == known_v3_ns) or _v3_alias(m["v3"]) == alias),
+            None,
+        )
+        if v2_ns:
+            match_field = _SYNC_MATCH_FIELD_BY_NS.get(NAMESPACE_MAP[v2_ns]["v3"], "name")
+            sync_id_map(alias, v2_ns, facility, match_field=match_field)
+        else:
+            log.warning("Cannot find V2 namespace for alias %s — skipping auto-sync", alias)
 
 
 def _remap_fks(record: dict, transform_key: str, v3_namespace: str = "") -> dict:
@@ -1881,6 +2058,115 @@ def _remap_fks(record: dict, transform_key: str, v3_namespace: str = "") -> dict
 
 # ─── JOB RUNNER ──────────────────────────────────────────────────────────────
 
+# job_key -> list of V2 page numbers that permanently failed extraction (for the summary)
+_job_failed_pages: dict[str, list[int]] = {}
+_failed_pages_lock = threading.Lock()
+
+
+def _run_vitals_split_job(
+    job: dict, run_id: str, batch_size: int, dry_run: bool,
+    rows: list[dict], failed_pages: list[int], org_cfg: dict, label: str, t0: float,
+) -> bool:
+    """V2 Vitals only carry visit_id — V3 splits vitals into two tables:
+    inp_vitals (has an admission) vs patient-evaluation vitals (visit only,
+    no admission). Split by looking each row's visit_id up in the
+    visit→admission map (built from migrated Admissions) and, failing that,
+    the visit→patient map (built from migrated Visits).
+    """
+    facility  = job["facility"]
+    namespace = job["namespace"]
+    base_key  = _job_key(facility, namespace)
+
+    if failed_pages:
+        with _failed_pages_lock:
+            _job_failed_pages[base_key] = failed_pages
+        log.warning("  %s — %d page(s) permanently failed and were skipped (their records are MISSING): %s",
+                    label, len(failed_pages), failed_pages)
+
+    if not rows:
+        if failed_pages:
+            log.warning("⊘ %s — 0 rows extracted and %d page(s) failed — NOT marking done", label, len(failed_pages))
+            return False
+        log.info("⊘ %s — 0 rows from V2 (no records or all before watermark)", label)
+        _mark_done(run_id, base_key)
+        return True
+
+    admitted, outpatient, orphans = [], [], []
+    for r in rows:
+        visit_id = r.get("visit_id")
+        if visit_id in _visit_admission_map:
+            admitted.append(r)
+        elif visit_id in _visit_patient_map:
+            outpatient.append(r)
+        else:
+            orphans.append(r)
+
+    log.info("  %s — split %d rows: %d admitted, %d outpatient, %d unroutable (visit not migrated yet)",
+              label, len(rows), len(admitted), len(outpatient), len(orphans))
+
+    if orphans:
+        for r in orphans:
+            _write_dead_letter(
+                "App\\Models\\Vital[unrouted]", r,
+                {"reason": f"visit_id={r.get('visit_id')} not found in visit→admission or visit→patient map — "
+                           f"parent Visit/Admission not migrated yet"},
+            )
+        log.warning("  %s — %d row(s) unroutable (dead-lettered) — parent Visit/Admission not migrated yet",
+                    label, len(orphans))
+
+    def _prep(partition: list[dict], transform_key: str) -> list[dict]:
+        raw = [transform_record(r, transform_key, org_cfg) for r in partition]
+        ok  = [r for r in raw if r is not None]
+        if len(ok) != len(raw):
+            log.warning("  %s [%s] — %d/%d records dropped by required-field check",
+                        label, transform_key, len(raw) - len(ok), len(raw))
+        return ok
+
+    admitted_t   = _prep(admitted, "inpatient_vital")
+    outpatient_t = _prep(outpatient, OUTPATIENT_VITAL_TRANSFORM)
+
+    if dry_run:
+        log.info("DRY-RUN ✓ %s — would POST %d inpatient + %d outpatient vitals",
+                  label, len(admitted_t), len(outpatient_t))
+        if admitted_t:
+            log.info("  Sample inpatient: %s", _dumps(admitted_t[0])[:400])
+        if outpatient_t:
+            log.info("  Sample outpatient: %s", _dumps(outpatient_t[0])[:400])
+        return True
+
+    _ensure_id_maps("inpatient_vital", facility)
+    _ensure_id_maps(OUTPATIENT_VITAL_TRANSFORM, facility)
+
+    try:
+        if admitted_t:
+            post_to_v3(r"App\Models\Vital", org_cfg, admitted_t, batch_size=batch_size,
+                       job_key=f"{base_key}::inpatient", transform_key="inpatient_vital",
+                       service_override=INPATIENT_VITAL_SERVICE)
+        if outpatient_t:
+            post_to_v3(OUTPATIENT_VITAL_V3_NAMESPACE, org_cfg, outpatient_t, batch_size=batch_size,
+                       job_key=f"{base_key}::outpatient", transform_key=OUTPATIENT_VITAL_TRANSFORM,
+                       service_override=OUTPATIENT_VITAL_SERVICE)
+    except GatewayModelNotRegistered as e:
+        log.warning("⊘ %s — model not registered in gateway: %s", label, e)
+        return True
+    except Exception as e:
+        log.error("✗ V3 POST FAILED  %s: %s", label, e)
+        return False
+
+    elapsed = time.perf_counter() - t0
+    if failed_pages or orphans:
+        log.warning(
+            "◐ %s — %d inpatient + %d outpatient vitals migrated in %.2fs, but %d page(s) failed "
+            "and %d row(s) unroutable (job NOT marked done — re-run will retry)",
+            label, len(admitted_t), len(outpatient_t), elapsed, len(failed_pages), len(orphans),
+        )
+        return False
+    log.info("✓ %s — %d inpatient + %d outpatient vitals migrated in %.2fs",
+              label, len(admitted_t), len(outpatient_t), elapsed)
+    _mark_done(run_id, base_key)
+    return True
+
+
 def run_job(job: dict, run_id: str, batch_size: int, dry_run: bool) -> bool:
     """Extract from V2, transform, POST to V3. Returns True on success."""
     facility  = job["facility"]
@@ -1908,12 +2194,25 @@ def run_job(job: dict, run_id: str, batch_size: int, dry_run: bool) -> bool:
     t0 = time.perf_counter()
 
     try:
-        rows = extract_v2_records(job)
+        rows, failed_pages = extract_v2_records(job)
     except Exception as e:
         log.error("✗ V2 extraction FAILED  %s: %s", label, e)
         return False
 
+    if transform_key == "inpatient_vital":
+        return _run_vitals_split_job(job, run_id, batch_size, dry_run,
+                                      rows, failed_pages, org_cfg, label, t0)
+
+    if failed_pages:
+        with _failed_pages_lock:
+            _job_failed_pages[_job_key(facility, namespace)] = failed_pages
+        log.warning("  %s — %d page(s) permanently failed and were skipped (their records are MISSING): %s",
+                    label, len(failed_pages), failed_pages)
+
     if not rows:
+        if failed_pages:
+            log.warning("⊘ %s — 0 rows extracted and %d page(s) failed — NOT marking done", label, len(failed_pages))
+            return False
         log.info("⊘ %s — 0 rows from V2 (no records or all before watermark)", label)
         _mark_done(run_id, _job_key(facility, namespace))
         return True
@@ -1929,6 +2228,10 @@ def run_job(job: dict, run_id: str, batch_size: int, dry_run: bool) -> bool:
                     label, n_skipped_transform, len(transformed_raw))
 
     if not transformed:
+        if failed_pages:
+            log.warning("⊘ %s — all %d records failed transform and %d page(s) failed extraction — NOT marking done",
+                        label, len(transformed_raw), len(failed_pages))
+            return False
         log.warning("⊘ %s — all %d records failed transform, nothing to post",
                     label, len(transformed_raw))
         _mark_done(run_id, _job_key(facility, namespace))
@@ -1953,6 +2256,13 @@ def run_job(job: dict, run_id: str, batch_size: int, dry_run: bool) -> bool:
         return False
 
     elapsed = time.perf_counter() - t0
+    if failed_pages:
+        log.warning(
+            "◐ %s — %d records migrated in %.2fs, but %d page(s) failed to extract "
+            "(job NOT marked done — re-run will retry; watermark will not advance)",
+            label, len(transformed), elapsed, len(failed_pages),
+        )
+        return False
     log.info("✓ %s — %d records migrated in %.2fs", label, len(transformed), elapsed)
     _mark_done(run_id, _job_key(facility, namespace))
     return True
@@ -1976,6 +2286,7 @@ def run_migration(
     _load_record_progress()
     _load_id_map()
     _load_visit_patient_map()
+    _load_visit_admission_map()
     _load_permanently_done()
     if _completed_jobs:
         log.info("Resuming run %s — %d jobs already done", run_id, len(_completed_jobs))
@@ -2127,7 +2438,11 @@ def run_migration(
         summary_lines.append("")
         summary_lines.append(f"  FAILED ({n_failed}) — fix and re-run:")
         for f in failures:
-            summary_lines.append(f"    ✗ {f}")
+            pages = _job_failed_pages.get(f)
+            if pages:
+                summary_lines.append(f"    ✗ {f}  (pages failed after retries: {pages})")
+            else:
+                summary_lines.append(f"    ✗ {f}")
 
     if skipped_no_insert:
         summary_lines.append("")
@@ -2144,9 +2459,11 @@ def run_migration(
     summary_lines.append("═════════════════════════════════════════════════════════════════")
     log.info("\n".join(summary_lines))
 
-    # Flush any unsaved visit→patient map entries
+    # Flush any unsaved visit→patient / visit→admission map entries
     if _visit_patient_dirty:
         VISIT_PATIENT_FILE.write_text(json.dumps(_visit_patient_map))
+    if _visit_admission_dirty:
+        VISIT_ADMISSION_FILE.write_text(json.dumps(_visit_admission_map))
 
     # Advance watermarks only if zero failures
     if not failures and not dry_run:
