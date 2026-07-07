@@ -146,7 +146,7 @@ EXTRACT_MODEL = os.getenv("LANDINGAI_EXTRACT_MODEL", "extract-latest")
 OUTPUT_DIR = os.getenv("LANDING_OUTPUT_DIR", "./output")
 JSON_OUTPUT_DIR = os.getenv("LANDING_JSON_OUTPUT_DIR", "./output/json")
 STATE_DIR = os.getenv("LANDING_STATE_DIR", "./state")
-SCHEMA_PATH = os.getenv("SCHEMA_PATH", "./schema.json")
+SCHEMA_PATH = os.getenv("SCHEMA_PATH", "./dags/jsons/schema.json")
 
 # Lower per-file defaults than the standalone script (3 vs 4) -- file-level
 # parallelism via Airflow now does a big share of the scaling, so per-file
