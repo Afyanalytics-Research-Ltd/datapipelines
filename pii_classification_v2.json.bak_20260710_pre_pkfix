@@ -1,0 +1,3810 @@
+{
+  "generated_at": "2026-07-08T12:05:51.954872+00:00",
+  "connection_id": 20,
+  "facility_id": 47,
+  "models": {
+    "admnotes": {
+      "namespace": "App\\Models\\Admonotes",
+      "fields": {
+        "id": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "pid": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "description": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "username": {
+          "category": "DIRECT_IDENTIFIER",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "date": {
+          "category": "TEMPORAL",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "time": {
+          "category": "TEMPORAL",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "created_at": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "updated_at": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "deleted_at": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        }
+      },
+      "needs_review": [
+        "pid",
+        "description",
+        "date",
+        "time"
+      ],
+      "approved": true,
+      "discovered_at": "2026-07-08T12:05:43.333213+00:00",
+      "field_source": "describe",
+      "bypass": false
+    },
+    "cadex": {
+      "namespace": "App\\Models\\Cadex",
+      "fields": {
+        "id": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "pid": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "patid": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "patname": {
+          "category": "DIRECT_IDENTIFIER",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "date": {
+          "category": "TEMPORAL",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "stamp": {
+          "category": "TEMPORAL",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "fullname": {
+          "category": "STAFF_IDENTIFIER",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "notes": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "time": {
+          "category": "TEMPORAL",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "username": {
+          "category": "DIRECT_IDENTIFIER",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "status": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "mainid": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "created_at": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "updated_at": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "deleted_at": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        }
+      },
+      "needs_review": [
+        "pid",
+        "patid",
+        "date",
+        "stamp",
+        "time",
+        "mainid"
+      ],
+      "approved": true,
+      "discovered_at": "2026-07-08T12:05:43.718972+00:00",
+      "field_source": "describe",
+      "bypass": false
+    },
+    "history": {
+      "namespace": "App\\Models\\History",
+      "fields": {
+        "id": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "pid": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "description": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "username": {
+          "category": "DIRECT_IDENTIFIER",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "date": {
+          "category": "TEMPORAL",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "time": {
+          "category": "TEMPORAL",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "age": {
+          "category": "QUASI_IDENTIFIER",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "gender": {
+          "category": "QUASI_IDENTIFIER",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "stamp": {
+          "category": "TEMPORAL",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "mainbranch": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "created_at": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "updated_at": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "deleted_at": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        }
+      },
+      "needs_review": [
+        "pid",
+        "description",
+        "date",
+        "time",
+        "stamp",
+        "mainbranch"
+      ],
+      "approved": true,
+      "discovered_at": "2026-07-08T12:05:44.109952+00:00",
+      "field_source": "describe",
+      "bypass": false
+    },
+    "icd10diagnosis": {
+      "namespace": "App\\Models\\ICD10diagnosis",
+      "fields": {
+        "id": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "pid": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "stamp": {
+          "category": "TEMPORAL",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "code": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "doctor": {
+          "category": "STAFF_IDENTIFIER",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "maincateg": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "time": {
+          "category": "TEMPORAL",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "pattype": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "refin": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "refout": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "age": {
+          "category": "QUASI_IDENTIFIER",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "mainbranch": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "diseasename": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "diseasetype": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "gender": {
+          "category": "QUASI_IDENTIFIER",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "created_at": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "updated_at": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "deleted_at": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        }
+      },
+      "needs_review": [
+        "pid",
+        "stamp",
+        "maincateg",
+        "time",
+        "refin",
+        "refout",
+        "mainbranch"
+      ],
+      "approved": true,
+      "discovered_at": "2026-07-08T12:05:44.494462+00:00",
+      "field_source": "describe",
+      "bypass": false
+    },
+    "icd10diseases": {
+      "namespace": "App\\Models\\ICD10diseases",
+      "fields": {
+        "id": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "code": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "BlockId": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "name": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "ClassKind": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "IsResidual": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "PrimaryLocation": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "chapter": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "Grouping1": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "Grouping2": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "maincateg": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "diseases_category": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "disease_class": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "disease_sub_class": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "created_at": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "updated_at": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "deleted_at": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        }
+      },
+      "needs_review": [
+        "BlockId",
+        "ClassKind",
+        "IsResidual",
+        "PrimaryLocation",
+        "chapter",
+        "Grouping1",
+        "Grouping2",
+        "maincateg",
+        "diseases_category",
+        "disease_class",
+        "disease_sub_class"
+      ],
+      "approved": true,
+      "discovered_at": "2026-07-08T12:05:44.935066+00:00",
+      "field_source": "describe",
+      "bypass": true
+    },
+    "impression": {
+      "namespace": "App\\Models\\Impression",
+      "fields": {
+        "id": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "pid": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "description": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "username": {
+          "category": "DIRECT_IDENTIFIER",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "date": {
+          "category": "TEMPORAL",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "time": {
+          "category": "TEMPORAL",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "age": {
+          "category": "QUASI_IDENTIFIER",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "gender": {
+          "category": "QUASI_IDENTIFIER",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "stamp": {
+          "category": "TEMPORAL",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "mainbranch": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "created_at": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "updated_at": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "deleted_at": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        }
+      },
+      "needs_review": [
+        "pid",
+        "description",
+        "date",
+        "time",
+        "stamp",
+        "mainbranch"
+      ],
+      "approved": true,
+      "discovered_at": "2026-07-08T12:05:45.364728+00:00",
+      "field_source": "describe",
+      "bypass": false
+    },
+    "inpatients": {
+      "namespace": "App\\Models\\Inpatients",
+      "fields": {
+        "Id": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "PrescId": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "TransDate": {
+          "category": "TEMPORAL",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "PatId": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "PatName": {
+          "category": "DIRECT_IDENTIFIER",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "MainWard": {
+          "category": "QUASI_IDENTIFIER",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "Admitted": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "WardType": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "RoomNo": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "BedNo": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "AdmDate": {
+          "category": "TEMPORAL",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "Discharge": {
+          "category": "TEMPORAL",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "Doctor": {
+          "category": "STAFF_IDENTIFIER",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "AdmNotes": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "Status": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "Stamp": {
+          "category": "TEMPORAL",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "PayMode": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "DiagCat": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "DiagName": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "Deposit": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "Impression": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "AdmittedBy": {
+          "category": "STAFF_IDENTIFIER",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "BedCategory": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "DischargeStamp": {
+          "category": "TEMPORAL",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "DischargeTime": {
+          "category": "TEMPORAL",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "DischargedBy": {
+          "category": "STAFF_IDENTIFIER",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "DischargeNotes": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "IpNo": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "Diagnosis": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "Icd10": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "Type": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "DischargeCateg": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "BedId": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "mainbranch": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "RadiologyNotes": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "ExpectedStay": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "PayVisitId": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "LongStayExplanation": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "Age": {
+          "category": "QUASI_IDENTIFIER",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "Gender": {
+          "category": "QUASI_IDENTIFIER",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "LastActive": {
+          "category": "TEMPORAL",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "TriageStatus": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "LastBedCharge": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "ClosedBill": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "LimitNotification": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "AutoBill": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "LodgerFee": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "LodgerName": {
+          "category": "DIRECT_IDENTIFIER",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "LodgerShip": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "LodgerPhone": {
+          "category": "DIRECT_IDENTIFIER",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        }
+      },
+      "needs_review": [
+        "PrescId",
+        "TransDate",
+        "PatId",
+        "Admitted",
+        "RoomNo",
+        "AdmDate",
+        "Discharge",
+        "Stamp",
+        "PayMode",
+        "DiagCat",
+        "Deposit",
+        "AdmittedBy",
+        "DischargeStamp",
+        "DischargeTime",
+        "DischargedBy",
+        "IpNo",
+        "DischargeCateg",
+        "mainbranch",
+        "ExpectedStay",
+        "PayVisitId",
+        "LongStayExplanation",
+        "LastActive",
+        "ClosedBill",
+        "LimitNotification",
+        "AutoBill",
+        "LodgerFee",
+        "LodgerShip",
+        "LodgerPhone"
+      ],
+      "approved": true,
+      "discovered_at": "2026-07-08T12:05:46.313348+00:00",
+      "field_source": "describe",
+      "bypass": false
+    },
+    "labrequests": {
+      "namespace": "App\\Models\\Labrequests",
+      "fields": {
+        "id": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "labno": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "prescid": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "patid": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "patname": {
+          "category": "DIRECT_IDENTIFIER",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "section": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "request": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "results": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "reqtime": {
+          "category": "TEMPORAL",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "rectime": {
+          "category": "TEMPORAL",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "servtime": {
+          "category": "TEMPORAL",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "date": {
+          "category": "TEMPORAL",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "stamp": {
+          "category": "TEMPORAL",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "requested": {
+          "category": "STAFF_IDENTIFIER",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "doneby": {
+          "category": "STAFF_IDENTIFIER",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "status": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "rcptno": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "paid": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "sample": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "sample_condition": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "accept_reject": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "source": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "other_details": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "unique_no": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "restype": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "age": {
+          "category": "QUASI_IDENTIFIER",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "sex": {
+          "category": "QUASI_IDENTIFIER",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "weight": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "impression": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "verifiedby": {
+          "category": "STAFF_IDENTIFIER",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "mainbranch": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "reqstamp": {
+          "category": "TEMPORAL",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "recstamp": {
+          "category": "TEMPORAL",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "servstamp": {
+          "category": "TEMPORAL",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "billed": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "notes": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "collstamp": {
+          "category": "TEMPORAL",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "eqcode": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "critical": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "labware_status": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "created_at": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "updated_at": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "deleted_at": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        }
+      },
+      "needs_review": [
+        "labno",
+        "prescid",
+        "patid",
+        "section",
+        "request",
+        "reqtime",
+        "rectime",
+        "servtime",
+        "date",
+        "stamp",
+        "requested",
+        "doneby",
+        "rcptno",
+        "paid",
+        "sample",
+        "sample_condition",
+        "accept_reject",
+        "source",
+        "other_details",
+        "unique_no",
+        "verifiedby",
+        "mainbranch",
+        "reqstamp",
+        "recstamp",
+        "servstamp",
+        "billed",
+        "collstamp",
+        "eqcode",
+        "critical",
+        "labware_status"
+      ],
+      "approved": true,
+      "discovered_at": "2026-07-08T12:05:46.694531+00:00",
+      "field_source": "describe",
+      "bypass": false
+    },
+    "labtestresults": {
+      "namespace": "App\\Models\\Labtestresults",
+      "fields": {
+        "id": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "reqid": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "subtestname": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "results": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "normalrange": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "units": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "type": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "categories": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "specifics": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "result2": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "heading": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "flagdescription": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "critical_low": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "critical_high": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "created_at": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "updated_at": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "deleted_at": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        }
+      },
+      "needs_review": [
+        "reqid",
+        "normalrange",
+        "units",
+        "categories",
+        "specifics",
+        "heading",
+        "flagdescription",
+        "critical_low",
+        "critical_high"
+      ],
+      "approved": true,
+      "discovered_at": "2026-07-08T12:05:47.081264+00:00",
+      "field_source": "describe",
+      "bypass": false
+    },
+    "newprescription": {
+      "namespace": "App\\Models\\Newprescription",
+      "fields": {
+        "Id": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "PrescId": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "TransDate": {
+          "category": "TEMPORAL",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "Type": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "PatId": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "OpNo": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "IpNo": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "Temp": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "Bp1": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "Bp2": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "Weight": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "Height": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "BMI": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "RespRate": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "PulseRate": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "Rbs": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "SP02": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "Muac": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "Allergies": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "OtherDetails": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "History": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "Complaint": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "PhyExam": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "Reclab": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "LabTests": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "LabResults": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "Recrad": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "RadTests": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "RadiologyResults": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "Treatment": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "RecTheatre": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "Surgery": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "Diagnosis": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "Prescription": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "Admitted": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "WardType": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "RoomNo": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "BedNo": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "AdmDate": {
+          "category": "TEMPORAL",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "Discharge": {
+          "category": "TEMPORAL",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "Doctor": {
+          "category": "STAFF_IDENTIFIER",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "ProgressNotes": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "DoctorNotes": {
+          "category": "STAFF_IDENTIFIER",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "NursesNotes": {
+          "category": "STAFF_IDENTIFIER",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "RecPharm": {
+          "category": "STAFF_IDENTIFIER",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "RecNurse": {
+          "category": "STAFF_IDENTIFIER",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "Status": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "Stamp": {
+          "category": "TEMPORAL",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "StartTime": {
+          "category": "TEMPORAL",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "TriageTime": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "ConsTime": {
+          "category": "TEMPORAL",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "LabTime": {
+          "category": "TEMPORAL",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "RadTime": {
+          "category": "TEMPORAL",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "PharmTime": {
+          "category": "TEMPORAL",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "Dept": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "DiagCat": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "DiagName": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "DayCare": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "InsId": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "ReviewDate": {
+          "category": "TEMPORAL",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "DocStatus": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "Icd10": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "TriageStatus": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "Impression": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "PatCat": {
+          "category": "QUASI_IDENTIFIER",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "TimeStamp": {
+          "category": "TEMPORAL",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "SickOff": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "RefIn": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "RefOut": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "Age": {
+          "category": "QUASI_IDENTIFIER",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "Gender": {
+          "category": "QUASI_IDENTIFIER",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "Waiver": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "Exemption": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "Insurance": {
+          "category": "QUASI_IDENTIFIER",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "RTA": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "Tb1": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "Tb2": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "Tb3": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "Tb4": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "Tb5": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "VisitNo": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "ClinSumm": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "Police": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "mainbranch": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "PayVisitId": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "ShiftId": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "RcptNo": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "LetterHead": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "RefCateg": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "RefHosp": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "RefRemarks": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "AppointRemarks": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "RadiologyNotes": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "UrineProtein": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "MainSymptoms": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "MainPE": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "MicroAlbumin": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "InProgress": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "ZScore": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "BMI4Age": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "VitaminA": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "FileType": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "UnseenRemarks": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "VisitConfirm": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "AppointmentId": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        }
+      },
+      "needs_review": [
+        "PrescId",
+        "TransDate",
+        "PatId",
+        "OpNo",
+        "IpNo",
+        "Bp1",
+        "Bp2",
+        "BMI",
+        "Rbs",
+        "SP02",
+        "Muac",
+        "Allergies",
+        "OtherDetails",
+        "Reclab",
+        "LabTests",
+        "Recrad",
+        "RadTests",
+        "Treatment",
+        "Surgery",
+        "Admitted",
+        "RoomNo",
+        "AdmDate",
+        "Discharge",
+        "RecPharm",
+        "Stamp",
+        "StartTime",
+        "ConsTime",
+        "LabTime",
+        "RadTime",
+        "PharmTime",
+        "Dept",
+        "DiagCat",
+        "DayCare",
+        "InsId",
+        "ReviewDate",
+        "DocStatus",
+        "PatCat",
+        "TimeStamp",
+        "SickOff",
+        "RefIn",
+        "RefOut",
+        "Waiver",
+        "Exemption",
+        "Insurance",
+        "RTA",
+        "Tb1",
+        "Tb2",
+        "Tb3",
+        "Tb4",
+        "Tb5",
+        "VisitNo",
+        "ClinSumm",
+        "Police",
+        "mainbranch",
+        "PayVisitId",
+        "ShiftId",
+        "RcptNo",
+        "LetterHead",
+        "RefCateg",
+        "RefHosp",
+        "UrineProtein",
+        "MainPE",
+        "MicroAlbumin",
+        "ZScore",
+        "BMI4Age",
+        "VitaminA",
+        "VisitConfirm",
+        "AppointmentId"
+      ],
+      "approved": true,
+      "discovered_at": "2026-07-08T12:05:48.289757+00:00",
+      "field_source": "describe",
+      "bypass": false
+    },
+    "patients": {
+      "namespace": "App\\Models\\Patientsmodel",
+      "fields": {
+        "id": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "pntno": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "created_at": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "updated_at": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "deleted_at": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        }
+      },
+      "needs_review": [
+        "pntno"
+      ],
+      "approved": true,
+      "discovered_at": "2026-07-08T12:05:48.711836+00:00",
+      "field_source": "describe",
+      "bypass": false
+    },
+    "pharmrequests": {
+      "namespace": "App\\Models\\Pharmrequests",
+      "fields": {
+        "id": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "prescid": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "patid": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "prescription": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "reqtime": {
+          "category": "TEMPORAL",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "servtime": {
+          "category": "TEMPORAL",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "date": {
+          "category": "TEMPORAL",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "stamp": {
+          "category": "TEMPORAL",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "status": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "dispstatus": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "dispensed": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "recnurse": {
+          "category": "STAFF_IDENTIFIER",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "recnursestatus": {
+          "category": "STAFF_IDENTIFIER",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "paid": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "rcptno": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "itcode": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "itname": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "qty": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "strength": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "dosage1": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "dosage2": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "route": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "frequency": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "duration1": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "duration2": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "prescno": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "apsite": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "age": {
+          "category": "QUASI_IDENTIFIER",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "gender": {
+          "category": "QUASI_IDENTIFIER",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "weight": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "drugcateg": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "visitno": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "icd10": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "price": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "category": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "mainbranch": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "adminstatus": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "notes": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "billed": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "directions": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "instructions": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "formula_id": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "formula_name": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "billtime": {
+          "category": "TEMPORAL",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "billstamp": {
+          "category": "TEMPORAL",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "sale_id": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "dispensedstamp": {
+          "category": "TEMPORAL",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "source": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "sourcecat": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "isPrescription": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "ref_doctor": {
+          "category": "STAFF_IDENTIFIER",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "ref_facility": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "isRefill": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "currentRefill": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "maxRefills": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "batches": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "nextDate": {
+          "category": "TEMPORAL",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "nextDateStamp": {
+          "category": "TEMPORAL",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "lastDate": {
+          "category": "TEMPORAL",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "userstore": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "created_at": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "updated_at": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "deleted_at": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        }
+      },
+      "needs_review": [
+        "prescid",
+        "patid",
+        "reqtime",
+        "servtime",
+        "date",
+        "stamp",
+        "dispstatus",
+        "dispensed",
+        "paid",
+        "rcptno",
+        "itcode",
+        "qty",
+        "strength",
+        "duration1",
+        "duration2",
+        "prescno",
+        "apsite",
+        "visitno",
+        "price",
+        "category",
+        "mainbranch",
+        "adminstatus",
+        "billed",
+        "directions",
+        "billtime",
+        "billstamp",
+        "dispensedstamp",
+        "source",
+        "sourcecat",
+        "isRefill",
+        "currentRefill",
+        "maxRefills",
+        "batches",
+        "nextDate",
+        "nextDateStamp",
+        "lastDate",
+        "userstore"
+      ],
+      "approved": true,
+      "discovered_at": "2026-07-08T12:05:49.113501+00:00",
+      "field_source": "describe",
+      "bypass": false
+    },
+    "phyexam": {
+      "namespace": "App\\Models\\phyexam",
+      "fields": {
+        "id": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "pid": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "description": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "date": {
+          "category": "TEMPORAL",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "time": {
+          "category": "TEMPORAL",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "created_at": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "updated_at": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "deleted_at": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        }
+      },
+      "needs_review": [
+        "pid",
+        "description",
+        "date",
+        "time"
+      ],
+      "approved": true,
+      "discovered_at": "2026-07-08T12:05:49.494459+00:00",
+      "field_source": "describe",
+      "bypass": false
+    },
+    "physical": {
+      "namespace": "App\\Models\\Physical",
+      "fields": {
+        "id": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "pid": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "a1": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "b1": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "a2": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "b2": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "a3": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "b3": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "a4": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "b4": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "a5": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "b5": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "a6": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "b6": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "a7": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "b7": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "a8": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "b8": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "a9": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "b9": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "a10": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "b10": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "a11": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "b11": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "a12": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "b12": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "a13": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "b13": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "date": {
+          "category": "TEMPORAL",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "time": {
+          "category": "TEMPORAL",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "created_at": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "updated_at": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "deleted_at": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        }
+      },
+      "needs_review": [
+        "pid",
+        "a1",
+        "b1",
+        "a2",
+        "b2",
+        "a3",
+        "b3",
+        "a4",
+        "b4",
+        "a5",
+        "b5",
+        "a6",
+        "b6",
+        "a7",
+        "b7",
+        "a8",
+        "b8",
+        "a9",
+        "b9",
+        "a10",
+        "b10",
+        "a11",
+        "b11",
+        "a12",
+        "b12",
+        "a13",
+        "b13",
+        "date",
+        "time"
+      ],
+      "approved": true,
+      "discovered_at": "2026-07-08T12:05:49.877190+00:00",
+      "field_source": "describe",
+      "bypass": false
+    },
+    "procrequests": {
+      "namespace": "App\\Models\\Procrequests",
+      "fields": {
+        "id": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "procno": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "prescid": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "patid": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "request": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "results": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "reqtime": {
+          "category": "TEMPORAL",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "servtime": {
+          "category": "TEMPORAL",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "date": {
+          "category": "TEMPORAL",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "stamp": {
+          "category": "TEMPORAL",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "status": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "rcptno": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "paid": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "mainbranch": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "created_at": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "updated_at": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "deleted_at": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        }
+      },
+      "needs_review": [
+        "procno",
+        "prescid",
+        "patid",
+        "request",
+        "reqtime",
+        "servtime",
+        "date",
+        "stamp",
+        "rcptno",
+        "paid",
+        "mainbranch"
+      ],
+      "approved": true,
+      "discovered_at": "2026-07-08T12:05:50.256429+00:00",
+      "field_source": "describe",
+      "bypass": false
+    },
+    "progress": {
+      "namespace": "App\\Models\\Progress",
+      "fields": {
+        "id": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "pid": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "patid": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "date": {
+          "category": "TEMPORAL",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "stamp": {
+          "category": "TEMPORAL",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "notes": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "time": {
+          "category": "TEMPORAL",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "created_at": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "updated_at": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "deleted_at": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        }
+      },
+      "needs_review": [
+        "pid",
+        "patid",
+        "date",
+        "stamp",
+        "time"
+      ],
+      "approved": true,
+      "discovered_at": "2026-07-08T12:05:50.633504+00:00",
+      "field_source": "describe",
+      "bypass": false
+    },
+    "radrequests": {
+      "namespace": "App\\Models\\Radrequests",
+      "fields": {
+        "id": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "radno": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "prescid": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "patid": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "request": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "results": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "reqtime": {
+          "category": "TEMPORAL",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "servtime": {
+          "category": "TEMPORAL",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "date": {
+          "category": "TEMPORAL",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "stamp": {
+          "category": "TEMPORAL",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "status": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "rcptno": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "paid": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "mainbranch": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "notes": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "rectime": {
+          "category": "TEMPORAL",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "recstamp": {
+          "category": "TEMPORAL",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "billed": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "created_at": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "updated_at": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "deleted_at": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        }
+      },
+      "needs_review": [
+        "radno",
+        "prescid",
+        "patid",
+        "request",
+        "reqtime",
+        "servtime",
+        "date",
+        "stamp",
+        "rcptno",
+        "paid",
+        "mainbranch",
+        "rectime",
+        "recstamp",
+        "billed"
+      ],
+      "approved": true,
+      "discovered_at": "2026-07-08T12:05:51.106513+00:00",
+      "field_source": "describe",
+      "bypass": false
+    },
+    "theatrequests": {
+      "namespace": "App\\Models\\Theatrequests",
+      "fields": {
+        "id": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "theatreno": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "prescid": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "patid": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "procedures": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "indication": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "sedation": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "findings": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "recommendations": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "image": {
+          "category": "DIRECT_IDENTIFIER",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "reqtime": {
+          "category": "TEMPORAL",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "servtime": {
+          "category": "TEMPORAL",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "date": {
+          "category": "TEMPORAL",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "stamp": {
+          "category": "TEMPORAL",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "status": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "rcptno": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "paid": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "age": {
+          "category": "QUASI_IDENTIFIER",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "gender": {
+          "category": "QUASI_IDENTIFIER",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "approach": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "procnotes": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "complications": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "extraproc": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "tissue": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "prosthesis": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "closure": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "operdate": {
+          "category": "TEMPORAL",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "opertime": {
+          "category": "TEMPORAL",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "type": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "mainbranch": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "category": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "specialty": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "itcode": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "itname": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "amount": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "payvisitid": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "planned": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "planned_time": {
+          "category": "TEMPORAL",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "source": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "admitted": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "deposit": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "approved": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "room": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "booked": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "wound_site": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "consciousness": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "request_notes": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "consent": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "consenttimestamp": {
+          "category": "TEMPORAL",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "macroid": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "macroname": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "equipment": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "startstamp": {
+          "category": "TEMPORAL",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "startdate": {
+          "category": "TEMPORAL",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "starttime": {
+          "category": "TEMPORAL",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "asa": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "macrodetailsuser": {
+          "category": "STAFF_IDENTIFIER",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "chartparams": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "preoparams": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "anaesthesiatype": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "premed": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "postopparams": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "created_at": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "updated_at": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "deleted_at": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        }
+      },
+      "needs_review": [
+        "prescid",
+        "patid",
+        "indication",
+        "sedation",
+        "recommendations",
+        "reqtime",
+        "servtime",
+        "date",
+        "stamp",
+        "rcptno",
+        "paid",
+        "approach",
+        "complications",
+        "extraproc",
+        "tissue",
+        "prosthesis",
+        "closure",
+        "operdate",
+        "opertime",
+        "mainbranch",
+        "category",
+        "specialty",
+        "itcode",
+        "amount",
+        "payvisitid",
+        "planned",
+        "planned_time",
+        "source",
+        "admitted",
+        "deposit",
+        "approved",
+        "room",
+        "booked",
+        "wound_site",
+        "consciousness",
+        "consent",
+        "consenttimestamp",
+        "macroid",
+        "equipment",
+        "startstamp",
+        "startdate",
+        "starttime",
+        "asa",
+        "macrodetailsuser",
+        "chartparams",
+        "preoparams",
+        "premed",
+        "postopparams"
+      ],
+      "approved": true,
+      "discovered_at": "2026-07-08T12:05:51.493857+00:00",
+      "field_source": "describe",
+      "bypass": false
+    },
+    "triage": {
+      "namespace": "App\\Models\\Triage",
+      "fields": {
+        "id": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "pid": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "temp": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "bp1": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "bp2": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "weight": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "height": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "bmi": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "resp": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "pulse": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "sp02": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "rbs": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "muac": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "date": {
+          "category": "TEMPORAL",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "stamp": {
+          "category": "TEMPORAL",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "time": {
+          "category": "TEMPORAL",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "lmp": {
+          "category": "TEMPORAL",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "ldd": {
+          "category": "TEMPORAL",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "created_at": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "updated_at": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        },
+        "deleted_at": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": true
+        }
+      },
+      "needs_review": [
+        "pid",
+        "bp1",
+        "bp2",
+        "bmi",
+        "sp02",
+        "rbs",
+        "muac",
+        "date",
+        "stamp",
+        "time",
+        "lmp",
+        "ldd"
+      ],
+      "approved": true,
+      "discovered_at": "2026-07-08T12:05:51.954847+00:00",
+      "field_source": "describe",
+      "bypass": false
+    }
+  }
+}

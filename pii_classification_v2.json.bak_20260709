@@ -1,0 +1,3791 @@
+{
+  "generated_at": "2026-07-08T12:05:51.954872+00:00",
+  "connection_id": 20,
+  "facility_id": 47,
+  "models": {
+    "admnotes": {
+      "namespace": "App\\Models\\Admonotes",
+      "fields": {
+        "id": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "pid": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "description": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "username": {
+          "category": "DIRECT_IDENTIFIER",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "date": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "time": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "created_at": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "updated_at": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "deleted_at": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        }
+      },
+      "needs_review": [
+        "pid",
+        "description",
+        "date",
+        "time"
+      ],
+      "approved": false,
+      "discovered_at": "2026-07-08T12:05:43.333213+00:00",
+      "field_source": "describe"
+    },
+    "cadex": {
+      "namespace": "App\\Models\\Cadex",
+      "fields": {
+        "id": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "pid": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "patid": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "patname": {
+          "category": "DIRECT_IDENTIFIER",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "date": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "stamp": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "fullname": {
+          "category": "DIRECT_IDENTIFIER",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "notes": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "time": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "username": {
+          "category": "DIRECT_IDENTIFIER",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "status": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "mainid": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "created_at": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "updated_at": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "deleted_at": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        }
+      },
+      "needs_review": [
+        "pid",
+        "patid",
+        "date",
+        "stamp",
+        "time",
+        "mainid"
+      ],
+      "approved": false,
+      "discovered_at": "2026-07-08T12:05:43.718972+00:00",
+      "field_source": "describe"
+    },
+    "history": {
+      "namespace": "App\\Models\\History",
+      "fields": {
+        "id": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "pid": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "description": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "username": {
+          "category": "DIRECT_IDENTIFIER",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "date": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "time": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "age": {
+          "category": "QUASI_IDENTIFIER",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "gender": {
+          "category": "QUASI_IDENTIFIER",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "stamp": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "mainbranch": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "created_at": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "updated_at": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "deleted_at": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        }
+      },
+      "needs_review": [
+        "pid",
+        "description",
+        "date",
+        "time",
+        "stamp",
+        "mainbranch"
+      ],
+      "approved": false,
+      "discovered_at": "2026-07-08T12:05:44.109952+00:00",
+      "field_source": "describe"
+    },
+    "icd10diagnosis": {
+      "namespace": "App\\Models\\ICD10diagnosis",
+      "fields": {
+        "id": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "pid": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "stamp": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "code": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "doctor": {
+          "category": "STAFF_IDENTIFIER",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "maincateg": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "time": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "pattype": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "refin": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "refout": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "age": {
+          "category": "QUASI_IDENTIFIER",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "mainbranch": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "diseasename": {
+          "category": "DIRECT_IDENTIFIER",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "diseasetype": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "gender": {
+          "category": "QUASI_IDENTIFIER",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "created_at": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "updated_at": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "deleted_at": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        }
+      },
+      "needs_review": [
+        "pid",
+        "stamp",
+        "maincateg",
+        "time",
+        "refin",
+        "refout",
+        "mainbranch"
+      ],
+      "approved": false,
+      "discovered_at": "2026-07-08T12:05:44.494462+00:00",
+      "field_source": "describe"
+    },
+    "icd10diseases": {
+      "namespace": "App\\Models\\ICD10diseases",
+      "fields": {
+        "id": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "code": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "BlockId": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "name": {
+          "category": "DIRECT_IDENTIFIER",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "ClassKind": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "IsResidual": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "PrimaryLocation": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "chapter": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "Grouping1": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "Grouping2": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "maincateg": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "diseases_category": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "disease_class": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "disease_sub_class": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "created_at": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "updated_at": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "deleted_at": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        }
+      },
+      "needs_review": [
+        "BlockId",
+        "ClassKind",
+        "IsResidual",
+        "PrimaryLocation",
+        "chapter",
+        "Grouping1",
+        "Grouping2",
+        "maincateg",
+        "diseases_category",
+        "disease_class",
+        "disease_sub_class"
+      ],
+      "approved": false,
+      "discovered_at": "2026-07-08T12:05:44.935066+00:00",
+      "field_source": "describe"
+    },
+    "impression": {
+      "namespace": "App\\Models\\Impression",
+      "fields": {
+        "id": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "pid": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "description": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "username": {
+          "category": "DIRECT_IDENTIFIER",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "date": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "time": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "age": {
+          "category": "QUASI_IDENTIFIER",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "gender": {
+          "category": "QUASI_IDENTIFIER",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "stamp": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "mainbranch": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "created_at": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "updated_at": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "deleted_at": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        }
+      },
+      "needs_review": [
+        "pid",
+        "description",
+        "date",
+        "time",
+        "stamp",
+        "mainbranch"
+      ],
+      "approved": false,
+      "discovered_at": "2026-07-08T12:05:45.364728+00:00",
+      "field_source": "describe"
+    },
+    "inpatients": {
+      "namespace": "App\\Models\\Inpatients",
+      "fields": {
+        "Id": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "PrescId": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "TransDate": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "PatId": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "PatName": {
+          "category": "DIRECT_IDENTIFIER",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "MainWard": {
+          "category": "QUASI_IDENTIFIER",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "Admitted": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "WardType": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "RoomNo": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "BedNo": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "AdmDate": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "Discharge": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "Doctor": {
+          "category": "STAFF_IDENTIFIER",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "AdmNotes": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "Status": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "Stamp": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "PayMode": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "DiagCat": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "DiagName": {
+          "category": "DIRECT_IDENTIFIER",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "Deposit": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "Impression": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "AdmittedBy": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "BedCategory": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "DischargeStamp": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "DischargeTime": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "DischargedBy": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "DischargeNotes": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "IpNo": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "Diagnosis": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "Icd10": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "Type": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "DischargeCateg": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "BedId": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "mainbranch": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "RadiologyNotes": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "ExpectedStay": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "PayVisitId": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "LongStayExplanation": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "Age": {
+          "category": "QUASI_IDENTIFIER",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "Gender": {
+          "category": "QUASI_IDENTIFIER",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "LastActive": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "TriageStatus": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "LastBedCharge": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "ClosedBill": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "LimitNotification": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "AutoBill": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "LodgerFee": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "LodgerName": {
+          "category": "DIRECT_IDENTIFIER",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "LodgerShip": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "LodgerPhone": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        }
+      },
+      "needs_review": [
+        "PrescId",
+        "TransDate",
+        "PatId",
+        "Admitted",
+        "RoomNo",
+        "AdmDate",
+        "Discharge",
+        "Stamp",
+        "PayMode",
+        "DiagCat",
+        "Deposit",
+        "AdmittedBy",
+        "DischargeStamp",
+        "DischargeTime",
+        "DischargedBy",
+        "IpNo",
+        "DischargeCateg",
+        "mainbranch",
+        "ExpectedStay",
+        "PayVisitId",
+        "LongStayExplanation",
+        "LastActive",
+        "ClosedBill",
+        "LimitNotification",
+        "AutoBill",
+        "LodgerFee",
+        "LodgerShip",
+        "LodgerPhone"
+      ],
+      "approved": false,
+      "discovered_at": "2026-07-08T12:05:46.313348+00:00",
+      "field_source": "describe"
+    },
+    "labrequests": {
+      "namespace": "App\\Models\\Labrequests",
+      "fields": {
+        "id": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "labno": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "prescid": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "patid": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "patname": {
+          "category": "DIRECT_IDENTIFIER",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "section": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "request": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "results": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "reqtime": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "rectime": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "servtime": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "date": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "stamp": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "requested": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "doneby": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "status": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "rcptno": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "paid": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "sample": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "sample_condition": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "accept_reject": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "source": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "other_details": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "unique_no": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "restype": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "age": {
+          "category": "QUASI_IDENTIFIER",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "sex": {
+          "category": "QUASI_IDENTIFIER",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "weight": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "impression": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "verifiedby": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "mainbranch": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "reqstamp": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "recstamp": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "servstamp": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "billed": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "notes": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "collstamp": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "eqcode": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "critical": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "labware_status": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "created_at": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "updated_at": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "deleted_at": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        }
+      },
+      "needs_review": [
+        "labno",
+        "prescid",
+        "patid",
+        "section",
+        "request",
+        "reqtime",
+        "rectime",
+        "servtime",
+        "date",
+        "stamp",
+        "requested",
+        "doneby",
+        "rcptno",
+        "paid",
+        "sample",
+        "sample_condition",
+        "accept_reject",
+        "source",
+        "other_details",
+        "unique_no",
+        "verifiedby",
+        "mainbranch",
+        "reqstamp",
+        "recstamp",
+        "servstamp",
+        "billed",
+        "collstamp",
+        "eqcode",
+        "critical",
+        "labware_status"
+      ],
+      "approved": false,
+      "discovered_at": "2026-07-08T12:05:46.694531+00:00",
+      "field_source": "describe"
+    },
+    "labtestresults": {
+      "namespace": "App\\Models\\Labtestresults",
+      "fields": {
+        "id": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "reqid": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "subtestname": {
+          "category": "DIRECT_IDENTIFIER",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "results": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "normalrange": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "units": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "type": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "categories": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "specifics": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "result2": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "heading": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "flagdescription": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "critical_low": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "critical_high": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "created_at": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "updated_at": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "deleted_at": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        }
+      },
+      "needs_review": [
+        "reqid",
+        "normalrange",
+        "units",
+        "categories",
+        "specifics",
+        "heading",
+        "flagdescription",
+        "critical_low",
+        "critical_high"
+      ],
+      "approved": false,
+      "discovered_at": "2026-07-08T12:05:47.081264+00:00",
+      "field_source": "describe"
+    },
+    "newprescription": {
+      "namespace": "App\\Models\\Newprescription",
+      "fields": {
+        "Id": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "PrescId": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "TransDate": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "Type": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "PatId": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "OpNo": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "IpNo": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "Temp": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "Bp1": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "Bp2": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "Weight": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "Height": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "BMI": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "RespRate": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "PulseRate": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "Rbs": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "SP02": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "Muac": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "Allergies": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "OtherDetails": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "History": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "Complaint": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "PhyExam": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "Reclab": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "LabTests": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "LabResults": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "Recrad": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "RadTests": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "RadiologyResults": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "Treatment": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "RecTheatre": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "Surgery": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "Diagnosis": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "Prescription": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "Admitted": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "WardType": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "RoomNo": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "BedNo": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "AdmDate": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "Discharge": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "Doctor": {
+          "category": "STAFF_IDENTIFIER",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "ProgressNotes": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "DoctorNotes": {
+          "category": "STAFF_IDENTIFIER",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "NursesNotes": {
+          "category": "STAFF_IDENTIFIER",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "RecPharm": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "RecNurse": {
+          "category": "STAFF_IDENTIFIER",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "Status": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "Stamp": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "StartTime": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "TriageTime": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "ConsTime": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "LabTime": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "RadTime": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "PharmTime": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "Dept": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "DiagCat": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "DiagName": {
+          "category": "DIRECT_IDENTIFIER",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "DayCare": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "InsId": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "ReviewDate": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "DocStatus": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "Icd10": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "TriageStatus": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "Impression": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "PatCat": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "TimeStamp": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "SickOff": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "RefIn": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "RefOut": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "Age": {
+          "category": "QUASI_IDENTIFIER",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "Gender": {
+          "category": "QUASI_IDENTIFIER",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "Waiver": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "Exemption": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "Insurance": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "RTA": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "Tb1": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "Tb2": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "Tb3": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "Tb4": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "Tb5": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "VisitNo": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "ClinSumm": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "Police": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "mainbranch": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "PayVisitId": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "ShiftId": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "RcptNo": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "LetterHead": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "RefCateg": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "RefHosp": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "RefRemarks": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "AppointRemarks": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "RadiologyNotes": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "UrineProtein": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "MainSymptoms": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "MainPE": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "MicroAlbumin": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "InProgress": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "ZScore": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "BMI4Age": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "VitaminA": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "FileType": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "UnseenRemarks": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "VisitConfirm": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "AppointmentId": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        }
+      },
+      "needs_review": [
+        "PrescId",
+        "TransDate",
+        "PatId",
+        "OpNo",
+        "IpNo",
+        "Bp1",
+        "Bp2",
+        "BMI",
+        "Rbs",
+        "SP02",
+        "Muac",
+        "Allergies",
+        "OtherDetails",
+        "Reclab",
+        "LabTests",
+        "Recrad",
+        "RadTests",
+        "Treatment",
+        "Surgery",
+        "Admitted",
+        "RoomNo",
+        "AdmDate",
+        "Discharge",
+        "RecPharm",
+        "Stamp",
+        "StartTime",
+        "ConsTime",
+        "LabTime",
+        "RadTime",
+        "PharmTime",
+        "Dept",
+        "DiagCat",
+        "DayCare",
+        "InsId",
+        "ReviewDate",
+        "DocStatus",
+        "PatCat",
+        "TimeStamp",
+        "SickOff",
+        "RefIn",
+        "RefOut",
+        "Waiver",
+        "Exemption",
+        "Insurance",
+        "RTA",
+        "Tb1",
+        "Tb2",
+        "Tb3",
+        "Tb4",
+        "Tb5",
+        "VisitNo",
+        "ClinSumm",
+        "Police",
+        "mainbranch",
+        "PayVisitId",
+        "ShiftId",
+        "RcptNo",
+        "LetterHead",
+        "RefCateg",
+        "RefHosp",
+        "UrineProtein",
+        "MainPE",
+        "MicroAlbumin",
+        "ZScore",
+        "BMI4Age",
+        "VitaminA",
+        "VisitConfirm",
+        "AppointmentId"
+      ],
+      "approved": false,
+      "discovered_at": "2026-07-08T12:05:48.289757+00:00",
+      "field_source": "describe"
+    },
+    "patients": {
+      "namespace": "App\\Models\\Patientsmodel",
+      "fields": {
+        "id": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "pntno": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "created_at": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "updated_at": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "deleted_at": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        }
+      },
+      "needs_review": [
+        "pntno"
+      ],
+      "approved": false,
+      "discovered_at": "2026-07-08T12:05:48.711836+00:00",
+      "field_source": "describe"
+    },
+    "pharmrequests": {
+      "namespace": "App\\Models\\Pharmrequests",
+      "fields": {
+        "id": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "prescid": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "patid": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "prescription": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "reqtime": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "servtime": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "date": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "stamp": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "status": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "dispstatus": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "dispensed": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "recnurse": {
+          "category": "STAFF_IDENTIFIER",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "recnursestatus": {
+          "category": "STAFF_IDENTIFIER",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "paid": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "rcptno": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "itcode": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "itname": {
+          "category": "DIRECT_IDENTIFIER",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "qty": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "strength": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "dosage1": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "dosage2": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "route": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "frequency": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "duration1": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "duration2": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "prescno": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "apsite": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "age": {
+          "category": "QUASI_IDENTIFIER",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "gender": {
+          "category": "QUASI_IDENTIFIER",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "weight": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "drugcateg": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "visitno": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "icd10": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "price": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "category": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "mainbranch": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "adminstatus": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "notes": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "billed": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "directions": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "instructions": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "formula_id": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "formula_name": {
+          "category": "DIRECT_IDENTIFIER",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "billtime": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "billstamp": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "sale_id": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "dispensedstamp": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "source": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "sourcecat": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "isPrescription": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "ref_doctor": {
+          "category": "STAFF_IDENTIFIER",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "ref_facility": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "isRefill": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "currentRefill": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "maxRefills": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "batches": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "nextDate": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "nextDateStamp": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "lastDate": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "userstore": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "created_at": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "updated_at": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "deleted_at": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        }
+      },
+      "needs_review": [
+        "prescid",
+        "patid",
+        "reqtime",
+        "servtime",
+        "date",
+        "stamp",
+        "dispstatus",
+        "dispensed",
+        "paid",
+        "rcptno",
+        "itcode",
+        "qty",
+        "strength",
+        "duration1",
+        "duration2",
+        "prescno",
+        "apsite",
+        "visitno",
+        "price",
+        "category",
+        "mainbranch",
+        "adminstatus",
+        "billed",
+        "directions",
+        "billtime",
+        "billstamp",
+        "dispensedstamp",
+        "source",
+        "sourcecat",
+        "isRefill",
+        "currentRefill",
+        "maxRefills",
+        "batches",
+        "nextDate",
+        "nextDateStamp",
+        "lastDate",
+        "userstore"
+      ],
+      "approved": false,
+      "discovered_at": "2026-07-08T12:05:49.113501+00:00",
+      "field_source": "describe"
+    },
+    "phyexam": {
+      "namespace": "App\\Models\\phyexam",
+      "fields": {
+        "id": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "pid": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "description": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "date": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "time": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "created_at": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "updated_at": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "deleted_at": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        }
+      },
+      "needs_review": [
+        "pid",
+        "description",
+        "date",
+        "time"
+      ],
+      "approved": false,
+      "discovered_at": "2026-07-08T12:05:49.494459+00:00",
+      "field_source": "describe"
+    },
+    "physical": {
+      "namespace": "App\\Models\\Physical",
+      "fields": {
+        "id": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "pid": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "a1": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "b1": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "a2": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "b2": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "a3": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "b3": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "a4": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "b4": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "a5": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "b5": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "a6": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "b6": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "a7": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "b7": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "a8": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "b8": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "a9": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "b9": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "a10": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "b10": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "a11": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "b11": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "a12": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "b12": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "a13": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "b13": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "date": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "time": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "created_at": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "updated_at": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "deleted_at": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        }
+      },
+      "needs_review": [
+        "pid",
+        "a1",
+        "b1",
+        "a2",
+        "b2",
+        "a3",
+        "b3",
+        "a4",
+        "b4",
+        "a5",
+        "b5",
+        "a6",
+        "b6",
+        "a7",
+        "b7",
+        "a8",
+        "b8",
+        "a9",
+        "b9",
+        "a10",
+        "b10",
+        "a11",
+        "b11",
+        "a12",
+        "b12",
+        "a13",
+        "b13",
+        "date",
+        "time"
+      ],
+      "approved": false,
+      "discovered_at": "2026-07-08T12:05:49.877190+00:00",
+      "field_source": "describe"
+    },
+    "procrequests": {
+      "namespace": "App\\Models\\Procrequests",
+      "fields": {
+        "id": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "procno": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "prescid": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "patid": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "request": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "results": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "reqtime": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "servtime": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "date": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "stamp": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "status": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "rcptno": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "paid": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "mainbranch": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "created_at": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "updated_at": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "deleted_at": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        }
+      },
+      "needs_review": [
+        "procno",
+        "prescid",
+        "patid",
+        "request",
+        "reqtime",
+        "servtime",
+        "date",
+        "stamp",
+        "rcptno",
+        "paid",
+        "mainbranch"
+      ],
+      "approved": false,
+      "discovered_at": "2026-07-08T12:05:50.256429+00:00",
+      "field_source": "describe"
+    },
+    "progress": {
+      "namespace": "App\\Models\\Progress",
+      "fields": {
+        "id": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "pid": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "patid": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "date": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "stamp": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "notes": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "time": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "created_at": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "updated_at": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "deleted_at": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        }
+      },
+      "needs_review": [
+        "pid",
+        "patid",
+        "date",
+        "stamp",
+        "time"
+      ],
+      "approved": false,
+      "discovered_at": "2026-07-08T12:05:50.633504+00:00",
+      "field_source": "describe"
+    },
+    "radrequests": {
+      "namespace": "App\\Models\\Radrequests",
+      "fields": {
+        "id": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "radno": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "prescid": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "patid": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "request": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "results": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "reqtime": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "servtime": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "date": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "stamp": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "status": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "rcptno": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "paid": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "mainbranch": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "notes": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "rectime": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "recstamp": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "billed": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "created_at": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "updated_at": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "deleted_at": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        }
+      },
+      "needs_review": [
+        "radno",
+        "prescid",
+        "patid",
+        "request",
+        "reqtime",
+        "servtime",
+        "date",
+        "stamp",
+        "rcptno",
+        "paid",
+        "mainbranch",
+        "rectime",
+        "recstamp",
+        "billed"
+      ],
+      "approved": false,
+      "discovered_at": "2026-07-08T12:05:51.106513+00:00",
+      "field_source": "describe"
+    },
+    "theatrequests": {
+      "namespace": "App\\Models\\Theatrequests",
+      "fields": {
+        "id": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "theatreno": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "prescid": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "patid": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "procedures": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "indication": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "sedation": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "findings": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "recommendations": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "image": {
+          "category": "DIRECT_IDENTIFIER",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "reqtime": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "servtime": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "date": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "stamp": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "status": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "rcptno": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "paid": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "age": {
+          "category": "QUASI_IDENTIFIER",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "gender": {
+          "category": "QUASI_IDENTIFIER",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "approach": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "procnotes": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "complications": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "extraproc": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "tissue": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "prosthesis": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "closure": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "operdate": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "opertime": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "type": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "mainbranch": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "category": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "specialty": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "itcode": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "itname": {
+          "category": "DIRECT_IDENTIFIER",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "amount": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "payvisitid": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "planned": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "planned_time": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "source": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "admitted": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "deposit": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "approved": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "room": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "booked": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "wound_site": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "consciousness": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "request_notes": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "consent": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "consenttimestamp": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "macroid": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "macroname": {
+          "category": "DIRECT_IDENTIFIER",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "equipment": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "startstamp": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "startdate": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "starttime": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "asa": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "macrodetailsuser": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "chartparams": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "preoparams": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "anaesthesiatype": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "premed": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "postopparams": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "created_at": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "updated_at": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "deleted_at": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        }
+      },
+      "needs_review": [
+        "prescid",
+        "patid",
+        "indication",
+        "sedation",
+        "recommendations",
+        "reqtime",
+        "servtime",
+        "date",
+        "stamp",
+        "rcptno",
+        "paid",
+        "approach",
+        "complications",
+        "extraproc",
+        "tissue",
+        "prosthesis",
+        "closure",
+        "operdate",
+        "opertime",
+        "mainbranch",
+        "category",
+        "specialty",
+        "itcode",
+        "amount",
+        "payvisitid",
+        "planned",
+        "planned_time",
+        "source",
+        "admitted",
+        "deposit",
+        "approved",
+        "room",
+        "booked",
+        "wound_site",
+        "consciousness",
+        "consent",
+        "consenttimestamp",
+        "macroid",
+        "equipment",
+        "startstamp",
+        "startdate",
+        "starttime",
+        "asa",
+        "macrodetailsuser",
+        "chartparams",
+        "preoparams",
+        "premed",
+        "postopparams"
+      ],
+      "approved": false,
+      "discovered_at": "2026-07-08T12:05:51.493857+00:00",
+      "field_source": "describe"
+    },
+    "triage": {
+      "namespace": "App\\Models\\Triage",
+      "fields": {
+        "id": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "pid": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "temp": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "bp1": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "bp2": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "weight": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "height": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "bmi": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "resp": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "pulse": {
+          "category": "CLINICAL_CONTENT",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "sp02": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "rbs": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "muac": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "date": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "stamp": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "time": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "lmp": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "ldd": {
+          "category": "UNKNOWN",
+          "action": "HASH",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "created_at": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "updated_at": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        },
+        "deleted_at": {
+          "category": "SYSTEM_META",
+          "action": "KEEP",
+          "suggested_by": "regex_classifier",
+          "reviewed": false
+        }
+      },
+      "needs_review": [
+        "pid",
+        "bp1",
+        "bp2",
+        "bmi",
+        "sp02",
+        "rbs",
+        "muac",
+        "date",
+        "stamp",
+        "time",
+        "lmp",
+        "ldd"
+      ],
+      "approved": false,
+      "discovered_at": "2026-07-08T12:05:51.954847+00:00",
+      "field_source": "describe"
+    }
+  }
+}

@@ -140,31 +140,67 @@ TOKEN_TTL_SECONDS        = int(os.getenv("TOKEN_TTL_SECONDS", str(50 * 60)))
 # Maps PHP namespace → Snowflake table name in ORTHOPEDIC_RAW.
 # Table names match the .bson.gz filenames (without extension).
 
+_ORDERITEMENTRIES_STAFF_NAME_FIELDS = {"surgeon", "anaesthetist"}
+
+def _redact_orderitementries_pii(rows: list) -> list:
+    """OrderItemEntry.fields[] is a nested array the gateway's anonymize_fields
+    cannot reach (confirmed empirically — it only touches top-level fields).
+    Redact ourselves:
+      - free-text form entries hold clinical notes and staff names typed by
+        hand. Matched on 'textarea' as a case-insensitive substring of type,
+        not an exact match — the form builder emits 'Textarea',
+        'IncrementalTextarea', and lowercase 'textarea' for the same kind of
+        free-text field, and an exact match silently missed the other two.
+      - Surgeon/Anaesthetist entries (type SearchableFromPrevious) hold real
+        theatre staff names (e.g. "DR MARANYA", "DR WANJALA"), confirmed."""
+    for r in rows:
+        fields = r.get("fields")
+        if isinstance(fields, list):
+            for f in fields:
+                if not isinstance(f, dict):
+                    continue
+                ftype = (f.get("type") or "").lower()
+                fname = (f.get("name") or "").strip().lower()
+                if "textarea" in ftype or fname in _ORDERITEMENTRIES_STAFF_NAME_FIELDS:
+                    f["value"] = ["[REDACTED]"]
+    return rows
+
+def _redact_supplier_contacts(rows: list) -> list:
+    """Supplier.emails/phones are arrays — passing them in anonymize_fields
+    500s the gateway ("Array to string conversion", confirmed empirically: the
+    vendor's anonymizer can't mask array-typed fields). Redact them ourselves."""
+    for r in rows:
+        if isinstance(r.get("emails"), list) and r["emails"]:
+            r["emails"] = ["[REDACTED]"]
+        if isinstance(r.get("phones"), list) and r["phones"]:
+            r["phones"] = ["[REDACTED]"]
+    return rows
+
 MODELS: list[dict] = [
-    {"namespace": r"App\Models\OrderItemEntry",       "table": "orderitementries"},
-    {"namespace": r"App\Models\SingleOrderItem",      "table": "singleorderitems"},
+    {"namespace": r"App\Models\OrderItemEntry",       "table": "orderitementries", "row_transform": _redact_orderitementries_pii},
+    {"namespace": r"App\Models\SingleOrderItem",      "table": "singleorderitems", "anonymize": False},
     {"namespace": r"App\Models\Order",                "table": "orders"},
-    {"namespace": r"App\Models\LedgerEntry",          "table": "ledgerentries"},
-    {"namespace": r"App\Models\StatementEntry",       "table": "statemententries"},
-    {"namespace": r"App\Models\InventoryLedgerEntry", "table": "inventoryledgerentries"},
-    {"namespace": r"App\Models\Payment",              "table": "payments"},
+    {"namespace": r"App\Models\LedgerEntry",          "table": "ledgerentries", "anonymize_fields": ["subjectName", "notes"]},
+    {"namespace": r"App\Models\StatementEntry",       "table": "statemententries", "anonymize_fields": ["notes"]},
+    {"namespace": r"App\Models\InventoryLedgerEntry", "table": "inventoryledgerentries", "anonymize_fields": ["desc"]},
+    {"namespace": r"App\Models\Payment",              "table": "payments", "anonymize_fields": ["subjectName"]},
     {"namespace": r"App\Models\Request",              "table": "requests"},
-    {"namespace": r"App\Models\QueueEntry",           "table": "queueentries"},
+    {"namespace": r"App\Models\QueueEntry",           "table": "queueentries", "anonymize_fields": ["speech"]},
     {"namespace": r"App\Models\Coding",               "table": "codings"},
     {"namespace": r"App\Models\PatientScheme",        "table": "patientschemes"},
     {"namespace": r"App\Models\SystemLog",            "table": "systemlogs"},
     {"namespace": r"App\Models\ErrorLog",             "table": "errorlogs"},
     {"namespace": r"App\Models\PatientPlan",          "table": "patientplans"},
     {"namespace": r"App\Models\ReorderLevel",         "table": "reorderlevels"},
-    {"namespace": r"App\Models\SaleItem",             "table": "saleitems"},
+    {"namespace": r"App\Models\SaleItem",             "table": "saleitems", "anonymize": False},
     {"namespace": r"App\Models\InventoryItem",        "table": "inventoryitems"},
     {"namespace": r"App\Models\PurchaseOrder",        "table": "purchaseorders"},
     {"namespace": r"App\Models\Report",               "table": "reports"},
     {"namespace": r"App\Models\Shift",                "table": "shifts"},
-    {"namespace": r"App\Models\Supplier",             "table": "suppliers"},
+    {"namespace": r"App\Models\Supplier",             "table": "suppliers", "anonymize_fields": ["name"], "row_transform": _redact_supplier_contacts},
     {"namespace": r"App\Models\PatientInvoice",       "table": "patientinvoices"},
-    {"namespace": r"App\Models\Diagnosis2",           "table": "diagnoses2"},
-    {"namespace": r"App\Models\Patient2",             "table": "patients2"},
+    {"namespace": r"App\Models\Diagnosis2",           "table": "diagnoses2", "anonymize": False},
+    {"namespace": r"App\Models\Patient2",             "table": "patients2", "anonymize_fields": ["name", "phone", "nokName", "nokPhone", "email"]},
     {"namespace": r"App\Models\Invoice2",             "table": "invoices2"},
     {"namespace": r"App\Models\Users2",               "table": "users2"},
 ]
@@ -356,6 +392,13 @@ class SnowflakeClient:
             log.exception("✗ %-35s FAILED · %s", label, e)
             raise
 
+    def query(self, sql: str, label: str | None = None) -> list[tuple]:
+        label = label or f"q:{hashlib.md5(sql.encode()).hexdigest()[:8]}"
+        log.debug("▶ %-35s | %s…", label, " ".join(sql.split())[:120])
+        with self._lock, self._cursor() as cur:
+            cur.execute(sql)
+            return cur.fetchall()
+
     def __enter__(self): return self
     def __exit__(self, *_): self.close()
 
@@ -486,11 +529,23 @@ def _gateway_request(
     per_page: int,
     updated_since: str | None = None,
     *,
+    anonymize: bool | None = None,
+    anonymize_fields: list[str] | None = None,
+    anonymize_skip: list[str] | None = None,
     max_retries: int = 6,
     default_wait: int = 10,
     backoff: int = 2,
 ) -> dict:
-    """POST /api/gateway for a single page with retry for 401/429/5xx/network."""
+    """POST /api/gateway for a single page with retry for 401/429/5xx/network.
+
+    anonymize_fields and anonymize_skip are mutually exclusive gateway options:
+      - anonymize_fields: ONLY these fields are anonymized; everything else is real.
+      - anonymize_skip:   everything is anonymized per the gateway's own default
+                           field set EXCEPT these fields, which are left real.
+    """
+    if anonymize_fields and anonymize_skip:
+        raise ValueError("anonymize_fields and anonymize_skip are mutually exclusive")
+
     body: dict = {
         "connection_id": CONNECTION_ID,
         "namespace":     namespace,
@@ -500,6 +555,12 @@ def _gateway_request(
     }
     if updated_since and updated_since != "1970-01-01T00:00:00Z":
         body["updated_since"] = updated_since
+    if anonymize is not None:
+        body["anonymize"] = anonymize
+    if anonymize_fields:
+        body["anonymize_fields"] = anonymize_fields
+    if anonymize_skip:
+        body["anonymize_skip"] = anonymize_skip
 
     attempt, wait = 0, default_wait
     while True:
@@ -793,8 +854,12 @@ def extract_one_model(
         saved in the progress file), fetch only missing pages, then do ONE
         COPY INTO covering ALL s3_keys (saved + new).
     """
-    namespace = model["namespace"]
-    table     = model["table"]
+    namespace        = model["namespace"]
+    table            = model["table"]
+    anonymize        = model.get("anonymize")
+    anonymize_fields = model.get("anonymize_fields")
+    anonymize_skip   = model.get("anonymize_skip")
+    row_transform    = model.get("row_transform")
     ns_short  = namespace.split("\\")[-1]
 
     prog         = _get_model_progress(table) if resume else {}
@@ -815,6 +880,8 @@ def extract_one_model(
         """Upload rows for one page to S3 and checkpoint. Returns s3_key or None."""
         if not rows:
             return None
+        if row_transform is not None:
+            rows = row_transform(rows)
         if dry_run:
             log.info("    DRY-RUN  %-35s  page=%d  rows=%d", ns_short, page, len(rows))
             return None
@@ -824,7 +891,7 @@ def extract_one_model(
 
     # ── Page 1: fetch first to discover last_page ─────────────────────────────
     if 1 not in pages_done:
-        payload1         = _gateway_request(namespace, 1, per_page, updated_since)
+        payload1         = _gateway_request(namespace, 1, per_page, updated_since, anonymize=anonymize, anonymize_fields=anonymize_fields, anonymize_skip=anonymize_skip)
         first_rows, pag1 = _extract_rows_and_pagination(payload1)
         if not first_rows:
             log.info("  %-35s  0 rows on page 1 — nothing to load", ns_short)
@@ -853,7 +920,7 @@ def extract_one_model(
 
             def _do_page(p: int) -> tuple[int, str | None, int]:
                 rows, _ = _extract_rows_and_pagination(
-                    _gateway_request(namespace, p, per_page, updated_since)
+                    _gateway_request(namespace, p, per_page, updated_since, anonymize=anonymize, anonymize_fields=anonymize_fields, anonymize_skip=anonymize_skip)
                 )
                 key = _upload_page(p, rows, last_page)  # fetch + upload in same thread
                 return p, key, len(rows)
@@ -876,7 +943,7 @@ def extract_one_model(
             if page in pages_done:
                 continue
             rows, pag = _extract_rows_and_pagination(
-                _gateway_request(namespace, page, per_page, updated_since)
+                _gateway_request(namespace, page, per_page, updated_since, anonymize=anonymize, anonymize_fields=anonymize_fields, anonymize_skip=anonymize_skip)
             )
             if not rows:
                 break
@@ -897,7 +964,7 @@ def extract_one_model(
 
                     def _do_seq_page(p: int) -> tuple[int, str | None, int]:
                         rows, _ = _extract_rows_and_pagination(
-                            _gateway_request(namespace, p, per_page, updated_since)
+                            _gateway_request(namespace, p, per_page, updated_since, anonymize=anonymize, anonymize_fields=anonymize_fields, anonymize_skip=anonymize_skip)
                         )
                         key = _upload_page(p, rows, lp)  # fetch + upload in same thread
                         return p, key, len(rows)
