@@ -59,7 +59,6 @@ USAGE
 
 Requires `pdfplumber` for PDF input (`pip install pdfplumber`).
 """
-
 from __future__ import annotations
 
 import argparse

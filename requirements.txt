@@ -29,3 +29,5 @@ urllib3==2.6.3
 snowflake-connector-python==4.4.0
 pypdf
 boto3>=1.34,<2.0
+tavily-python
+openai
