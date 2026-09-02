@@ -31,3 +31,6 @@ pypdf
 boto3>=1.34,<2.0
 tavily-python
 openai
+anthropic
+ollama
+chromadb

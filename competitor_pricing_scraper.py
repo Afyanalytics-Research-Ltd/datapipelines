@@ -435,6 +435,20 @@ def discover_urls_via_tavily(query: str, *, max_results: int, search_depth: str)
     log.info("Discovery query %r → %d candidate URL(s)", query, len(urls))
     return urls
 
+# Phrases that mean "we didn't get the page, we got a bot-detection wall" —
+# a short block page can easily clear MIN_TAVILY_CONTENT_CHARS, so length
+# alone can't tell a real (if thin) page apart from a challenge page.
+_BOT_BLOCK_SIGNATURES = (
+    "attention required", "you have been blocked", "please enable cookies",
+    "checking your browser", "just a moment", "verify you are human",
+    "are you a robot", "unusual traffic", "access denied", "captcha",
+    "cf-error", "ray id",
+)
+
+def _looks_like_bot_block(content: str) -> bool:
+    head = content[:2000].lower()
+    return any(sig in head for sig in _BOT_BLOCK_SIGNATURES)
+
 def fetch_via_tavily(url: str) -> str | None:
     client = _get_tavily_client()
     if client is None:
@@ -450,6 +464,9 @@ def fetch_via_tavily(url: str) -> str | None:
         if r.get("url") == url or True:  # single-url call — take the first hit
             content = (r.get("raw_content") or "").strip()
             if len(content) >= MIN_TAVILY_CONTENT_CHARS:
+                if _looks_like_bot_block(content):
+                    log.warning("Tavily fetch for %s looks like a bot-block page — falling back", url)
+                    return None
                 return content
             break
 
@@ -500,7 +517,12 @@ def fetch_via_selenium(url: str, timeout: int = 30) -> str | None:
         for tag in soup(["script", "style", "noscript"]):
             tag.decompose()
         text = soup.get_text(separator="\n", strip=True)
-        return text if len(text) >= MIN_TAVILY_CONTENT_CHARS else None
+        if len(text) < MIN_TAVILY_CONTENT_CHARS:
+            return None
+        if _looks_like_bot_block(text):
+            log.warning("Selenium fetch for %s looks like a bot-block page", url)
+            return None
+        return text
     finally:
         driver.quit()
 
