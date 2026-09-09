@@ -132,7 +132,7 @@ with DAG(
     dag_id="gsheet_new_record_poc_dag",
     description="POC: detects new rows in a Google Sheet and emails a notification.",
     default_args=default_args,
-    schedule_interval="* * * * *",  # every minute -- POC only
+    schedule="* * * * *",  # every minute -- POC only
     start_date=datetime(2024, 1, 1),
     catchup=False,
     max_active_runs=1,
@@ -143,5 +143,3 @@ with DAG(
         task_id="check_and_notify",
         python_callable=check_and_notify,
     )
-
-
