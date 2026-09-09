@@ -82,7 +82,7 @@ def check_and_notify(**context) -> None:
     header = all_values[0] if all_values else []
     data_rows = all_values[1:] if all_values else []
 
-    last_row_count = int(Variable.get(LAST_ROW_COUNT_VAR, default_var=0))
+    last_row_count = int(Variable.get(LAST_ROW_COUNT_VAR, default_var="0"))
     current_row_count = len(data_rows)
 
     if current_row_count <= last_row_count:
@@ -106,7 +106,7 @@ def check_and_notify(**context) -> None:
         body=body,
     )
 
-    Variable.set(LAST_ROW_COUNT_VAR, current_row_count)
+    Variable.set(LAST_ROW_COUNT_VAR, str(current_row_count))
 
 
 def send_email(to_addr: str, subject: str, body: str) -> None:
@@ -115,17 +115,24 @@ def send_email(to_addr: str, subject: str, body: str) -> None:
     smtp_user = Variable.get("SMTP_USER")
     smtp_password = Variable.get("SMTP_PASSWORD")
 
+    # to_addr may be a single address or a comma-separated list (e.g. from
+    # a Variable like "a@x.com,b@y.com"). smtplib.sendmail() needs each
+    # recipient as its own list entry -- passing the raw comma-joined
+    # string as one entry makes SMTP servers treat it as a single,
+    # malformed address and reject it (SMTPRecipientsRefused).
+    recipients = [addr.strip() for addr in to_addr.split(",") if addr.strip()]
+
     msg = MIMEText(body)
     msg["Subject"] = subject
     msg["From"] = smtp_user
-    msg["To"] = to_addr
+    msg["To"] = ", ".join(recipients)
 
     with smtplib.SMTP(smtp_host, smtp_port) as server:
         server.starttls()
         server.login(smtp_user, smtp_password)
-        server.sendmail(smtp_user, [to_addr], msg.as_string())
+        server.sendmail(smtp_user, recipients, msg.as_string())
 
-    log.info("Email sent to %s", to_addr)
+    log.info("Email sent to %s", ", ".join(recipients))
 
 
 with DAG(
