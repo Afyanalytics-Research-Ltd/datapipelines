@@ -62,7 +62,7 @@ class SnowflakeClient:
 # ----------------------------
 # CONFIG
 # ----------------------------
-SPREADSHEET_ID = Variable.get("WINGSPAN_SHEET_ID")
+#SPREADSHEET_ID = Variable.get("WINGSPAN_SHEET_ID")
 WORKSHEET_NAME = "Results"
 SNOWFLAKE_TABLE = "RAW.GSHEET_RAW"
 
