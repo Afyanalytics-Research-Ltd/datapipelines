@@ -42,6 +42,8 @@ ENV VARS  (put them in a .env file next to this script)
 from __future__ import annotations
 
 import argparse
+import hashlib
+import hmac
 import json
 import logging
 import os
@@ -116,18 +118,108 @@ V2_FACILITIES: dict[str, dict] = {
     "xanalife":      {"base_url": "https://xanalife.afyanalytics.ai/",   "db": "xanalife_db"},
 }
 
-# V3 service base URLs — each service has its own gateway
+# V3 service base URLs — each service has a DEDICATED migration-gateway host,
+# <service>migrate.afyaanalytics.ai, distinct from that service's regular
+# production API host (e.g. finance.afyaanalytics.ai is a different, real,
+# but OAuth-untrusted-for-this-client deployment — confirmed by a live 401
+# there with a fresh token while coremigrate accepted the same token fine).
+# Load order per the ModelGateway Postman collection: core -> reception ->
+# evaluation -> inventory -> finance -> theatre -> inpatient -> dialysis.
 V3_SERVICES: dict[str, str] = {
-    "core":       "https://core.afyaanalytics.ai/api/",
-    "finance":    "https://finance.afyaanalytics.ai/api/",
-    "evaluation": "https://evaluation.afyaanalytics.ai/api/",
-    "reception":  "https://reception.afyaanalytics.ai/api/",
-    "inventory":  "https://inventory.afyaanalytics.ai/api/",
-    "theatre":    "https://theatre.afyaanalytics.ai/api/",
-    "inpatient":  "https://inpatient.afyaanalytics.ai/api/",
+    "core":       "https://coremigrate.afyaanalytics.ai/api/",
+    "reception":  "https://receptionmigrate.afyaanalytics.ai/api/",
+    "evaluation": "https://evaluationmigrate.afyaanalytics.ai/api/",
+    "inventory":  "https://inventorymigrate.afyaanalytics.ai/api/",
+    "finance":    "https://financemigrate.afyaanalytics.ai/api/",
+    "theatre":    "https://theatremigrate.afyaanalytics.ai/api/",
+    "inpatient":  "https://inpatientmigrate.afyaanalytics.ai/api/",
+    "dialysis":   "https://dialysismigrate.afyaanalytics.ai/api/",
 }
+
+# Auth differs by service (per the live ModelGateway Postman collection):
+#   core                 HMAC signing (X-App-Id/X-Timestamp/X-Signature) —
+#                        the bearer token is ignored entirely.
+#   dialysis, theatre    X-Migration-Key header AND a superadmin bearer token.
+#   everything else      superadmin bearer token only.
+V3_AUTH_SCHEME: dict[str, str] = {
+    "core":       "hmac",
+    "dialysis":   "migration_key",
+    "theatre":    "migration_key",
+    "reception":  "bearer",
+    "evaluation": "bearer",
+    "inventory":  "bearer",
+    "finance":    "bearer",
+    "inpatient":  "bearer",
+}
+
 # Runtime dict built in run_migration: alias → service name
 _alias_to_service: dict[str, str] = {}
+
+
+class ServiceAuthUnavailable(Exception):
+    """Raised when a service needs a credential that isn't configured (the
+    core HMAC secret, or the theatre/dialysis migration key). Callers should
+    skip that service's jobs, not abort the whole run."""
+
+
+def _hmac_headers(method: str, path: str, body_str: str) -> dict:
+    """core-service auth: HMAC-SHA256 over 'METHOD\\nPATH\\nTS\\nsha256(body)',
+    signed with the RegisteredApp's secret. Matches the Postman collection's
+    pre-request script exactly."""
+    app_id = (os.getenv("CORE_APP_ID") or "").strip()
+    secret = (os.getenv("CORE_APP_SECRET") or "").strip()
+    if not app_id or not secret:
+        raise ServiceAuthUnavailable(
+            "core-service requires CORE_APP_ID + CORE_APP_SECRET env vars (HMAC signing) — not set"
+        )
+    ts = str(int(time.time()))
+    canonical = "\n".join([method, path, ts, hashlib.sha256(body_str.encode()).hexdigest()])
+    sig = hmac.new(secret.encode(), canonical.encode(), hashlib.sha256).hexdigest()
+    return {"X-App-Id": app_id, "X-Timestamp": ts, "X-Signature": sig}
+
+
+def _service_headers(service_name: str, body_str: str) -> dict:
+    """Auth headers for one /v1/gateway call, per V3_AUTH_SCHEME. Takes the
+    body as an already-serialized string, not a dict — for HMAC (core), the
+    signature covers sha256(body), so the exact bytes signed here MUST be
+    the exact bytes sent on the wire. See _gateway_post().
+
+    Deliberately never sends X-Tenant-Id / X-Facility-Id: both are dead
+    weight at best (TenantContext takes the org from the authenticated user
+    and reads facility targeting from the request body) and actively
+    dangerous at worst (X-Facility-Id 403s if it isn't one of the caller's
+    OWN assigned facilities, checked before the controller even runs).
+    Tenant/facility targeting belongs in the body — destination_tenant_id /
+    source_tenant_id, and data.facility_id for facility-scoped models.
+    """
+    scheme = V3_AUTH_SCHEME.get(service_name, "bearer")
+    headers = {"Content-Type": "application/json", "Accept": "application/json"}
+    if scheme == "hmac":
+        headers.update(_hmac_headers("POST", "/api/v1/gateway", body_str))
+    else:
+        headers["Authorization"] = f"Bearer {_v3_token()}"
+        if scheme == "migration_key":
+            key = (os.getenv("MODEL_GATEWAY_MIGRATION_KEY") or "").strip()
+            if not key:
+                raise ServiceAuthUnavailable(
+                    f"{service_name}-service requires MODEL_GATEWAY_MIGRATION_KEY "
+                    f"env var (X-Migration-Key) — not set"
+                )
+            headers["X-Migration-Key"] = key
+    return headers
+
+
+def _gateway_post(service_name: str, body_obj: dict, *, timeout: int = 30):
+    """POST to <service>/api/v1/gateway with the correct auth for that
+    service. Serializes the body exactly once and sends those SAME bytes —
+    critical for HMAC: requests' own json= parameter re-serializes
+    independently (different whitespace than _dumps()), which would sign
+    one byte string and transmit another, failing signature verification
+    every time despite a perfectly valid secret."""
+    body_str = _dumps(body_obj)
+    headers = _service_headers(service_name, body_str)
+    url = f"{V3_SERVICES[service_name].rstrip('/')}/v1/gateway"
+    return _v3_session().post(url, headers=headers, data=body_str.encode(), timeout=timeout)
 
 # V3 splits vitals into two separate tables: inp_vitals (inpatient-service,
 # tied to an admission) vs a distinct vitals table for outpatient visits
@@ -148,7 +240,7 @@ INPATIENT_VITAL_SERVICE       = "inpatient"
 # Fill in organization_id and facility_id from the V3 core_organizations /
 # core_facilities tables before running. application_id is typically 1.
 FACILITY_V3_CONFIG: dict[str, dict] = {
-    "afya_api_auth": {"organization_id": None, "facility_id": None, "application_id": 1},
+    "afya_api_auth": {"organization_id":  1, "facility_id": 6, "application_id": 1},
     "kakamega":      {"organization_id": None, "facility_id": None, "application_id": 1},
     "kisumu":        {"organization_id": 1, "facility_id": 6, "application_id": 1},
     "lodwar":        {"organization_id": None, "facility_id": None, "application_id": 1},
@@ -608,6 +700,13 @@ _PER_KEY_DROP_FIELDS: dict[str, list] = {
     # left in the payload afterwards and self-heals via the unknown-column
     # auto-strip-and-retry path, same as the nested "users"/"payment" blobs.
     "evaluation_prescription": ["prescribed_by"],
+    # id_no/mobile/email/address are encrypted at rest in V2 (confirmed
+    # 2026-09 against the live field mapping) and this pipeline has no
+    # decryption step — sending them straight through would land as garbled
+    # ciphertext in V3, not the real value. Drop them rather than corrupt
+    # real patient contact data; backfill separately once decryption is
+    # sorted out.
+    "reception_patient": ["id_no", "mobile", "email", "address"],
 }
 
 # Fields that must be non-null for a record to be sent; records missing them are skipped
@@ -810,8 +909,8 @@ def _v2_session(facility: str) -> requests.Session:
 def _generate_v2_token(facility: str) -> str:
     cfg   = V2_FACILITIES[facility]
     upper = facility.upper()
-    user  = os.getenv(f"FACILITY_{upper}_USERNAME")
-    pwd   = os.getenv(f"FACILITY_{upper}_PASSWORD")
+    user  = (os.getenv(f"FACILITY_{upper}_USERNAME") or "").strip()
+    pwd   = (os.getenv(f"FACILITY_{upper}_PASSWORD") or "").strip()
     if not user or not pwd:
         raise RuntimeError(
             f"Missing FACILITY_{upper}_USERNAME / FACILITY_{upper}_PASSWORD env vars"
@@ -847,6 +946,7 @@ def _v2_invalidate_token(facility: str) -> None:
 _v3_session_singleton: requests.Session | None = None
 _v3_session_lock = threading.Lock()
 _v3_token_cache: tuple[str, float] | None = None  # (token, fetched_at)
+_v3_org_cfg_cache: dict | None = None             # derived from the login response itself
 _v3_token_lock = threading.Lock()
 
 
@@ -864,30 +964,79 @@ def _v3_session() -> requests.Session:
         return _v3_session_singleton
 
 
-def _generate_v3_token() -> str:
-    user = os.getenv("AFYA_USERNAME")
-    pwd  = os.getenv("AFYA_PASSWORD")
+def _generate_v3_token() -> tuple[str, dict]:
+    """Logs in against core's /v1/login and returns (access_token, org_cfg).
+
+    org_cfg is derived from the LOGIN RESPONSE itself — tenant/facility are
+    NOT something the caller gets to pick: source_tenant_id/
+    destination_tenant_id must equal the authenticated account's own
+    organization or every gateway call 403s ("foreign tenant"), so whatever
+    org this account belongs to IS the only valid destination.
+    """
+    user = (os.getenv("AFYA_USERNAME") or "").strip()
+    pwd  = (os.getenv("AFYA_PASSWORD") or "").strip()
     if not user or not pwd:
         raise RuntimeError("Missing AFYA_USERNAME / AFYA_PASSWORD env vars")
     url = f"{V3_SERVICES['core'].rstrip('/')}/v1/login"
-    r = _v3_session().post(url, json={"username": user, "password": pwd, "facility_id": 6}, timeout=30)
+    body = {"username": user, "password": pwd}
+
+    r = _v3_session().post(url, json=body, timeout=30)
     if r.status_code != 200:
         raise RuntimeError(f"V3 auth failed: {r.status_code} · {r.text[:200]}")
-    token = r.json().get("access_token")
+    res = r.json()
+
+    if res.get("step") == 2:
+        # Multi-facility account — the account has several facilities and
+        # needs one named explicitly to complete login.
+        facilities = res.get("allowed_facility_ids") or []
+        if not facilities:
+            raise RuntimeError(
+                f"V3 auth returned step 2 (pick a facility) but no allowed_facility_ids: {r.text[:200]}"
+            )
+        body["facility_id"] = facilities[0]
+        r = _v3_session().post(url, json=body, timeout=30)
+        if r.status_code != 200:
+            raise RuntimeError(f"V3 auth (step 2) failed: {r.status_code} · {r.text[:200]}")
+        res = r.json()
+
+    token = res.get("access_token")
     if not token:
-        raise RuntimeError("V3 token not found in auth response")
-    return token
+        raise RuntimeError(f"V3 token not found in auth response: {r.text[:200]}")
+
+    # core's login nests the account under `user` (confirmed against the live
+    # response), not `data` — check both since that's what the Postman
+    # collection's own test script does.
+    user_obj = res.get("user") or res.get("data") or {}
+    org_id = (res.get("tenant") or {}).get("id") or user_obj.get("organization_id")
+    fac_id = (
+        (res.get("facility") or {}).get("id")
+        or (res.get("allowed_facility_ids") or [None])[0]
+        or user_obj.get("facility_id")
+    )
+    log.info("V3 login ok — user=%s org=%s facility=%s roles=%s",
+              user_obj.get("username"), org_id, fac_id,
+              ",".join(r.get("name", "") for r in (user_obj.get("roles") or [])))
+    return token, {"organization_id": org_id, "facility_id": fac_id, "application_id": 1}
 
 
 def _v3_token() -> str:
-    global _v3_token_cache
+    global _v3_token_cache, _v3_org_cfg_cache
     with _v3_token_lock:
         if _v3_token_cache and (time.time() - _v3_token_cache[1]) < TOKEN_TTL_SECONDS:
             return _v3_token_cache[0]
-        token = _generate_v3_token()
+        token, org_cfg = _generate_v3_token()
         _v3_token_cache = (token, time.time())
+        _v3_org_cfg_cache = org_cfg
         log.debug("V3 token refreshed")
         return token
+
+
+def v3_login_org_cfg() -> dict:
+    """organization_id / facility_id derived from the V3 login response —
+    the authoritative destination tenant for this account (see
+    _generate_v3_token's docstring). Triggers a login if not cached yet."""
+    _v3_token()
+    return _v3_org_cfg_cache or {}
 
 
 def _v3_invalidate_token() -> None:
@@ -1134,19 +1283,18 @@ _gateway_model_meta: dict[str, dict] = {}
 
 
 def _fetch_available_models() -> set[str]:
-    """Query every V3 service gateway, union the insertable aliases, and build _alias_to_service."""
+    """Query every V3 service gateway, union the insertable aliases, and build _alias_to_service.
+
+    Services whose auth isn't configured (core's HMAC secret, theatre/
+    dialysis's migration key) or whose URL is still a placeholder are
+    skipped with a warning, not fatal — their models just won't show up as
+    available, so jobs targeting them get cleanly excluded downstream."""
     global _gateway_model_meta, _alias_to_service
     available: set[str] = set()
-    token = _v3_token()
-    for service_name, base_url in V3_SERVICES.items():
-        url = f"{base_url.rstrip('/')}/v1/gateway"
+    body = {"action": "list"}
+    for service_name in V3_SERVICES:
         try:
-            r = _v3_session().post(
-                url,
-                headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
-                json={"action": "list"},
-                timeout=30,
-            )
+            r = _gateway_post(service_name, body, timeout=30)
             if not r.ok:
                 log.warning("Gateway list [%s] %s: %s", service_name, r.status_code, r.text[:300])
                 continue
@@ -1275,23 +1423,17 @@ def _post_to_v3_batch(
     in both inpatient-service and patient-evaluation-service with different
     schemas); the discovery-based lookup can only remember one winner.
     """
-    alias    = _v3_alias(v3_namespace)
-    svc_url  = V3_SERVICES.get(service_override or _alias_to_service.get(alias, "core"), V3_SERVICES["core"])
-    url      = f"{svc_url.rstrip('/')}/v1/gateway"
-    session  = _v3_session()
-    meta     = _gateway_model_meta.get(alias, {})
-    headers: dict = {
-        "Authorization": f"Bearer {_v3_token()}",
-        "Content-Type":  "application/json",
-    }
-    if org_cfg.get("organization_id") is not None:
-        headers["X-Tenant-Id"] = str(org_cfg["organization_id"])
-    if meta.get("facility") and org_cfg.get("facility_id") is not None:
-        headers["X-Facility-Id"] = str(org_cfg["facility_id"])
+    alias        = _v3_alias(v3_namespace)
+    service_name = service_override or _alias_to_service.get(alias, "core")
     body = {
         "action":                "insert",
         "model":                 alias,
         "destination_tenant_id": org_cfg.get("organization_id"),
+        # UNIQUE(uuid) on every insertable table — without match_on the index
+        # rejects a repeat outright; with it, a re-run updates in place
+        # (200 created:false) instead of duplicating, which is what makes a
+        # bulk load restartable.
+        "match_on":              "uuid",
         "data":                  record,  # gateway expects a single object, not an array
     }
 
@@ -1299,7 +1441,9 @@ def _post_to_v3_batch(
     while True:
         attempt += 1
         try:
-            r = session.post(url=url, headers=headers, json=body, timeout=120)
+            # _gateway_post re-serializes + re-signs body fresh every call,
+            # so a patched body["data"] below is always signed correctly.
+            r = _gateway_post(service_name, body, timeout=120)
             log.info("  V3 POST ns=%-50s status=%s",
                      v3_namespace, r.status_code)
 
@@ -1307,8 +1451,7 @@ def _post_to_v3_batch(
                 if attempt >= max_retries:
                     r.raise_for_status()
                 _v3_invalidate_token()
-                headers["Authorization"] = f"Bearer {_v3_token()}"
-                log.warning("  V3 401 — refreshed token (%s/%s)", attempt, max_retries)
+                log.warning("  V3 401 — refreshed auth (%s/%s)", attempt, max_retries)
                 continue
 
             if r.status_code == 429:
@@ -1776,6 +1919,21 @@ _FK_REMAP: dict[str, dict[str, str]] = {
     "outpatient_vital": {
         "visit_id": "visit",
     },
+    # prescriptions.visit → visits.id — V2's own field is literally "visit",
+    # not "visit_id" (confirmed against the live V3 field mapping, 2026-09;
+    # this FK was previously never remapped at all since _NS_FK_REMAP's
+    # Prescription entry looked for the nonexistent "visit_id" key).
+    "evaluation_prescription": {
+        "visit": "visit",
+    },
+    # invoices.patient_id → patients.id  |  invoices.visit → visits.id — this
+    # transform key had NO FK-remap entry at all before (confirmed against
+    # the live V3 field mapping, 2026-09), so every migrated invoice carried
+    # its raw V2 patient_id/visit straight through unremapped.
+    "finance_invoice": {
+        "patient_id": "patient",
+        "visit":      "visit",
+    },
 
     # ── Reception FK chain ────────────────────────────────────────────────────
     # appointments.appointment_category_id → appointment_categories.id
@@ -1825,7 +1983,9 @@ _NS_FK_REMAP: dict[str, dict[str, str]] = {
 
     # ── Evaluation clinical ───────────────────────────────────────────────────
     r"App\Models\Investigation":    {"visit_id": "visit"},
-    r"App\Models\Prescription":     {"visit_id": "visit",      "patient_id": "patient"},
+    # Prescription's entry used to live here keyed on "visit_id", but V2's
+    # own field is "visit" — moved to _FK_REMAP["evaluation_prescription"]
+    # above, which is keyed correctly and takes precedence anyway.
     r"App\Models\EyeExam":          {"visit_id": "visit"},
     r"App\Models\Sample":           {"visit_id": "visit"},
     r"App\Models\Diagnosis":        {"visit_id": "visit"},
@@ -1887,12 +2047,7 @@ def _store_id_mapping(alias: str, v2_id, v3_id) -> None:
 
 def _fetch_v3_records(alias: str, org_cfg: dict) -> list[dict]:
     """Fetch all existing V3 records for a model via the gateway read action."""
-    svc_url = V3_SERVICES.get(_alias_to_service.get(alias, "core"), V3_SERVICES["core"])
-    url     = f"{svc_url.rstrip('/')}/v1/gateway"
-    headers = {
-        "Authorization": f"Bearer {_v3_token()}",
-        "Content-Type":  "application/json",
-    }
+    service_name = _alias_to_service.get(alias, "core")
     records, page = [], 1
     while True:
         body = {
@@ -1903,7 +2058,7 @@ def _fetch_v3_records(alias: str, org_cfg: dict) -> list[dict]:
             "page":             page,
         }
         try:
-            r = _v3_session().post(url, headers=headers, json=body, timeout=60)
+            r = _gateway_post(service_name, body, timeout=60)
             if not r.ok:
                 log.warning("Gateway read %s page %s: %s %s", alias, page, r.status_code, r.text[:300])
                 break

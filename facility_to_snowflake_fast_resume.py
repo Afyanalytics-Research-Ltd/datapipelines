@@ -104,6 +104,7 @@ if not log.handlers:
 
 # ─── CONFIG ──────────────────────────────────────────────────────────────
 
+
 PIPELINE_NAME = "facility_api_to_snowflake"
 
 FACILITIES = {
@@ -596,6 +597,39 @@ def extract_all_pages(url, headers, body, singular_body,
 def sf_schema(facility: str, layer: str) -> str:
     return f"{SF_DB}.{facility.upper()}_{layer}"
 
+def _ensure_tables(sf: SnowflakeClient, facility: str) -> None:
+    """Create the facility's RAW/CLEAN schemas + tables if they don't exist
+    yet — lets a brand-new facility run with zero manual Snowflake setup."""
+    raw_schema, clean_schema = sf_schema(facility, "RAW"), sf_schema(facility, "CLEAN")
+    raw_table, clean_table   = f"{raw_schema}.EVENTS_RAW", f"{clean_schema}.EVENTS"
+
+    sf.execute(f"CREATE SCHEMA IF NOT EXISTS {raw_schema};", label="ensure_raw_schema")
+    sf.execute(f"CREATE SCHEMA IF NOT EXISTS {clean_schema};", label="ensure_clean_schema")
+
+    sf.execute(f"""
+        CREATE TABLE IF NOT EXISTS {raw_table} (
+            facility_id    STRING        NOT NULL,
+            ingested_at    TIMESTAMP_TZ  NOT NULL,
+            module_source  STRING,
+            source_table   STRING,
+            namespace      STRING,
+            payload        VARIANT
+        );
+        """, label="ensure_raw_table")
+
+    sf.execute(f"""
+        CREATE TABLE IF NOT EXISTS {clean_table} (
+            event_id     STRING NOT NULL,
+            event_time   TIMESTAMP_NTZ,
+            event_type   STRING,
+            amount       NUMBER,
+            payload      VARIANT,
+            ingested_at  TIMESTAMP_TZ
+        );
+        """, label="ensure_clean_table")
+
+    log.info("Tables ready: %s, %s", raw_table, clean_table)
+
 # Lazy S3 client — one per process, thread-safe.
 _s3_client_singleton = None
 _s3_client_lock = threading.Lock()
@@ -817,6 +851,7 @@ def run_pipeline(facility: str, *, since: str | None = None,
     try:
         if not dry_run:
             sf_client = SnowflakeClient(schema_=sf_schema(facility, "RAW"))
+            _ensure_tables(sf_client, facility)
 
         def _do_one(idx_and_job):
             idx, job = idx_and_job
