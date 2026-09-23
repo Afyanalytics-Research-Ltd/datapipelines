@@ -69,3 +69,6 @@ failed_mapped_logs/*
 rsa_key*
 *.pdf
 *.jsonl
+
+# Backup files
+*.BAK

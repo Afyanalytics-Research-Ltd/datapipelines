@@ -68,6 +68,7 @@ from airflow.operators.python import PythonOperator
 from airflow.providers.amazon.aws.hooks.s3 import S3Hook
 from airflow.utils.trigger_rule import TriggerRule
 
+
 load_dotenv(Path(__file__).parent.parent.parent.parent / ".env")
 log = logging.getLogger(__name__)
 

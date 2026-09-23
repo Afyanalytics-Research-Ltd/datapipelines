@@ -1,0 +1,12 @@
+# Test-only dependencies for the pytest suite under tests/.
+# Install into the same virtualenv as requirements.txt (this repo uses
+# env/ as its populated venv — see tests/README.md).
+#
+# NOTE: apache-airflow itself is intentionally NOT here. It's only
+# installed inside the Docker image (Dockerfile: FROM apache/airflow:3.1.7)
+# and doesn't install cleanly in a local dev venv. Tests run against
+# tests/airflow_stub.py instead — see that file's docstring for why.
+
+pytest>=8.0
+pytest-mock>=3.14
+freezegun>=1.5
