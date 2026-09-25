@@ -72,3 +72,4 @@ rsa_key*
 
 # Backup files
 *.BAK
+*.sql

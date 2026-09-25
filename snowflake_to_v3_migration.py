@@ -323,16 +323,23 @@ def _remap_fks_via_uuid(record: dict, transform_key: str, v3_namespace: str) -> 
 # ─── PER-TABLE JOB ───────────────────────────────────────────────────────────
 
 def post_table_to_v3(v3_namespace: str, org_cfg: dict, records: list[dict],
-                     *, transform_key: str, alias: str, job_key: str, dry_run: bool) -> None:
+                     *, transform_key: str, alias: str, job_key: str, dry_run: bool) -> int:
     """Mirrors v2v3.post_to_v3()'s threading/resume/dead-letter behaviour,
     but keys resume-tracking and the id map by uuid (falling back to id for
     the rare table with no uuid column) instead of the raw V2 id — see the
-    module docstring for why."""
+    module docstring for why.
+
+    Returns the number of records dead-lettered. A dead-lettered record
+    doesn't raise, so this is the only signal callers have that the job
+    wasn't fully clean — a table where every record 500'd would otherwise
+    look identical to one that fully succeeded. Callers MUST treat a nonzero
+    count the same way as any other failure: do not mark the job done.
+    """
     if dry_run:
         log.info("DRY-RUN ✓ would POST %d records → %s", len(records), v3_namespace)
         if records:
             log.info("  sample: %s", json.dumps(records[0], default=str)[:400])
-        return
+        return 0
 
     pending = [r for r in records
                if not v2v3._record_inserted(job_key, r.get("uuid") or r.get("id"))]
@@ -341,16 +348,18 @@ def post_table_to_v3(v3_namespace: str, org_cfg: dict, records: list[dict],
         log.info("  Skipping %d already-migrated records, posting %d", skipped, len(pending))
 
     done_count = 0
+    dead_letter_count = 0
     progress_lock = threading.Lock()
 
     def _post_one(record: dict) -> None:
-        nonlocal done_count
+        nonlocal done_count, dead_letter_count
         remapped = _remap_fks_via_uuid(record, transform_key, v3_namespace)
         rec_key = record.get("uuid") or record.get("id")
         try:
             v3_id = v2v3._post_to_v3_batch(v3_namespace, org_cfg, remapped)
         except v2v3.RecordDeadLettered:
-            pass  # not inserted — do not mark done, so a fixed re-run retries it
+            with progress_lock:
+                dead_letter_count += 1
         else:
             if rec_key is not None:
                 v2v3._mark_record_inserted(job_key, rec_key)
@@ -371,13 +380,21 @@ def post_table_to_v3(v3_namespace: str, org_cfg: dict, records: list[dict],
                 rec = futures[fut]
                 log.error("  Failed record uuid=%s: %s", rec.get("uuid"), e)
 
+    if dead_letter_count:
+        log.warning("  %d / %d record(s) dead-lettered → %s", dead_letter_count, len(pending), v3_namespace)
+    return dead_letter_count
+
 
 def _run_vitals_split(entry: dict, facility: str, rows: list[dict], org_cfg: dict,
-                      job_key: str, label: str, dry_run: bool) -> None:
+                      job_key: str, label: str, dry_run: bool) -> int:
     """Same inpatient/outpatient vitals split as v2v3._run_vitals_split_job,
     reusing its persisted visit->admission / visit->patient side-channel maps
     (populated only if Visits/Admissions have ever been migrated for this
-    facility via v2_to_v3_api_migration.py — see the coverage caveat above)."""
+    facility via v2_to_v3_api_migration.py — see the coverage caveat above).
+
+    Returns the total count of problem records (unroutable orphans, already
+    dead-lettered above, plus any dead-lettered during posting) — nonzero
+    means the caller must not mark this job done."""
     admitted, outpatient, orphans = [], [], []
     for r in rows:
         visit_id = r.get("visit_id")
@@ -410,16 +427,18 @@ def _run_vitals_split(entry: dict, facility: str, rows: list[dict], org_cfg: dic
         v2v3._ensure_id_maps("inpatient_vital", facility)
         v2v3._ensure_id_maps(v2v3.OUTPATIENT_VITAL_TRANSFORM, facility)
 
+    dead_letters = len(orphans)
     if admitted_t:
-        post_table_to_v3(r"App\Models\Vital", org_cfg, admitted_t,
+        dead_letters += post_table_to_v3(r"App\Models\Vital", org_cfg, admitted_t,
                           transform_key="inpatient_vital",
                           alias=v2v3._v3_alias(r"App\Models\Vital"),
                           job_key=f"{job_key}::inpatient", dry_run=dry_run)
     if outpatient_t:
-        post_table_to_v3(v2v3.OUTPATIENT_VITAL_V3_NAMESPACE, org_cfg, outpatient_t,
+        dead_letters += post_table_to_v3(v2v3.OUTPATIENT_VITAL_V3_NAMESPACE, org_cfg, outpatient_t,
                           transform_key=v2v3.OUTPATIENT_VITAL_TRANSFORM,
                           alias=v2v3._v3_alias(v2v3.OUTPATIENT_VITAL_V3_NAMESPACE),
                           job_key=f"{job_key}::outpatient", dry_run=dry_run)
+    return dead_letters
 
 
 def run_table_job(entry: dict, facility: str, org_cfg: dict, dry_run: bool) -> bool:
@@ -455,9 +474,13 @@ def run_table_job(entry: dict, facility: str, org_cfg: dict, dry_run: bool) -> b
 
     if transform_key == "inpatient_vital":
         try:
-            _run_vitals_split(entry, facility, rows, org_cfg, job_key, label, dry_run)
+            dead_letters = _run_vitals_split(entry, facility, rows, org_cfg, job_key, label, dry_run)
         except Exception as e:
             log.error("✗ V3 POST FAILED %s: %s", label, e)
+            return False
+        if dead_letters:
+            log.warning("◐ %s — %d problem record(s) (job NOT marked done — re-run will retry)",
+                        label, dead_letters)
             return False
         if not dry_run:
             v2v3._mark_done(_run_id, job_key)
@@ -480,7 +503,7 @@ def run_table_job(entry: dict, facility: str, org_cfg: dict, dry_run: bool) -> b
         v2v3._ensure_id_maps(transform_key, facility)
 
     try:
-        post_table_to_v3(v3_namespace, org_cfg, transformed,
+        dead_letters = post_table_to_v3(v3_namespace, org_cfg, transformed,
                           transform_key=transform_key, alias=alias,
                           job_key=job_key, dry_run=dry_run)
     except v2v3.GatewayModelNotRegistered as e:
@@ -491,6 +514,11 @@ def run_table_job(entry: dict, facility: str, org_cfg: dict, dry_run: bool) -> b
         return False
 
     elapsed = time.perf_counter() - t0
+    if dead_letters:
+        log.warning("◐ %s — %d/%d migrated in %.2fs, %d dead-lettered "
+                    "(job NOT marked done — re-run will retry)",
+                    label, len(transformed) - dead_letters, len(transformed), elapsed, dead_letters)
+        return False
     log.info("✓ %s — %d records migrated in %.2fs", label, len(transformed), elapsed)
     if not dry_run:
         v2v3._mark_done(_run_id, job_key)

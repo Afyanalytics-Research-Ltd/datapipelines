@@ -59,7 +59,7 @@ from typing import Any
 import requests
 import requests.adapters
 from dotenv import load_dotenv
-from requests.exceptions import ConnectionError, HTTPError, Timeout
+from requests.exceptions import ConnectionError, HTTPError, ReadTimeout, Timeout
 
 # Optional fast JSON encoder
 try:
@@ -97,7 +97,8 @@ TOKEN_TTL_SECONDS  = int(os.getenv("TOKEN_TTL_SECONDS", str(50 * 60)))
 DEFAULT_BATCH_SIZE = 200
 DEFAULT_LIMIT      = 500
 V3_POST_THROTTLE   = float(os.getenv("V3_POST_THROTTLE", "0"))   # seconds to sleep after each V3 POST
-V3_RETRY_WAIT      = int(os.getenv("V3_RETRY_WAIT", "30"))        # initial wait (s) before retrying 5xx
+V3_RETRY_WAIT      = int(os.getenv("V3_RETRY_WAIT", "30"))        # initial wait (s) before retrying 502/503/504
+V3_GATEWAY_RETRIES = int(os.getenv("V3_GATEWAY_RETRIES", "5"))    # retries on 502/503/504 before failing the record
 
 WATERMARK_FILE       = Path(__file__).resolve().parent / ".migration_watermarks.json"
 PROGRESS_FILE        = Path(__file__).resolve().parent / ".migration_progress.json"
@@ -137,8 +138,9 @@ V3_SERVICES: dict[str, str] = {
 }
 
 # Auth differs by service (per the live ModelGateway Postman collection):
-#   core                 HMAC signing (X-App-Id/X-Timestamp/X-Signature) —
-#                        the bearer token is ignored entirely.
+#   core                 HMAC signing (X-App-Id/X-Timestamp/X-Signature) when
+#                        CORE_APP_ID + CORE_APP_SECRET are set; otherwise the
+#                        superadmin bearer token (see _service_headers).
 #   dialysis, theatre    X-Migration-Key header AND a superadmin bearer token.
 #   everything else      superadmin bearer token only.
 V3_AUTH_SCHEME: dict[str, str] = {
@@ -193,6 +195,10 @@ def _service_headers(service_name: str, body_str: str) -> dict:
     source_tenant_id, and data.facility_id for facility-scoped models.
     """
     scheme = V3_AUTH_SCHEME.get(service_name, "bearer")
+    # HMAC is optional: without CORE_APP_ID/CORE_APP_SECRET, core takes the
+    # same superadmin bearer token as the other services.
+    if scheme == "hmac" and not ((os.getenv("CORE_APP_ID") or "").strip() and (os.getenv("CORE_APP_SECRET") or "").strip()):
+        scheme = "bearer"
     headers = {"Content-Type": "application/json", "Accept": "application/json"}
     if scheme == "hmac":
         headers.update(_hmac_headers("POST", "/api/v1/gateway", body_str))
@@ -403,8 +409,10 @@ NAMESPACE_MAP: dict[str, dict] = {
     r"Ignite\Reception\Entities\AppointmentCategory":        {"v3": r"App\Models\AppointmentCategory",         "transform": "generic"},
     r"Ignite\Reception\Entities\Appointments":               {"v3": r"App\Models\Appointment",                 "transform": "reception_appointment"},
     r"Ignite\Reception\Entities\Appointment":                {"v3": r"App\Models\Appointment",                 "transform": "reception_appointment"},
-    r"Ignite\Reception\Entities\Visits":                     {"v3": r"App\Models\Visit",                       "transform": "reception_visit"},
-    r"Ignite\Reception\Entities\Visit":                      {"v3": r"App\Models\Visit",                       "transform": "reception_visit"},
+    # V2 visits live in the Evaluation module, not Reception — every
+    # Ignite\Reception\Entities\Visit* variant 404s "Model class not found"
+    # on the data point API, so the visits job never extracted a single row.
+    r"Ignite\Evaluation\Entities\Visit":                     {"v3": r"App\Models\Visit",                       "transform": "reception_visit"},
     r"Ignite\Reception\Entities\PatientSchemes":             {"v3": r"App\Models\PatientInsurance",            "transform": "reception_patient_scheme"},
     r"Ignite\Reception\Entities\PatientScheme":              {"v3": r"App\Models\PatientInsurance",            "transform": "reception_patient_scheme"},
     r"Ignite\Reception\Entities\PatientNextOfKins":          {"v3": r"App\Models\PatientNextOfKin",            "transform": "generic"},
@@ -809,12 +817,20 @@ _PER_KEY_COERCIONS: dict[str, dict[str, Any]] = {
 }
 
 
+# The uuid is the join key between V2 and V3: it originates in V2, is
+# written to V3 unchanged, and V2 id → V3 id maps are built by matching it
+# (see sync_id_map). Never generate one here.
+def _v2_uuid(record: dict) -> str | None:
+    return str(record["uuid"]).strip().lower() if record.get("uuid") else None
+
+
 def transform_record(record: dict, transform_key: str, org_cfg: dict) -> dict | None:
     """Apply V2→V3 field mapping to a single record dict.
 
     Returns None if the record fails a required-field check and should be skipped.
 
     Steps:
+      0. Strip V2's embedded relation blobs
       1. Global boolean renames
       2. Global bare-FK renames (skip if _id form already exists)
       3. Per-key renames
@@ -825,6 +841,23 @@ def transform_record(record: dict, transform_key: str, org_cfg: dict) -> dict | 
     """
     out = dict(record)
     tk = transform_key if transform_key in _PER_KEY_RENAMES else "generic"
+
+    # 0. Strip V2's embedded relation blobs. The V2 API eagerly embeds
+    # related models inline as a convenience — a scalar FK like "doctor_id"
+    # sits right next to a full "doctor": {...} object, or a hasMany relation
+    # shows up as "schemes": [{...}, {...}]. Confirmed on real dead-lettered
+    # Admission ("doctor"/"ward"/"bed"), Prescription ("users"/"payment") and
+    # Patient ("schemes") records — every single nested value seen in
+    # production data has been one of these, never real V3 column data. V3's
+    # Eloquent models have no column for the embedded object/collection and
+    # error out with an opaque, undiagnosable 500 if it's sent. Run this
+    # FIRST, before any per-key coercion constructs its own intentional
+    # nested value (e.g. eye_exam's right_eye_data/left_eye_data), so those
+    # survive untouched.
+    for field in list(out.keys()):
+        v = out[field]
+        if isinstance(v, dict) or (isinstance(v, list) and v and isinstance(v[0], dict)):
+            out.pop(field)
 
     # 1. Global boolean renames
     for old, new in _GLOBAL_BOOL_RENAMES.items():
@@ -863,8 +896,10 @@ def transform_record(record: dict, transform_key: str, org_cfg: dict) -> dict | 
             out[field] = fn(out[field])
 
     # 5b. Populate visit→patient side-channel so doctor_note can derive patient_id.
-    if tk == "reception_visit" and record.get("id") and record.get("patient_id"):
-        _record_visit_patient(int(record["id"]), int(record["patient_id"]))
+    # Read from `out`, not `record`: V2 visits carry a bare "patient" column
+    # that only becomes "patient_id" after the global FK rename in step 2.
+    if tk == "reception_visit" and out.get("id") and out.get("patient_id"):
+        _record_visit_patient(int(out["id"]), int(out["patient_id"]))
 
     # Populate visit→admission side-channel so Vitals can be split into
     # inpatient (has an admission) vs outpatient (visit only).
@@ -1406,6 +1441,23 @@ def _write_dead_letter(v3_namespace: str, record: dict, error_body: dict) -> Non
 
 # ─── V3 POST ─────────────────────────────────────────────────────────────────
 
+def _uncertain_dead_letter(v3_namespace: str, record: dict, why: str) -> None:
+    """Park a uuid-less record whose POST may or may not have landed. It is
+    not marked inserted and not retried in this run — check V3 for it before
+    replaying, otherwise it could be inserted twice."""
+    log.error("  V3 id=%-6s %s with no uuid — may already be in V3; NOT retrying (avoids a duplicate) → dead-letter",
+              record.get("id", "?"), why)
+    _write_dead_letter(v3_namespace, record, {
+        "reason": f"{why}; record has no uuid so a retry could duplicate it — verify in V3 before replaying",
+    })
+    raise RecordUncertain()
+
+
+class RecordUncertain(RecordDeadLettered):
+    """Dead-lettered AND possibly inserted. post_to_v3 remembers these under
+    '<job_key>::uncertain' so later runs skip them too instead of re-posting."""
+
+
 def _post_to_v3_batch(
     v3_namespace: str,
     org_cfg: dict,
@@ -1436,8 +1488,14 @@ def _post_to_v3_batch(
         "match_on":              "uuid",
         "data":                  record,  # gateway expects a single object, not an array
     }
+    # The uuid comes from V2. A record without one must not be sent with
+    # match_on=uuid — the gateway would match it against an existing row and
+    # overwrite that row (200 created:false) instead of inserting.
+    if not record.get("uuid"):
+        body.pop("match_on")
 
     attempt, wait, _patched = 0, default_retry_wait, False
+    gw_attempt, gw_wait = 0, V3_RETRY_WAIT
     while True:
         attempt += 1
         try:
@@ -1547,13 +1605,35 @@ def _post_to_v3_batch(
                 _write_dead_letter(v3_namespace, record, err_body)
                 raise RecordDeadLettered()
 
-            if r.status_code in {502, 503, 504}:
-                log.error("  V3 %s response body: %s", r.status_code, r.text[:2000])
-                if attempt >= max_retries:
+            # A superadmin token that suddenly gets 403 "required role(s)" means
+            # the service couldn't verify roles with core (seen right as
+            # coremigrate went down, followed by 504s/401s) — transient, not a
+            # real permission problem. Refresh the token and back off like a 504.
+            role_check_failed = r.status_code == 403 and "required_roles" in r.text
+            if role_check_failed:
+                _v3_invalidate_token()
+
+            if r.status_code in {502, 503, 504} or role_check_failed:
+                # nginx gave up waiting on an overloaded upstream (504 lands
+                # ~60s after the POST). Back off hard instead of re-hammering it
+                # every few seconds. Retrying is safe for records with a uuid:
+                # match_on=uuid turns a post that did land into an update.
+                if r.status_code == 504 and not record.get("uuid"):
+                    # nginx timed out but the insert may still have landed.
+                    # Without a uuid there is no match_on to make a retry
+                    # safe, so a retry could insert it twice. Park it instead.
+                    _uncertain_dead_letter(v3_namespace, record, "504 gateway timeout")
+                gw_attempt += 1
+                if gw_attempt > V3_GATEWAY_RETRIES:
+                    log.error("  V3 %s id=%s — giving up after %d gateway retries",
+                              r.status_code, record.get("id", "?"), V3_GATEWAY_RETRIES)
                     r.raise_for_status()
-                log.warning("  V3 %s sleeping %ss (%s/%s)", r.status_code, wait, attempt, max_retries)
-                time.sleep(wait)
-                wait = min(wait * backoff_factor, 15)
+                log.warning("  V3 %s id=%s (%s) sleeping %ss (%s/%s)",
+                            r.status_code, record.get("id", "?"),
+                            "role check failed — core unreachable" if role_check_failed else "upstream timeout",
+                            gw_wait, gw_attempt, V3_GATEWAY_RETRIES)
+                time.sleep(gw_wait)
+                gw_wait = min(gw_wait * backoff_factor, 300)
                 continue
 
             if r.status_code == 422:
@@ -1579,6 +1659,15 @@ def _post_to_v3_batch(
             # Extract V3-assigned ID from response for FK remapping
             try:
                 resp = r.json()
+                # match_on=uuid turns a repeat into an in-place update: 200 with
+                # created:false. That is NOT a new row — surface it, otherwise a
+                # record with no uuid silently overwrites an existing V3 row.
+                created = resp.get("created", (resp.get("data") or {}).get("created")
+                                   if isinstance(resp.get("data"), dict) else None)
+                if created is False:
+                    v3_row = (resp.get("data") or {}).get("id") if isinstance(resp.get("data"), dict) else resp.get("id")
+                    log.info("  V3 200 id=%-6s updated existing V3 row %s (uuid=%s)",
+                             record.get("id", "?"), v3_row, record.get("uuid"))
                 return (resp.get("id")
                         or (resp.get("data") or {}).get("id")
                         or (resp.get("success") or {}).get("id"))
@@ -1586,6 +1675,13 @@ def _post_to_v3_batch(
                 return None
 
         except (Timeout, ConnectionError) as e:
+            # A read timeout on the gateway call itself means the POST was sent
+            # and may have been applied. (Timeouts on the token login, or
+            # connect errors, mean it was never sent — safe to retry.)
+            req = getattr(e, "request", None)
+            if (isinstance(e, ReadTimeout) and not record.get("uuid")
+                    and req is not None and str(req.url).rstrip("/").endswith("/v1/gateway")):
+                _uncertain_dead_letter(v3_namespace, record, f"read timeout: {e}")
             if attempt >= max_retries:
                 raise
             log.warning("  V3 network error %s sleeping %ss (%s/%s)", e, wait, attempt, max_retries)
@@ -1602,34 +1698,76 @@ def post_to_v3(
     job_key: str = "",
     transform_key: str = "",
     service_override: str | None = None,
-) -> None:
+) -> int:
     """POST records to V3 in parallel (gateway requires one object per request).
 
     Already-inserted records (by V2 id) are skipped for resume support.
+
+    Returns the number of records dead-lettered. A dead-lettered record
+    doesn't raise — the batch has to keep going — so this return value is
+    the ONLY signal the caller has that the job wasn't fully clean; without
+    it, a job where every single record 500'd would look identical to one
+    where every record succeeded. Callers MUST treat a nonzero count the
+    same way they treat V2 extraction failures: do not mark the job done.
     """
+    uncertain_key = f"{job_key}::uncertain"
     pending = [
         r for r in records
         if not (r.get("id") is not None and job_key and _record_inserted(job_key, r.get("id")))
     ]
     skipped = len(records) - len(pending)
-    total   = len(pending)
     if skipped:
-        log.info("  Skipping %d already-inserted records, posting %d", skipped, total)
-
-    done_count = 0
+        log.info("  Skipping %d records already inserted by earlier runs", skipped)
+    if job_key:
+        n_before = len(pending)
+        pending = [r for r in pending if not (r.get("id") is not None and _record_inserted(uncertain_key, r["id"]))]
+        if len(pending) != n_before:
+            log.warning("  Skipping %d uuid-less record(s) whose earlier POST timed out and may already be in V3 "
+                        "— verify in V3, then remove them from '%s' in %s to replay",
+                        n_before - len(pending), uncertain_key, RECORD_PROGRESS_FILE.name)
 
     alias = _v3_alias(v3_namespace)
 
+    # Skip records V3 already has: the uuid comes from V2 and is carried to V3
+    # unchanged, so a uuid already present in V3 means the record is already
+    # there (from an earlier run, a reset progress file, or another loader).
+    # No re-post, no re-insert — just record the V2 id → V3 id mapping.
+    if any(_v2_uuid(r) for r in pending):
+        existing = _existing_v3_uuids(alias, org_cfg, service_name=service_override)
+        already, still_pending = [], []
+        for r in pending:
+            u = _v2_uuid(r)
+            (already if u and u in existing else still_pending).append(r)
+        if already:
+            _store_id_mappings(alias, [(r["id"], existing[_v2_uuid(r)]) for r in already if r.get("id") is not None])
+            if job_key:
+                for r in already:
+                    if r.get("id") is not None:
+                        _mark_record_inserted(job_key, r["id"])
+            log.info("  Skipping %d records already in V3 (matched on uuid) — mapped, not re-posted", len(already))
+        pending = still_pending
+
+    total = len(pending)
+    log.info("  Posting %d new record(s) → %s", total, v3_namespace)
+    done_count = 0
+    dead_letter_count = 0
+
     def _post_one(record: dict) -> None:
-        nonlocal done_count
+        nonlocal done_count, dead_letter_count
         remapped = _remap_fks(record, transform_key, v3_namespace)
         record_id = record.get("id")
         try:
             v3_id = _post_to_v3_batch(v3_namespace, org_cfg, remapped, service_override=service_override)
+        except RecordUncertain:
+            if record_id is not None and job_key:
+                _mark_record_inserted(uncertain_key, record_id)
+            with _record_progress_lock:
+                dead_letter_count += 1
         except RecordDeadLettered:
             # Not inserted — do NOT mark as done, so the next run retries it
             # once the underlying data issue is fixed instead of skipping it forever.
-            pass
+            with _record_progress_lock:
+                dead_letter_count += 1
         else:
             if record_id is not None:
                 if job_key:
@@ -1648,13 +1786,22 @@ def post_to_v3(
             try:
                 fut.result()
             except Exception as e:
+                # 403 / exhausted 504 retries / network errors: the record was
+                # NOT inserted and not dead-lettered either. Count it, or the
+                # job gets marked done and these records are never retried.
                 rec = futures[fut]
                 log.error("  Failed record id=%s: %s", rec.get("id"), e)
+                with _record_progress_lock:
+                    dead_letter_count += 1
 
     # Final flush so no inserted IDs are lost between batch flushes
     with _record_progress_lock:
         if _inserted_ids:
             _flush_record_progress()
+
+    if dead_letter_count:
+        log.warning("  %d / %d record(s) dead-lettered → %s", dead_letter_count, total, v3_namespace)
+    return dead_letter_count
 
 
 # ─── WATERMARKS ──────────────────────────────────────────────────────────────
@@ -2045,9 +2192,34 @@ def _store_id_mapping(alias: str, v2_id, v3_id) -> None:
         ID_MAP_FILE.write_text(json.dumps(_id_map, indent=2))
 
 
-def _fetch_v3_records(alias: str, org_cfg: dict) -> list[dict]:
+def _store_id_mappings(alias: str, pairs: list[tuple]) -> None:
+    """Bulk _store_id_mapping — one file write instead of one per record."""
+    if not pairs:
+        return
+    with _id_map_lock:
+        m = _id_map.setdefault(alias, {})
+        for v2_id, v3_id in pairs:
+            m[v2_id] = v3_id
+        ID_MAP_FILE.write_text(json.dumps(_id_map, indent=2))
+
+
+def _existing_v3_uuids(alias: str, org_cfg: dict, service_name: str | None = None) -> dict[str, int]:
+    """uuid → V3 id for every row V3 already has for this model (read-only).
+
+    Used to skip records that are already in V3 before posting them. If the
+    read fails partway, the result is partial — the records it misses just
+    get posted, and match_on=uuid still turns those into updates, not
+    duplicates."""
+    out: dict[str, int] = {}
+    for rec in _fetch_v3_records(alias, org_cfg, service_name=service_name):
+        if rec.get("uuid") and rec.get("id") is not None:
+            out[str(rec["uuid"]).strip().lower()] = rec["id"]
+    return out
+
+
+def _fetch_v3_records(alias: str, org_cfg: dict, service_name: str | None = None) -> list[dict]:
     """Fetch all existing V3 records for a model via the gateway read action."""
-    service_name = _alias_to_service.get(alias, "core")
+    service_name = service_name or _alias_to_service.get(alias, "core")
     records, page = [], 1
     while True:
         body = {
@@ -2113,12 +2285,19 @@ def sync_id_map(alias: str, v2_namespace: str, facility: str, match_field: str =
         log.warning("sync_id_map: no V3 records found for %s — cannot build map", alias)
         return 0
 
-    # Build match_field → V3 id lookup
+    # Build uuid → V3 id and match_field → V3 id lookups. uuid is the primary
+    # join key (V2 uuid == V3 uuid); match_field is only a fallback for rows
+    # migrated before uuids were carried across.
+    v3_by_uuid: dict[str, int] = {}
     v3_by_key: dict[str, int] = {}
     for rec in v3_records:
-        key   = rec.get(match_field)
         v3_id = rec.get("id")
-        if key and v3_id:
+        if not v3_id:
+            continue
+        if rec.get("uuid"):
+            v3_by_uuid[str(rec["uuid"]).strip().lower()] = v3_id
+        key = rec.get(match_field)
+        if key:
             v3_by_key[str(key).strip().lower()] = v3_id
 
     # Extract V2 records
@@ -2139,18 +2318,26 @@ def sync_id_map(alias: str, v2_namespace: str, facility: str, match_field: str =
         log.warning("sync_id_map: %s — %d page(s) failed to extract and were skipped: %s",
                     v2_namespace, len(failed_pages), failed_pages)
 
-    matched = 0
+    by_uuid = by_field = 0
     for rec in v2_records:
         v2_id = rec.get("id")
-        key   = str(rec.get(match_field) or "").strip().lower()
-        if v2_id and key:
-            v3_id = v3_by_key.get(key)
+        if not v2_id:
+            continue
+        u = _v2_uuid(rec)
+        v3_id = v3_by_uuid.get(u) if u else None
+        if v3_id:
+            by_uuid += 1
+        else:
+            key = str(rec.get(match_field) or "").strip().lower()
+            v3_id = v3_by_key.get(key) if key else None
             if v3_id:
-                _store_id_mapping(alias, v2_id, v3_id)
-                matched += 1
+                by_field += 1
+        if v3_id:
+            _store_id_mapping(alias, v2_id, v3_id)
 
-    log.info("sync_id_map %s [%s] (match on %s): matched %d / %d V2 records to V3 ids",
-             alias, facility, match_field, matched, len(v2_records))
+    matched = by_uuid + by_field
+    log.info("sync_id_map %s [%s]: matched %d / %d V2 records to V3 ids (%d on uuid, %d on %s)",
+             alias, facility, matched, len(v2_records), by_uuid, by_field, match_field)
     return matched
 
 
@@ -2209,6 +2396,89 @@ def _remap_fks(record: dict, transform_key: str, v3_namespace: str = "") -> dict
             log.warning("  No V3 ID mapping for %s id=%s — %s will fail FK constraint",
                         alias, v2_id, field)
     return out
+
+
+# ─── VISIT → PATIENT BACKFILL ────────────────────────────────────────────────
+# Staging (afya_api_auth) is a copy of Kisumu, but its visits have lost their
+# patient link: patient / patient_uuid / reception_patient_uuid are null on
+# essentially every row. Kisumu still has the link for the same visit ids.
+# facility → donor facility whose visits (same ids) still carry the patient.
+VISIT_PATIENT_DONOR: dict[str, str] = {
+    "afya_api_auth": "kisumu",
+}
+# Columns that must agree before two rows are accepted as the same patient in
+# both databases. Staging scrambles names/phones (ciphertext) and also dob and
+# sex (differ on ~100% of rows), and renumbers patient_no on some (79 of
+# 10,696) — so only system_id (unique, 0 duplicates) + created_at are usable.
+# Verified 2026-09-25: all 10,696 referenced patients agree on both.
+_PATIENT_IDENTITY_COLS = ("system_id", "created_at")
+
+
+def _v2_all(facility: str, namespace: str) -> dict:
+    cfg = V2_FACILITIES[facility]
+    rows, failed = extract_v2_records({
+        "facility": facility, "namespace": namespace, "database": cfg["db"],
+        "updated_since": "1970-01-01T00:00:00Z", "limit": DEFAULT_LIMIT,
+    })
+    if failed:
+        log.warning("  backfill: %s %s — %d page(s) failed; those rows can't be used for linking",
+                    facility, namespace, len(failed))
+    return {r["id"]: r for r in rows if r.get("id") is not None}
+
+
+def _backfill_visit_patients(rows: list[dict], facility: str, org_cfg: dict) -> None:
+    """Fill `patient` on V2 visits that lack it, from the donor facility.
+
+    Chain, every link verified:
+      staging visit id → donor visit with the same id AND same unique_id + created_at
+      → donor patient id → staging patient with the same id AND same identity cols
+      → that staging patient's uuid → the V3 patient with that uuid.
+    Only when the whole chain resolves is `patient` set, and the V2 patient id →
+    V3 id mapping is stored from the uuid match (overriding any stale entry), so
+    _remap_fks puts the right V3 patient on the visit. Anything else is left
+    unlinked for run_job to hold back.
+    """
+    donor = VISIT_PATIENT_DONOR.get(facility)
+    missing = [r for r in rows if r.get("patient") is None and r.get("patient_id") is None]
+    if not donor or not missing:
+        return
+    log.info("  backfill: %d/%d visits have no patient — linking via %s", len(missing), len(rows), donor)
+
+    donor_visits   = _v2_all(donor, r"Ignite\Evaluation\Entities\Visit")
+    donor_patients = _v2_all(donor, r"Ignite\Reception\Entities\Patients")
+    own_patients   = _v2_all(facility, r"Ignite\Reception\Entities\Patients")
+    v3_by_uuid     = _existing_v3_uuids(_v3_alias(r"App\Models\Patient"), org_cfg)
+    if not v3_by_uuid:
+        log.error("  backfill: could not read any patients (with uuids) from V3 — the read failed or "
+                  "returned no uuid field. Not linking; %d visits stay held back.", len(missing))
+        return
+
+    linked, reasons, pairs = 0, {}, {}
+    for r in missing:
+        dv = donor_visits.get(r["id"])
+        if not dv or dv.get("unique_id") != r.get("unique_id") or str(dv.get("created_at")) != str(r.get("created_at")):
+            reasons["visit not found / differs in donor"] = reasons.get("visit not found / differs in donor", 0) + 1
+            continue
+        p = dv.get("patient")
+        sp, dp = own_patients.get(p), donor_patients.get(p)
+        if p is None or not sp or not dp:
+            reasons["patient missing in donor or here"] = reasons.get("patient missing in donor or here", 0) + 1
+            continue
+        if any(str(sp.get(c)) != str(dp.get(c)) for c in _PATIENT_IDENTITY_COLS):
+            reasons["patient identity differs"] = reasons.get("patient identity differs", 0) + 1
+            continue
+        u = _v2_uuid(sp)
+        if not u or u not in v3_by_uuid:
+            reasons["patient uuid not in V3"] = reasons.get("patient uuid not in V3", 0) + 1
+            continue
+        r["patient"] = p
+        r["patient_uuid"] = sp["uuid"]
+        pairs[p] = v3_by_uuid[u]
+        linked += 1
+
+    _store_id_mappings("patient", list(pairs.items()))
+    log.info("  backfill: linked %d/%d visits to a patient (%d distinct patients); unlinked: %s",
+             linked, len(missing), len(pairs), reasons or "none")
 
 
 # ─── JOB RUNNER ──────────────────────────────────────────────────────────────
@@ -2292,13 +2562,14 @@ def _run_vitals_split_job(
     _ensure_id_maps("inpatient_vital", facility)
     _ensure_id_maps(OUTPATIENT_VITAL_TRANSFORM, facility)
 
+    dead_letters = 0
     try:
         if admitted_t:
-            post_to_v3(r"App\Models\Vital", org_cfg, admitted_t, batch_size=batch_size,
+            dead_letters += post_to_v3(r"App\Models\Vital", org_cfg, admitted_t, batch_size=batch_size,
                        job_key=f"{base_key}::inpatient", transform_key="inpatient_vital",
                        service_override=INPATIENT_VITAL_SERVICE)
         if outpatient_t:
-            post_to_v3(OUTPATIENT_VITAL_V3_NAMESPACE, org_cfg, outpatient_t, batch_size=batch_size,
+            dead_letters += post_to_v3(OUTPATIENT_VITAL_V3_NAMESPACE, org_cfg, outpatient_t, batch_size=batch_size,
                        job_key=f"{base_key}::outpatient", transform_key=OUTPATIENT_VITAL_TRANSFORM,
                        service_override=OUTPATIENT_VITAL_SERVICE)
     except GatewayModelNotRegistered as e:
@@ -2309,11 +2580,11 @@ def _run_vitals_split_job(
         return False
 
     elapsed = time.perf_counter() - t0
-    if failed_pages or orphans:
+    if failed_pages or orphans or dead_letters:
         log.warning(
-            "◐ %s — %d inpatient + %d outpatient vitals migrated in %.2fs, but %d page(s) failed "
-            "and %d row(s) unroutable (job NOT marked done — re-run will retry)",
-            label, len(admitted_t), len(outpatient_t), elapsed, len(failed_pages), len(orphans),
+            "◐ %s — %d inpatient + %d outpatient vitals migrated in %.2fs, but %d page(s) failed, "
+            "%d row(s) unroutable, %d dead-lettered (job NOT marked done — re-run will retry)",
+            label, len(admitted_t), len(outpatient_t), elapsed, len(failed_pages), len(orphans), dead_letters,
         )
         return False
     log.info("✓ %s — %d inpatient + %d outpatient vitals migrated in %.2fs",
@@ -2375,14 +2646,36 @@ def run_job(job: dict, run_id: str, batch_size: int, dry_run: bool) -> bool:
     log.info("  %s — %d rows fetched in %.2fs", label, len(rows), time.perf_counter() - t0)
     log.info("  %s — sample: %s", label, _dumps(rows[0])[:500])
 
+    if transform_key == "reception_visit":
+        _backfill_visit_patients(rows, facility, org_cfg)
+
     transformed_raw = [transform_record(r, transform_key, org_cfg) for r in rows]
     transformed = [r for r in transformed_raw if r is not None]
+
+    # A visit without a patient is rejected by V3 (opaque 500) — hold it back
+    # locally instead of posting it, and keep the job un-done so it's retried
+    # once the link can be resolved.
+    unlinked = 0
+    if transform_key == "reception_visit":
+        held = [x.get("id") for x in transformed if x.get("patient_id") is None]
+        unlinked = len(held)
+        transformed = [x for x in transformed if x.get("patient_id") is not None]
+        if unlinked:
+            log.warning("  %s — %d visit(s) have no patient link — held back, not posted (e.g. ids %s)",
+                        label, unlinked, held[:10])
+    n_no_uuid = sum(1 for r in transformed if not r.get("uuid"))
+    if n_no_uuid:
+        log.warning("  %s — %d/%d records have no V2 uuid: they will be inserted without "
+                    "match_on and cannot be mapped to V3 by uuid", label, n_no_uuid, len(transformed))
     n_skipped_transform = len(transformed_raw) - len(transformed)
     if n_skipped_transform:
         log.warning("  %s — %d/%d records dropped by required-field check",
                     label, n_skipped_transform, len(transformed_raw))
 
     if not transformed:
+        if unlinked:
+            log.warning("⊘ %s — all %d visits held back for missing patient link — NOT marking done", label, unlinked)
+            return False
         if failed_pages:
             log.warning("⊘ %s — all %d records failed transform and %d page(s) failed extraction — NOT marking done",
                         label, len(transformed_raw), len(failed_pages))
@@ -2393,7 +2686,8 @@ def run_job(job: dict, run_id: str, batch_size: int, dry_run: bool) -> bool:
         return True
 
     if dry_run:
-        log.info("DRY-RUN ✓ %s — would POST %d records", label, len(transformed))
+        log.info("DRY-RUN ✓ %s — would POST %d records%s", label, len(transformed),
+                 f" ({unlinked} held back: no patient link)" if unlinked else "")
         log.info("  Sample transformed: %s", _dumps(transformed[0])[:400])
         return True
 
@@ -2401,7 +2695,7 @@ def run_job(job: dict, run_id: str, batch_size: int, dry_run: bool) -> bool:
     _ensure_id_maps(transform_key, facility)
 
     try:
-        post_to_v3(v3_namespace, org_cfg, transformed, batch_size=batch_size,
+        dead_letters = post_to_v3(v3_namespace, org_cfg, transformed, batch_size=batch_size,
                    job_key=_job_key(facility, namespace), transform_key=transform_key)
     except GatewayModelNotRegistered as e:
         log.warning("⊘ %s — model not registered in gateway: %s", label, e)
@@ -2411,11 +2705,13 @@ def run_job(job: dict, run_id: str, batch_size: int, dry_run: bool) -> bool:
         return False
 
     elapsed = time.perf_counter() - t0
-    if failed_pages:
+    if failed_pages or dead_letters or unlinked:
         log.warning(
-            "◐ %s — %d records migrated in %.2fs, but %d page(s) failed to extract "
-            "(job NOT marked done — re-run will retry; watermark will not advance)",
-            label, len(transformed), elapsed, len(failed_pages),
+            "◐ %s — %d/%d records migrated in %.2fs, but %d page(s) failed to extract, "
+            "%d dead-lettered and %d held back unlinked (job NOT marked done — re-run will retry; "
+            "watermark will not advance)",
+            label, len(transformed) - dead_letters, len(transformed), elapsed, len(failed_pages),
+            dead_letters, unlinked,
         )
         return False
     log.info("✓ %s — %d records migrated in %.2fs", label, len(transformed), elapsed)
@@ -2451,6 +2747,13 @@ def run_migration(
     if available_models:
         log.info("Gateway has %d registered models: %s",
                  len(available_models), ", ".join(sorted(available_models)))
+    elif not dry_run:
+        # Without discovery every model routes to "core" (the default), which
+        # needs HMAC creds and hosts none of the transactional models — every
+        # read and post would fail, after a long V2 extraction. Stop now.
+        log.error("No V3 gateway answered the model list (see 'Could not reach gateway' above) — "
+                  "V3 is unreachable or login failed. Aborting before extracting anything.")
+        return
     else:
         log.warning("Could not determine available gateway models — all namespaces will be attempted")
 
