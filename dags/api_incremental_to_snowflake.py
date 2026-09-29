@@ -408,7 +408,11 @@ def _record_error(sf: SnowflakeClient, *, source_key: str, message: str) -> None
     )
 
 
-def _log_run(sf: SnowflakeClient, **kw) -> None:
+def _log_run(sf: SnowflakeClient, unit: dict, **overrides) -> None:
+    # unit already carries "status" (and maybe "error"); overrides win. Passing
+    # both as **kwargs raises TypeError -- after the COPY and watermark advance
+    # committed, which made the retry re-COPY the file.
+    kw = {**unit, **overrides}
     sf.execute(
         f"""
         INSERT INTO {SF_RUN_LOG}
@@ -624,7 +628,7 @@ def copy_and_advance(**unit):
         if status == "FAILED":
             # Watermark deliberately untouched -- next run re-reads this window.
             _record_error(sf, source_key=source_key, message=unit.get("error", "extract failed"))
-            _log_run(sf, **unit, status="FAILED", rows_extracted=0, rows_copied=0,
+            _log_run(sf, unit, status="FAILED", rows_extracted=0, rows_copied=0,
                      error=unit.get("error"))
             log.warning("holding watermark for %s -- extract failed", source_key)
             return {"source_key": source_key, "status": "FAILED"}
@@ -635,7 +639,7 @@ def copy_and_advance(**unit):
             # widening window forever.
             _advance_watermark(sf, source_key=source_key, facility=facility,
                                namespace=ns, new_ts=window_end, run_id=run_id, rows=0)
-            _log_run(sf, **unit, status="EMPTY", rows_extracted=0, rows_copied=0)
+            _log_run(sf, unit, status="EMPTY", rows_extracted=0, rows_copied=0)
             return {"source_key": source_key, "status": "EMPTY"}
 
         raw_table = f"{_v3_raw_schema(facility)}.EVENTS_RAW"
@@ -676,14 +680,14 @@ def copy_and_advance(**unit):
             _advance_watermark(sf, source_key=source_key, facility=facility,
                                namespace=ns, new_ts=window_end, run_id=run_id,
                                rows=unit.get("row_count", 0))
-            _log_run(sf, **unit, status="COPIED",
+            _log_run(sf, unit, status="COPIED",
                      rows_extracted=unit.get("row_count", 0), rows_copied=copied)
             return {"source_key": source_key, "status": "COPIED"}
 
         except Exception as exc:
             log.error("copy failed %s/%s: %s", facility, ns, exc, exc_info=True)
             _record_error(sf, source_key=source_key, message=str(exc))
-            _log_run(sf, **unit, status="FAILED",
+            _log_run(sf, unit, status="FAILED",
                      rows_extracted=unit.get("row_count", 0), rows_copied=0, error=str(exc))
             return {"source_key": source_key, "status": "FAILED"}
 
@@ -694,6 +698,10 @@ def report_failures(**context):
     This is what lets a single broken model turn the run red without also
     blocking or corrupting the other sixty. The repo has no alerting at all
     today, so a red run plus V_INGESTION_FRESHNESS is the signal.
+
+    Filtered on DAG_ID as well as RUN_ID: api_v2_incremental_to_snowflake
+    writes to the same run log on the same @hourly schedule, so scheduled
+    run_ids are identical strings across the two DAGs.
     """
     run_id = context["run_id"]
     with SnowflakeClient() as sf:
@@ -701,10 +709,10 @@ def report_failures(**context):
             f"""
             SELECT SOURCE_KEY, ERROR_MESSAGE
               FROM {SF_RUN_LOG}
-             WHERE RUN_ID = %(run_id)s AND STATUS = 'FAILED'
+             WHERE RUN_ID = %(run_id)s AND DAG_ID = %(dag)s AND STATUS = 'FAILED'
             """,
             label="report_failures",
-            params={"run_id": run_id},
+            params={"run_id": run_id, "dag": DAG_ID},
         )
     failed = res["rows"]
     if failed:
@@ -756,4 +764,4 @@ with DAG(
         trigger_rule=TriggerRule.ALL_DONE,
     )
 
-    t_ensure >> t_prepare >> t_extract >> t_copy >> t_report
+    t_ensure >> t_prepare >> t_extract >> t_copy >> t_report
