@@ -159,11 +159,17 @@ def _absolutize_paths() -> None:
     config/ lives in the deployed stack), then the repo root (where the CLI
     resolves them). A Google SA path that exists nowhere is dropped when
     GOOGLE_SA_JSON is available, so the loader falls back to the raw JSON."""
+    # AIRFLOW_HOME first: a task's cwd isn't guaranteed to be /opt/airflow,
+    # and the deployed stack's real key lives in its mounted config/.
+    bases: list[Path] = []
+    for base in (Path(os.getenv("AIRFLOW_HOME", "/opt/airflow")), Path.cwd(), PIPELINES_DIR):
+        if base not in bases:
+            bases.append(base)
     for key in _PATH_KEYS:
         value = (os.environ.get(key) or "").strip().strip("'\"")
         if not value or os.path.isabs(value):
             continue
-        for base in (Path.cwd(), PIPELINES_DIR):
+        for base in bases:
             candidate = base / value
             if candidate.exists():
                 os.environ[key] = str(candidate)
@@ -171,6 +177,33 @@ def _absolutize_paths() -> None:
         else:
             if key == "GOOGLE_SA_JSON_PATH" and os.environ.get("GOOGLE_SA_JSON"):
                 os.environ.pop(key)
+
+
+def _key_fingerprint(path: str) -> str:
+    """SHA256 fingerprint of the private key's public half, in the format
+    Snowflake shows as RSA_PUBLIC_KEY_FP in `DESC USER <user>`."""
+    import base64
+    import hashlib
+    from cryptography.hazmat.primitives import serialization
+    passphrase = (os.getenv("SNOWFLAKE_PRIVATE_KEY_PASSPHRASE") or "").encode() or None
+    key = serialization.load_pem_private_key(Path(path).read_bytes(), password=passphrase)
+    der = key.public_key().public_bytes(serialization.Encoding.DER,
+                                        serialization.PublicFormat.SubjectPublicKeyInfo)
+    return "SHA256:" + base64.b64encode(hashlib.sha256(der).digest()).decode()
+
+
+def log_snowflake_identity() -> None:
+    """Log which user/account/key a task will connect with, so a 'JWT token
+    is invalid' can be checked against `DESC USER` (RSA_PUBLIC_KEY_FP)."""
+    import logging
+    logger = logging.getLogger(__name__)
+    path = (os.getenv("SNOWFLAKE_PRIVATE_KEY_PATH") or "").strip()
+    try:
+        fp = _key_fingerprint(path) if path else "-"
+    except Exception as e:
+        fp = f"unreadable ({type(e).__name__}: {e})"
+    logger.info("Snowflake identity: user=%s account=%s key=%s fingerprint=%s",
+                os.getenv("SNOWFLAKE_USER"), os.getenv("SNOWFLAKE_ACCOUNT"), path or "-", fp)
 
 
 def use_pipelines_dir(facilities=()) -> None:
@@ -188,7 +221,15 @@ def use_pipelines_dir(facilities=()) -> None:
             f"there (docker-compose.yaml) or set PIPELINES_DIR."
         )
     load_airflow_config(facilities)
+    # Load the repo .env now (the scripts would at import time, after the
+    # chdir) so its relative paths go through the same lookup order below.
+    try:
+        from dotenv import load_dotenv
+        load_dotenv(PIPELINES_DIR / ".env", override=False)
+    except ImportError:
+        pass
     _absolutize_paths()
+    log_snowflake_identity()
     root = str(PIPELINES_DIR)
     if root in sys.path:
         sys.path.remove(root)
