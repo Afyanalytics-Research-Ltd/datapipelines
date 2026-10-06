@@ -68,10 +68,116 @@ def old_system_history_tables() -> list[str]:
     return sorted(_literal_assignments(LOADER_SCRIPT).get("OLD_SYSTEM_HISTORY_TABLES") or {})
 
 
-def use_pipelines_dir() -> None:
+# ─── CONFIG FROM AIRFLOW ─────────────────────────────────────────────────
+# The scripts read plain env vars (from the repo's .env when run by hand).
+# A deployed Airflow may instead hold them as Variables/Connections — the
+# older DAGs here use Variable IGNITE_SHEET_ID / GOOGLE_SA_JSON, Connection
+# aws_default and one Connection per facility (conn id = facility key). So
+# before a script is imported, every setting it needs that isn't already in
+# the environment is filled in from Airflow. Precedence:
+#   process env  >  Airflow Variable / Connection  >  repo .env
+# (the scripts' load_dotenv(override=False) only fills what's still unset).
+
+_VARIABLE_KEYS = (
+    "IGNITE_SHEET_ID", "IGNITE_SHEET_WORKSHEET", "GOOGLE_SA_JSON", "GOOGLE_SA_JSON_PATH",
+    "SNOWFLAKE_USER", "SNOWFLAKE_ACCOUNT", "SNOWFLAKE_WAREHOUSE", "SNOWFLAKE_DATABASE",
+    "SNOWFLAKE_SCHEMA", "SNOWFLAKE_PRIVATE_KEY_PATH",
+    "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_REGION",
+    "AFYA_USERNAME", "AFYA_PASSWORD", "CORE_APP_ID", "CORE_APP_SECRET",
+    "MODEL_GATEWAY_MIGRATION_KEY",
+)
+_PATH_KEYS = ("SNOWFLAKE_PRIVATE_KEY_PATH", "GOOGLE_SA_JSON_PATH")
+
+
+def _variable(key: str) -> str | None:
+    try:
+        from airflow.sdk import Variable
+        value = Variable.get(key, default=None)
+    except Exception:
+        return None
+    return str(value).strip() if value not in (None, "") else None
+
+
+def _connection(conn_id: str):
+    try:
+        from airflow.sdk import BaseHook
+        return BaseHook.get_connection(conn_id)
+    except Exception:
+        return None
+
+
+def _set_if_missing(key: str, value, source: str, filled: list[str]) -> None:
+    if value and not (os.environ.get(key) or "").strip():
+        os.environ[key] = str(value)
+        filled.append(f"{key}←{source}")
+
+
+def load_airflow_config(facilities=()) -> None:
+    filled: list[str] = []
+    for key in _VARIABLE_KEYS:
+        if not (os.environ.get(key) or "").strip():
+            _set_if_missing(key, _variable(key), "variable", filled)
+    # older DAGs call the worksheet Variable just WORKSHEET
+    _set_if_missing("IGNITE_SHEET_WORKSHEET", _variable("WORKSHEET"), "variable WORKSHEET", filled)
+
+    if not os.environ.get("AWS_ACCESS_KEY_ID"):
+        aws = _connection("aws_default")
+        if aws is not None:
+            _set_if_missing("AWS_ACCESS_KEY_ID", aws.login, "conn aws_default", filled)
+            _set_if_missing("AWS_SECRET_ACCESS_KEY", aws.password, "conn aws_default", filled)
+            region = (aws.extra_dejson or {}).get("region_name")
+            _set_if_missing("AWS_REGION", region, "conn aws_default", filled)
+
+    for facility in facilities:
+        up = facility.upper()
+        # V2 source credentials: FACILITY_<F>_* — Variable, else Connection <facility>
+        for suffix in ("USERNAME", "PASSWORD"):
+            _set_if_missing(f"FACILITY_{up}_{suffix}", _variable(f"FACILITY_{up}_{suffix}"),
+                            "variable", filled)
+        if not os.environ.get(f"FACILITY_{up}_USERNAME"):
+            conn = _connection(facility)
+            if conn is not None:
+                _set_if_missing(f"FACILITY_{up}_USERNAME", conn.login, f"conn {facility}", filled)
+                _set_if_missing(f"FACILITY_{up}_PASSWORD", conn.password, f"conn {facility}", filled)
+        # V3 destination account: AFYA_<F>_* — Variable, else Connection afya_v3_<facility>
+        for suffix in ("USERNAME", "PASSWORD"):
+            _set_if_missing(f"AFYA_{up}_{suffix}", _variable(f"AFYA_{up}_{suffix}"), "variable", filled)
+        if not os.environ.get(f"AFYA_{up}_USERNAME"):
+            conn = _connection(f"afya_v3_{facility}")
+            if conn is not None:
+                _set_if_missing(f"AFYA_{up}_USERNAME", conn.login, f"conn afya_v3_{facility}", filled)
+                _set_if_missing(f"AFYA_{up}_PASSWORD", conn.password, f"conn afya_v3_{facility}", filled)
+
+    if filled:
+        import logging
+        logging.getLogger(__name__).info("Config from Airflow: %s", ", ".join(filled))
+
+
+def _absolutize_paths() -> None:
+    """Make relative file-path settings absolute before the chdir: try the
+    task's original working directory first (/opt/airflow, where the mounted
+    config/ lives in the deployed stack), then the repo root (where the CLI
+    resolves them). A Google SA path that exists nowhere is dropped when
+    GOOGLE_SA_JSON is available, so the loader falls back to the raw JSON."""
+    for key in _PATH_KEYS:
+        value = (os.environ.get(key) or "").strip().strip("'\"")
+        if not value or os.path.isabs(value):
+            continue
+        for base in (Path.cwd(), PIPELINES_DIR):
+            candidate = base / value
+            if candidate.exists():
+                os.environ[key] = str(candidate)
+                break
+        else:
+            if key == "GOOGLE_SA_JSON_PATH" and os.environ.get("GOOGLE_SA_JSON"):
+                os.environ.pop(key)
+
+
+def use_pipelines_dir(facilities=()) -> None:
     """Call at the top of every task before importing a pipeline script.
 
-    Puts the repo root on sys.path and makes it the working directory, so
+    Fills missing settings from Airflow Variables/Connections (see above),
+    puts the repo root on sys.path and makes it the working directory, so
     the .env's relative paths (SNOWFLAKE_PRIVATE_KEY_PATH=config/rsa_key.p8,
     GOOGLE_SA_JSON_PATH=service_account.json) resolve the same way they do
     when the scripts are run from the repo. Each Airflow task runs in its
@@ -81,6 +187,8 @@ def use_pipelines_dir() -> None:
             f"Pipeline scripts not found under {PIPELINES_DIR}. Mount the repo root "
             f"there (docker-compose.yaml) or set PIPELINES_DIR."
         )
+    load_airflow_config(facilities)
+    _absolutize_paths()
     root = str(PIPELINES_DIR)
     if root in sys.path:
         sys.path.remove(root)

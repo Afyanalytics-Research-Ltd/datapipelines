@@ -27,6 +27,12 @@ Trigger form options (all optional):
 Tables in parallel per run: env V2_LOADER_PARALLEL_TABLES (default 8) — read
 at parse time; lower it if a facility API starts returning 429s.
 
+Config: any setting missing from the environment is read from Airflow
+(pipelines_common.load_airflow_config) — Variables IGNITE_SHEET_ID,
+IGNITE_SHEET_WORKSHEET (or WORKSHEET), GOOGLE_SA_JSON, Connection
+aws_default, and Connection <facility> (login/password) for V2 credentials;
+then the repo .env fills whatever is still unset.
+
 Watermarks/progress are shared with the CLI (same .watermarks.json), keyed
 per facility and table set exactly like
 `python facility_to_snowflake_fast_resume.py --facility X --table-set Y`.
@@ -34,6 +40,7 @@ per facility and table set exactly like
 from __future__ import annotations
 
 import logging
+import os
 import sys
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
@@ -102,15 +109,20 @@ def v2_facility_to_snowflake():
 
     @task
     def plan() -> dict:
-        use_pipelines_dir()
-        import facility_to_snowflake_fast_resume as loader
-
         p = get_current_context()["params"]
         facilities = clean_list(p["facilities"])
         tables = clean_list(p["tables"])
         table_set = p["table_set"]
         if not facilities:
             raise AirflowFailException("Pick at least one facility.")
+        use_pipelines_dir(facilities)
+        import facility_to_snowflake_fast_resume as loader
+
+        if table_set == "sheet" and not (os.environ.get("IGNITE_SHEET_ID") or "").strip():
+            raise AirflowFailException(
+                "IGNITE_SHEET_ID is not set — add it as an Airflow Variable (or to the "
+                "environment / repo .env). The sheet table set needs it to list tables; "
+                "table_set=old_system_history doesn't.")
         unknown_fac = [f for f in facilities if f not in loader.FACILITIES]
         if unknown_fac:
             raise AirflowFailException(f"Unknown facilities {unknown_fac}; known: {sorted(loader.FACILITIES)}")
@@ -152,7 +164,7 @@ def v2_facility_to_snowflake():
     def extract_load(job: dict) -> dict:
         ctx = get_current_context()
         ctx["map_label"] = _job_label(job)
-        use_pipelines_dir()
+        use_pipelines_dir([job["facility"]])
         import facility_to_snowflake_fast_resume as loader
 
         p = ctx["params"]
@@ -168,7 +180,7 @@ def v2_facility_to_snowflake():
 
     @task(trigger_rule=TriggerRule.ALL_DONE)
     def finalize(plan_out: dict, results) -> dict:
-        use_pipelines_dir()
+        use_pipelines_dir(plan_out["facilities"])
         import facility_to_snowflake_fast_resume as loader
 
         p = get_current_context()["params"]

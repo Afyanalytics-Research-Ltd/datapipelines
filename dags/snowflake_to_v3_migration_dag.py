@@ -107,7 +107,7 @@ def snowflake_to_v3_migration():
         p = ctx["params"]
         record_workers = str(int(p["record_workers"]))
         os.environ["RECORD_WORKERS"] = record_workers
-        use_pipelines_dir()
+        use_pipelines_dir([facility])
         import snowflake_to_v3_migration as s2v3
         import v2_to_v3_api_migration as v2v3
 
