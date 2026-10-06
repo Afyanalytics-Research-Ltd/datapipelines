@@ -25,6 +25,7 @@ USAGE
   python facility_api_to_snowflake.py --facility xanalife --only-tables sales,patients
   python facility_api_to_snowflake.py --facility xanalife --dry-run
   python facility_api_to_snowflake.py --facility xanalife --workers 4
+  python facility_api_to_snowflake.py --facility kisumu_v3 --table-set old_system_history
 
 ENV VARS  (put them in a `.env` file next to this script — auto-loaded)
   # Snowflake (key-pair auth)
@@ -108,9 +109,10 @@ if not log.handlers:
 PIPELINE_NAME = "facility_api_to_snowflake"
 
 FACILITIES = {
-    "afya_api_auth": {"base_url": "https://staging.afyanalytics.ai", "db": "staging_db"},
+    "afya_api_auth": {"base_url": "https://staging.collabmed.net", "db": "staging_db"},
     "kakamega":      {"base_url": "https://demo.collabmed.net",      "db": "kakamega_db"},
     "kisumu":        {"base_url": "https://kshospital.collabmed.net","db": "kisumu_db"},
+    "kisumu_v3":     {"base_url": "https://kshospital.collabmed.net","db": "kisumu_db"},
     "lodwar":        {"base_url": "https://lcrh.collabmed.net",      "db": "lodwar_db"},
     "tenri":         {"base_url": "https://stageenv.collabmed.net",  "db": "tenri_db"},
     "xanalife":      {"base_url": "https://xanalife.afyanalytics.ai/", "db": "xanalife_db"},
@@ -342,8 +344,19 @@ def read_dictionary_sheet(spreadsheet_id: str, worksheet_name: str) -> list[dict
 def snake_to_pascal(s: str) -> str:
     return "".join(w.capitalize() for w in re.split(r"[_\s]+", s.strip()) if w)
 
+# The data-dictionary sheet documents V3's module layout, which sometimes
+# differs from where the table actually still lives in V2 (the sheet's own
+# "definition" column calls this out, e.g. visits: "V2: evaluation_visits —
+# moved to reception-service"). Override the V2-side module per table name
+# where the two diverge; confirmed against the live API (singular `Visit`
+# under Evaluation returns real data, nothing under Reception does).
+_V2_SOURCE_MODULE_OVERRIDE: dict[str, str] = {
+    "visits": "Evaluation",
+}
+
 def build_namespace(module: str, table: str) -> str:
-    mod = snake_to_pascal(module)
+    v2_module = _V2_SOURCE_MODULE_OVERRIDE.get(table.strip().lower(), module)
+    mod = snake_to_pascal(v2_module)
     prefix = module.strip().lower() + "_"
     t = table.strip().lower()
     if t.startswith(prefix):
@@ -370,12 +383,100 @@ def _safe_s3_token(s: str) -> str:
     s = (s or "").strip()
     return re.sub(r"[^a-zA-Z0-9_\-=\.\+]+", "_", s)
 
+# ─── OLD SYSTEM HISTORY TABLE SET ────────────────────────────────────────
+# The V2 tables that feed reception-service's old_system_history (see
+# OLD_SYSTEM_HISTORY_MAPPING.md), keyed by their V2 table name — which
+# becomes source_table in Snowflake, so the CLEAN views and the history
+# JSON (keyed by V2 table name) line up 1:1. The data-dictionary sheet
+# lists V3 tables, so most of these never get extracted by a sheet run.
+#
+# Namespaces confirmed against kshospital's live API (2026-10-06); several
+# don't follow build_namespace() naming (Visit, NextOfKin, Dispensing under
+# Evaluation, InventoryProducts), hence the explicit list. Tables that
+# returned 0 rows there are kept so other facilities' data still comes in.
+#
+# Not extractable through the API, so left out:
+#   evaluation_sick_offs, inpatient_administer_drugs, users
+#       — the model exists but the endpoint 500s (SickOff, AdministerDrug, User)
+#   result_files, evaluation_investigation_results_publications,
+#   evaluation_nursing_notes
+#       — no namespace resolves (404 on every variant tried)
+OLD_SYSTEM_HISTORY_TABLES: dict[str, tuple[str, str]] = {
+    # visit-level
+    "evaluation_visits":                 ("Evaluation", "Ignite\\Evaluation\\Entities\\Visit"),
+    "evaluation_visit_destinations":     ("Evaluation", "Ignite\\Evaluation\\Entities\\VisitDestinations"),
+    "evaluation_visit_metas":            ("Evaluation", "Ignite\\Evaluation\\Entities\\VisitMeta"),
+    "evaluation_vitals":                 ("Evaluation", "Ignite\\Evaluation\\Entities\\Vitals"),
+    "evaluation_doctor_notes":           ("Evaluation", "Ignite\\Evaluation\\Entities\\DoctorNotes"),
+    "evaluation_drawings":               ("Evaluation", "Ignite\\Evaluation\\Entities\\Drawings"),
+    "evaluation_exam":                   ("Evaluation", "Ignite\\Evaluation\\Entities\\Exam"),
+    "evaluation_preliminary":            ("Evaluation", "Ignite\\Evaluation\\Entities\\Preliminary"),
+    "evaluation_eye_exams":              ("Evaluation", "Ignite\\Evaluation\\Entities\\EyeExam"),
+    "evaluation_investigations":         ("Evaluation", "Ignite\\Evaluation\\Entities\\Investigations"),
+    "evaluation_external_orders":        ("Evaluation", "Ignite\\Evaluation\\Entities\\ExternalOrders"),
+    "evaluation_external_order_details": ("Evaluation", "Ignite\\Evaluation\\Entities\\ExternalOrderDetails"),
+    "evaluation_investigation_results":  ("Evaluation", "Ignite\\Evaluation\\Entities\\InvestigationResult"),
+    "evaluation_sensitivity":            ("Evaluation", "Ignite\\Evaluation\\Entities\\Sensitivity"),
+    "evaluation_samples":                ("Evaluation", "Ignite\\Evaluation\\Entities\\Sample"),
+    "evaluation_prescriptions":          ("Evaluation", "Ignite\\Evaluation\\Entities\\Prescriptions"),
+    "evaluation_typed_prescriptions":    ("Evaluation", "Ignite\\Evaluation\\Entities\\TypedPrescription"),
+    "inventory_evaluation_dispensing":   ("Evaluation", "Ignite\\Evaluation\\Entities\\Dispensing"),
+    "admissions":                        ("Inpatient",  "Ignite\\Inpatient\\Entities\\Admission"),
+    "ward_assigned":                     ("Inpatient",  "Ignite\\Inpatient\\Entities\\WardAssigned"),
+    "inpatient_discharge_requests":      ("Inpatient",  "Ignite\\Inpatient\\Entities\\DischargeRequest"),
+    "discharges":                        ("Inpatient",  "Ignite\\Inpatient\\Entities\\Discharge"),
+    "evaluation_opnotes":                ("Evaluation", "Ignite\\Evaluation\\Entities\\OpNotes"),
+    # patient-level
+    "reception_patients":                ("Reception",  "Ignite\\Reception\\Entities\\Patients"),
+    "reception_patients_nok":            ("Reception",  "Ignite\\Reception\\Entities\\NextOfKin"),
+    "reception_patient_documents":       ("Reception",  "Ignite\\Reception\\Entities\\PatientDocuments"),
+    "reception_appointments":            ("Reception",  "Ignite\\Reception\\Entities\\Appointments"),
+    # lookups for resolving V2 ids to names
+    "evaluation_procedures":             ("Evaluation", "Ignite\\Evaluation\\Entities\\Procedures"),
+    "evaluation_diagnosis_codes":        ("Evaluation", "Ignite\\Evaluation\\Entities\\DiagnosisCodes"),
+    "inventory_products":                ("Inventory",  "Ignite\\Inventory\\Entities\\InventoryProducts"),
+    "settings_clinics":                  ("Settings",   "Ignite\\Settings\\Entities\\Clinics"),
+    "inpatient_wards":                   ("Inpatient",  "Ignite\\Inpatient\\Entities\\Ward"),
+    "inpatient_beds":                    ("Inpatient",  "Ignite\\Inpatient\\Entities\\Bed"),
+}
+
+TABLE_SETS = ("sheet", "old_system_history")
+
+
+def state_key(facility: str, table_set: str) -> str:
+    """Key for this run's watermark + resume progress. Each non-sheet table
+    set gets its own, so its first run starts from scratch instead of
+    inheriting the sheet run's watermark (which would skip every row not
+    updated since then), and finishing one set never clears the other's
+    progress."""
+    return facility if table_set == "sheet" else f"{facility}|{table_set}"
+
+
 # ─── JOB BUILDER ─────────────────────────────────────────────────────────
 
 def build_jobs_for_facility(facility: str, since: str | None = None,
-                             only_tables: set[str] | None = None) -> list[dict]:
+                             only_tables: set[str] | None = None,
+                             table_set: str = "sheet") -> list[dict]:
     cfg = FACILITIES[facility]
-    last_run = since or get_watermark(facility)
+    last_run = since or get_watermark(state_key(facility, table_set))
+
+    if table_set == "old_system_history":
+        jobs = [
+            {
+                "facility":      facility,
+                "module":        module,
+                "table":         table,
+                "namespace":     namespace,
+                "database":      cfg.get("db"),
+                "updated_since": last_run,
+                "limit":         500,
+            }
+            for table, (module, namespace) in OLD_SYSTEM_HISTORY_TABLES.items()
+            if not only_tables or table in only_tables
+        ]
+        log.info("Prepared %d old-system-history jobs for facility=%s (since %s)",
+                 len(jobs), facility, last_run)
+        return jobs
 
     sheet_id  = os.environ["IGNITE_SHEET_ID"]
     sheet_tab = os.getenv("IGNITE_SHEET_WORKSHEET", "Sheet1")
@@ -809,27 +910,30 @@ def run_pipeline(facility: str, *, since: str | None = None,
                  update_watermark: bool = True,
                  workers: int = DEFAULT_PIPELINE_WORKERS,
                  page_workers: int = DEFAULT_PAGE_WORKERS,
-                 resume: bool = True) -> None:
+                 resume: bool = True,
+                 table_set: str = "sheet") -> None:
 
     if facility not in FACILITIES:
         raise ValueError(f"Unknown facility {facility!r}. Known: {list(FACILITIES)}")
 
     run_id = datetime.now(timezone.utc).strftime("manual__%Y-%m-%dT%H-%M-%SZ")
     started_at = datetime.now(timezone.utc)
+    skey = state_key(facility, table_set)
 
     # 1. Build full job list
-    all_jobs = build_jobs_for_facility(facility, since=since, only_tables=only_tables)
+    all_jobs = build_jobs_for_facility(facility, since=since, only_tables=only_tables,
+                                       table_set=table_set)
     if not all_jobs:
         log.warning("No jobs to run.")
         return
 
     # 1b. Filter based on resume / progress checkpoint
     if not resume and not dry_run:
-        _clear_progress(facility)
-        log.info("⟲ Resume disabled · cleared previous progress for %s", facility)
+        _clear_progress(skey)
+        log.info("⟲ Resume disabled · cleared previous progress for %s", skey)
         jobs = all_jobs
     elif resume and not dry_run:
-        done = _completed_keys(facility)
+        done = _completed_keys(skey)
         skipped = [j for j in all_jobs if _job_key(j) in done]
         jobs    = [j for j in all_jobs if _job_key(j) not in done]
         if skipped:
@@ -862,10 +966,10 @@ def run_pipeline(facility: str, *, since: str | None = None,
                                            page_workers=page_workers)
                 if result is None:
                     if not dry_run:
-                        _mark_done(facility, run_id, job, s3_key=None)
+                        _mark_done(skey, run_id, job, s3_key=None)
                     return ("skip", None, job)
                 copy_into_snowflake(result, sf=sf_client)
-                _mark_done(facility, run_id, job, s3_key=result["s3_key"])
+                _mark_done(skey, run_id, job, s3_key=result["s3_key"])
                 return ("ok", result, job)
             except Exception as e:
                 log.error("✗ %s · %s · failed: %s",
@@ -896,8 +1000,8 @@ def run_pipeline(facility: str, *, since: str | None = None,
 
     # 5. Bump watermark + clear progress only on a clean full run.
     if not dry_run and update_watermark and not failures:
-        set_watermark(facility, started_at.isoformat().replace("+00:00", "Z"))
-        _clear_progress(facility)
+        set_watermark(skey, started_at.isoformat().replace("+00:00", "Z"))
+        _clear_progress(skey)
         log.info("✓ Run complete — watermark advanced, progress file cleared.")
 
     log.info("══════ END   ✓ %d ok · ✗ %d failed · %s ══════",
@@ -933,6 +1037,10 @@ def main():
                          "Drop to 4 if the source API rate-limits.")
     ap.add_argument("--page-workers", type=int, default=DEFAULT_PAGE_WORKERS,
                     help=f"Parallel page fetches within a job (default {DEFAULT_PAGE_WORKERS}).")
+    ap.add_argument("--table-set", choices=TABLE_SETS, default="sheet",
+                    help="'sheet' (default): tables from the data-dictionary sheet. "
+                         "'old_system_history': the V2 tables behind old_system_history "
+                         "(OLD_SYSTEM_HISTORY_TABLES), with their own watermark/progress.")
     args = ap.parse_args()
 
     only_tables = None
@@ -949,6 +1057,7 @@ def main():
         workers=args.workers,
         page_workers=args.page_workers,
         resume=not args.no_resume,
+        table_set=args.table_set,
     )
 
 

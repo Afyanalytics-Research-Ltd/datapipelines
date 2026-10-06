@@ -42,6 +42,7 @@ ENV VARS  (put them in a .env file next to this script)
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
 import hmac
 import json
@@ -108,12 +109,14 @@ VISIT_PATIENT_FILE   = Path(__file__).resolve().parent / ".migration_visit_patie
 VISIT_ADMISSION_FILE = Path(__file__).resolve().parent / ".migration_visit_admission.json"
 DEAD_LETTER_FILE     = Path(__file__).resolve().parent / ".migration_failures.jsonl"
 DONE_FILE            = Path(__file__).resolve().parent / ".migration_done.json"   # cross-run completed jobs
+PII_CORRUPTION_LOG   = Path(__file__).resolve().parent / ".migration_pii_corruption.jsonl"
 
 # V2 source facilities
 V2_FACILITIES: dict[str, dict] = {
     "afya_api_auth": {"base_url": "https://staging.afyanalytics.ai",    "db": "staging_db"},
     "kakamega":      {"base_url": "https://demo.collabmed.net",          "db": "kakamega_db"},
     "kisumu":        {"base_url": "https://kshospital.collabmed.net",    "db": "kisumu_db"},
+    "kisumu_v3":     {"base_url": "https://kshospital.collabmed.net",    "db": "kisumu_db"},
     "lodwar":        {"base_url": "https://lcrh.collabmed.net",          "db": "lodwar_db"},
     "tenri":         {"base_url": "https://stageenv.collabmed.net",      "db": "tenri_db"},
     "xanalife":      {"base_url": "https://xanalife.afyanalytics.ai/",   "db": "xanalife_db"},
@@ -223,6 +226,7 @@ def _gateway_post(service_name: str, body_obj: dict, *, timeout: int = 30):
     one byte string and transmit another, failing signature verification
     every time despite a perfectly valid secret."""
     body_str = _dumps(body_obj)
+
     headers = _service_headers(service_name, body_str)
     url = f"{V3_SERVICES[service_name].rstrip('/')}/v1/gateway"
     return _v3_session().post(url, headers=headers, data=body_str.encode(), timeout=timeout)
@@ -249,6 +253,7 @@ FACILITY_V3_CONFIG: dict[str, dict] = {
     "afya_api_auth": {"organization_id":  1, "facility_id": 6, "application_id": 1},
     "kakamega":      {"organization_id": None, "facility_id": None, "application_id": 1},
     "kisumu":        {"organization_id": 1, "facility_id": 6, "application_id": 1},
+    "kisumu_v3":     {"organization_id": 4, "facility_id": 4, "application_id": 1},
     "lodwar":        {"organization_id": None, "facility_id": None, "application_id": 1},
     "tenri":         {"organization_id": None, "facility_id": None, "application_id": 1},
     "xanalife":      {"organization_id": None, "facility_id": None, "application_id": 1},
@@ -413,6 +418,7 @@ NAMESPACE_MAP: dict[str, dict] = {
     # Ignite\Reception\Entities\Visit* variant 404s "Model class not found"
     # on the data point API, so the visits job never extracted a single row.
     r"Ignite\Evaluation\Entities\Visit":                     {"v3": r"App\Models\Visit",                       "transform": "reception_visit"},
+    r"Ignite\Evaluation\Entities\Visits":                    {"v3": r"App\Models\Visit",                       "transform": "reception_visit"},
     r"Ignite\Reception\Entities\PatientSchemes":             {"v3": r"App\Models\PatientInsurance",            "transform": "reception_patient_scheme"},
     r"Ignite\Reception\Entities\PatientScheme":              {"v3": r"App\Models\PatientInsurance",            "transform": "reception_patient_scheme"},
     r"Ignite\Reception\Entities\PatientNextOfKins":          {"v3": r"App\Models\PatientNextOfKin",            "transform": "generic"},
@@ -708,13 +714,41 @@ _PER_KEY_DROP_FIELDS: dict[str, list] = {
     # left in the payload afterwards and self-heals via the unknown-column
     # auto-strip-and-retry path, same as the nested "users"/"payment" blobs.
     "evaluation_prescription": ["prescribed_by"],
-    # id_no/mobile/email/address are encrypted at rest in V2 (confirmed
-    # 2026-09 against the live field mapping) and this pipeline has no
-    # decryption step — sending them straight through would land as garbled
-    # ciphertext in V3, not the real value. Drop them rather than corrupt
-    # real patient contact data; backfill separately once decryption is
-    # sorted out.
-    "reception_patient": ["id_no", "mobile", "email", "address"],
+}
+
+# Fields that are encrypted at rest in V2 and — confirmed 2026-09/2026-10 by
+# hitting staging.collabmed.net directly — sometimes come back from the V2
+# API as mojibake (U+FFFD replacement characters mixed with raw bytes): V2
+# itself serializes undecrypted/mis-decrypted ciphertext as if it were UTF-8
+# text. The original bytes are unrecoverable once that happens — there is no
+# client-side fix, only a V2-backend one.
+#
+# Unlike _PER_KEY_DROP_FIELDS (unconditional), these are only replaced when a
+# value is actually visibly corrupted — see _PER_KEY_CORRUPTION_WATCH's use
+# in transform_record's step 4c (hash it, don't null it — see
+# _hash_corrupted_value). A record with a clean value for one of these
+# fields keeps it; only the broken ones get hashed, and every replacement is
+# logged to PII_CORRUPTION_LOG (not silently discarded) so affected patients
+# can be identified and backfilled once V2 fixes the decryption.
+#
+# first_name/last_name are the SAME kind of corrupted ciphertext-as-text and
+# ARE included here even though isolated A/B testing confirmed V3 requires
+# them non-null (dropping either one alone causes an opaque 500) — that
+# constraint only rules out dropping them, not hashing them. A hash is a
+# non-null string just like the raw garbled text was, and confirmed by
+# direct testing to be accepted the same way.
+_PER_KEY_CORRUPTION_WATCH: dict[str, list] = {
+    "reception_patient": ["id_no", "mobile", "email", "address",
+                          "middle_name", "telephone", "alt_number",
+                          "secondary_email", "first_name", "last_name"],
+}
+
+# Fields that must be prefixed with the facility name before posting because
+# V3's uniqueness constraint on them spans every facility sharing a tenant,
+# while V2 only guarantees uniqueness within a single facility. See the 4b
+# comment in transform_record() for how this was confirmed.
+_PER_KEY_FACILITY_SCOPE_FIELDS: dict[str, list] = {
+    "reception_patient": ["patient_no"],
 }
 
 # Fields that must be non-null for a record to be sent; records missing them are skipped
@@ -755,6 +789,26 @@ def _wrap_in_list(v) -> list:
         return []
     return v if isinstance(v, list) else [v]
 
+def _clean_photo_path(v) -> Any:
+    """Fix V2's "photo"/"image" path-accumulation bug: every time a patient
+    record is re-saved, V2 appears to re-prepend "/storage/" to whatever is
+    already there instead of checking if it's already prefixed, producing
+    strings like "/storage//storage//storage/...https://host/img/x.png"
+    (confirmed on a real record — 35 repeats, 367 chars total). V3's photo
+    column almost certainly has a length limit the real URL alone fits in
+    but the accumulated garbage does not; isolated A/B testing confirmed
+    this exact field is what turns the insert into a generic 500, and that
+    every other field in that same record (including clinic_id=null) is
+    fine. If a full URL is embedded anywhere in the mess, keep only that —
+    it's the actual useful part; otherwise collapse the repeated prefix
+    down to one copy so a plain relative path doesn't balloon either."""
+    if not isinstance(v, str):
+        return v
+    m = re.search(r"https?://\S+$", v)
+    if m:
+        return m.group(0)
+    return re.sub(r"(?:/storage/)+", "/storage/", v)
+
 # Layer 3: field injections — generate V3-required fields that V2 never had.
 # Each entry: field_name → fn(record_dict) → value.
 # Only called when the field is absent or None in the record after all renames.
@@ -794,9 +848,28 @@ _PER_KEY_INJECT: dict[str, dict[str, Any]] = {
         # outside this pipeline's generic insert).
         "prescribed_by": lambda r: _id_map.get(_v3_alias(r"App\Models\User"), {}).get(r.get("user_id")),
     },
+    "reception_visit": {
+        # V3's visits.in_morgue column is NOT NULL with no default (confirmed
+        # 2026-10 straight from V3's own Laravel log — "SQLSTATE[23000]...
+        # Column 'in_morgue' cannot be null"). This can't be caught by the
+        # existing reactive _V3_NULL_DEFAULTS path: that depends on parsing
+        # the SQL error text back out of the response body, but production
+        # only ever returns the generic "Something went wrong" message with
+        # no detail — the real error never reaches this script, only the
+        # server's own log. So this has to be injected proactively instead.
+        # 0 ("not in morgue"/"not an inpatient visit") is the correct
+        # default for every migrated V2 record, since none of them were
+        # ever tracked this way in V2. "inpatient" confirmed alongside
+        # in_morgue — same NOT NULL class of column on the same table.
+        "in_morgue": lambda r: 0,
+        "inpatient": lambda r: 0,
+    },
 }
 
 _PER_KEY_COERCIONS: dict[str, dict[str, Any]] = {
+    "reception_patient": {
+        "photo": _clean_photo_path,
+    },
     "reception_patient_scheme": {
         # V2 field is `inactive` (tinyint), which was renamed to nothing above
         # — handle via special case in transform_record
@@ -824,7 +897,7 @@ def _v2_uuid(record: dict) -> str | None:
     return str(record["uuid"]).strip().lower() if record.get("uuid") else None
 
 
-def transform_record(record: dict, transform_key: str, org_cfg: dict) -> dict | None:
+def transform_record(record: dict, transform_key: str, org_cfg: dict, facility: str = "") -> dict | None:
     """Apply V2→V3 field mapping to a single record dict.
 
     Returns None if the record fails a required-field check and should be skipped.
@@ -835,6 +908,8 @@ def transform_record(record: dict, transform_key: str, org_cfg: dict) -> dict | 
       2. Global bare-FK renames (skip if _id form already exists)
       3. Per-key renames
       4. Per-key field drops
+      4b. Per-key cross-facility uniqueness fix-ups
+      4c. Per-key corruption guard (drop + log only visibly-corrupted PII)
       5. Per-key coercions
       5b. Per-key injections (generate V3-required fields absent from V2)
       6. Required-field validation
@@ -880,6 +955,55 @@ def transform_record(record: dict, transform_key: str, org_cfg: dict) -> dict | 
     # 4. Per-key drops (fields that cannot be mapped in API-to-API)
     for field in _PER_KEY_DROP_FIELDS.get(tk, []):
         out.pop(field, None)
+
+    # 4b. Per-key cross-facility uniqueness fix-ups. Confirmed 2026-10 by
+    # isolated A/B testing against the live gateway: every facility shares
+    # ONE V3 tenant (organization_id=1), but fields like patient_no are only
+    # unique *within* a V2 facility — two facilities' patient #45705 are two
+    # different people that collide on V3's unique constraint and come back
+    # as the same opaque "Something went wrong" 500 (no distinguishing detail
+    # is returned, so this can't be caught and retried reactively; it has to
+    # be avoided proactively).
+    #
+    # The facility prefix alone isn't enough, though — confirmed on a real
+    # record (afya_api_auth patient_no=47193) that V2's own patient_no isn't
+    # even guaranteed unique *within* one facility: two different real
+    # patients there both have raw patient_no 47193, which still collide
+    # once both get the same "{facility}-47193" prefix. Appending the
+    # record's own V2 "id" (its table primary key, always unique within that
+    # facility regardless of whatever patient_no duplication V2 has) closes
+    # this completely — confirmed accepted the same way the plain prefix was.
+    #
+    # The unique index also spans organizations: loading the same facility
+    # into a second org collides with the copies already in the first one.
+    # For any org other than 1 the prefix also carries the org id; org 1
+    # keeps the original format so re-runs of loads already there still
+    # produce identical values (uuid-less records have no match_on, so a
+    # changed patient_no would insert a duplicate instead of colliding).
+    if facility:
+        org_id = org_cfg.get("organization_id")
+        prefix = facility if org_id in (None, 1) else f"{facility}-org{org_id}"
+        for field in _PER_KEY_FACILITY_SCOPE_FIELDS.get(tk, []):
+            if out.get(field) is not None:
+                out[field] = f"{prefix}-{out[field]}-{out.get('id', '')}"
+
+    # 4c. Per-key corruption guard — only touch a watched field if its value
+    # is visibly corrupted (contains U+FFFD). Replaced with a SHA-256 hash of
+    # the corrupted text rather than null/dropped: confirmed by direct
+    # testing that V3 accepts an arbitrary hash string in every one of these
+    # fields exactly like it accepts the mojibake itself (no format
+    # validation blocks it). A hash isn't the real value — it can't be,
+    # the real bytes are already gone — but it's a clean, non-null,
+    # deterministic placeholder: two corrupted records with byte-for-byte
+    # identical ciphertext (seen in practice — V2 sometimes reuses the same
+    # ciphertext across multiple fields/records) hash identically, which is
+    # a free signal for a backend investigation. Every replacement is also
+    # logged so affected patients are a trackable backlog, not silent loss.
+    for field in _PER_KEY_CORRUPTION_WATCH.get(tk, []):
+        v = out.get(field)
+        if isinstance(v, str) and "�" in v:
+            _record_pii_corruption(facility, tk, record, field, v)
+            out[field] = _encode_corrupted_value(v)
 
     # 5. Per-key coercions
     coercions = _PER_KEY_COERCIONS.get(tk, {})
@@ -983,6 +1107,34 @@ _v3_session_lock = threading.Lock()
 _v3_token_cache: tuple[str, float] | None = None  # (token, fetched_at)
 _v3_org_cfg_cache: dict | None = None             # derived from the login response itself
 _v3_token_lock = threading.Lock()
+_v3_target_facility: str | None = None            # facility key whose V3 tenant we log into
+
+
+def set_v3_target_facility(facility: str | None) -> None:
+    """Point V3 login at one facility key's destination tenant: uses
+    AFYA_<FACILITY>_USERNAME / AFYA_<FACILITY>_PASSWORD when set (falling
+    back to AFYA_USERNAME / AFYA_PASSWORD), and on a step-2 multi-facility
+    login picks FACILITY_V3_CONFIG[facility]['facility_id'] instead of
+    whichever facility the account happens to list first. Drops any cached
+    token so the next call logs in for the new target."""
+    global _v3_target_facility, _v3_token_cache, _v3_org_cfg_cache
+    with _v3_token_lock:
+        _v3_target_facility = facility
+        _v3_token_cache = None
+        _v3_org_cfg_cache = None
+
+
+def _v3_credentials() -> tuple[str, str, str]:
+    """(username, password, env-var prefix used) for the current V3 target."""
+    if _v3_target_facility:
+        prefix = f"AFYA_{_v3_target_facility.upper()}"
+        user = (os.getenv(f"{prefix}_USERNAME") or "").strip()
+        pwd  = (os.getenv(f"{prefix}_PASSWORD") or "").strip()
+        if user and pwd:
+            return user, pwd, prefix
+    user = (os.getenv("AFYA_USERNAME") or "").strip()
+    pwd  = (os.getenv("AFYA_PASSWORD") or "").strip()
+    return user, pwd, "AFYA"
 
 
 def _v3_session() -> requests.Session:
@@ -1008,10 +1160,10 @@ def _generate_v3_token() -> tuple[str, dict]:
     organization or every gateway call 403s ("foreign tenant"), so whatever
     org this account belongs to IS the only valid destination.
     """
-    user = (os.getenv("AFYA_USERNAME") or "").strip()
-    pwd  = (os.getenv("AFYA_PASSWORD") or "").strip()
+    user, pwd, cred_prefix = _v3_credentials()
     if not user or not pwd:
         raise RuntimeError("Missing AFYA_USERNAME / AFYA_PASSWORD env vars")
+    expected = FACILITY_V3_CONFIG.get(_v3_target_facility or "", {})
     url = f"{V3_SERVICES['core'].rstrip('/')}/v1/login"
     body = {"username": user, "password": pwd}
 
@@ -1028,7 +1180,15 @@ def _generate_v3_token() -> tuple[str, dict]:
             raise RuntimeError(
                 f"V3 auth returned step 2 (pick a facility) but no allowed_facility_ids: {r.text[:200]}"
             )
-        body["facility_id"] = facilities[0]
+        wanted = expected.get("facility_id")
+        if wanted is not None and wanted not in facilities:
+            raise RuntimeError(
+                f"V3 account {user!r} ({cred_prefix}_USERNAME) can't log into facility "
+                f"{wanted} configured for {_v3_target_facility} — allowed_facility_ids="
+                f"{facilities}. Set AFYA_{_v3_target_facility.upper()}_USERNAME/"
+                f"_PASSWORD to an account in that facility."
+            )
+        body["facility_id"] = wanted if wanted is not None else facilities[0]
         r = _v3_session().post(url, json=body, timeout=30)
         if r.status_code != 200:
             raise RuntimeError(f"V3 auth (step 2) failed: {r.status_code} · {r.text[:200]}")
@@ -1041,6 +1201,7 @@ def _generate_v3_token() -> tuple[str, dict]:
     # core's login nests the account under `user` (confirmed against the live
     # response), not `data` — check both since that's what the Postman
     # collection's own test script does.
+    # import pdb;pdb.set_trace()
     user_obj = res.get("user") or res.get("data") or {}
     org_id = (res.get("tenant") or {}).get("id") or user_obj.get("organization_id")
     fac_id = (
@@ -1051,6 +1212,15 @@ def _generate_v3_token() -> tuple[str, dict]:
     log.info("V3 login ok — user=%s org=%s facility=%s roles=%s",
               user_obj.get("username"), org_id, fac_id,
               ",".join(r.get("name", "") for r in (user_obj.get("roles") or [])))
+    # The tenant comes from the account, so a wrong account silently loads
+    # into the wrong org — fail instead when it disagrees with the config.
+    if expected.get("organization_id") is not None and org_id != expected["organization_id"]:
+        raise RuntimeError(
+            f"V3 account {user!r} ({cred_prefix}_USERNAME) belongs to organization {org_id}, "
+            f"but FACILITY_V3_CONFIG[{_v3_target_facility!r}] expects organization "
+            f"{expected['organization_id']}. Set AFYA_{_v3_target_facility.upper()}_USERNAME/"
+            f"_PASSWORD to an account in that organization."
+        )
     return token, {"organization_id": org_id, "facility_id": fac_id, "application_id": 1}
 
 
@@ -1414,6 +1584,49 @@ def _v3_alias(v3_namespace: str) -> str:
 # ─── DEAD-LETTER ─────────────────────────────────────────────────────────────
 
 _dead_letter_lock = threading.Lock()
+_pii_corruption_lock = threading.Lock()
+
+
+def _encode_corrupted_value(value: str) -> str:
+    """Base64 encoding of an already-corrupted (U+FFFD-containing) field
+    value. Not a way to recover the real value — the original encrypted
+    bytes are already gone by the time we see U+FFFD — just a clean,
+    deterministic, non-null placeholder. Unlike a one-way hash, base64 is
+    reversible: decoding it hands back the exact (already-mangled) text we
+    received, byte-for-byte, which is occasionally useful for inspection.
+    Two records whose V2 ciphertext happens to be byte-for-byte identical
+    (confirmed to occur in practice) still encode identically, which is a
+    useful free signal when investigating the encryption bug on the V2 side.
+    """
+    return base64.b64encode(value.encode("utf-8")).decode("ascii")
+
+
+def _record_pii_corruption(facility: str, transform_key: str, record: dict, field: str, value: str) -> None:
+    """Append one corrupted field to a JSONL audit trail before it's replaced
+    with a base64 placeholder (see _encode_corrupted_value).
+
+    This is the difference between silently losing data and having an
+    actionable backlog: every time a watched field is visibly corrupted
+    (U+FFFD from V2 returning undecrypted ciphertext as UTF-8 text — see
+    _PER_KEY_CORRUPTION_WATCH), the record's identity, which field was
+    affected, and the value it was replaced with are logged here. Once V2
+    fixes the decryption, this file tells you exactly which patients (by
+    uuid) need a backfill — nothing has to be guessed or re-derived from
+    scratch.
+    """
+    entry = {
+        "ts":            datetime.now(timezone.utc).isoformat(),
+        "facility":      facility,
+        "transform_key": transform_key,
+        "record_id":     record.get("id"),
+        "uuid":          record.get("uuid"),
+        "field":         field,
+        "sample":        value[:80],
+        "encoded":       _encode_corrupted_value(value),
+    }
+    with _pii_corruption_lock:
+        with PII_CORRUPTION_LOG.open("a") as fh:
+            fh.write(_dumps(entry) + "\n")
 
 
 class RecordDeadLettered(Exception):
@@ -1467,6 +1680,7 @@ def _post_to_v3_batch(
     default_retry_wait: int = 5,
     backoff_factor: int = 2,
     service_override: str | None = None,
+    alias_override: str | None = None,
 ) -> None:
     """POST a single record object to the V3 gateway. Retries on 429/5xx/401.
 
@@ -1474,8 +1688,19 @@ def _post_to_v3_batch(
     whenever two services register the same model alias (e.g. "vital" exists
     in both inpatient-service and patient-evaluation-service with different
     schemas); the discovery-based lookup can only remember one winner.
+
+    alias_override bypasses _v3_alias()'s own resolution — required whenever
+    singular and plural forms of a name are two genuinely DIFFERENT models
+    under different services, not just a naming variant of the same one.
+    Confirmed for Visit: "visit" (singular, reception service, insertable)
+    and "visits" (plural, evaluation service / evaluationmigrate database)
+    are separate tables — _v3_alias() always prefers the singular form when
+    both exist, with no way to know they aren't the same thing. The real
+    V3 Laravel error log (SQLSTATE in_morgue/inpatient NOT NULL violations
+    against database "evaluationmigrate", app "patient-evaluation-service")
+    confirmed "visits" is the one the application actually uses.
     """
-    alias        = _v3_alias(v3_namespace)
+    alias        = alias_override or _v3_alias(v3_namespace)
     service_name = service_override or _alias_to_service.get(alias, "core")
     body = {
         "action":                "insert",
@@ -1602,6 +1827,7 @@ def _post_to_v3_batch(
                     "  V3 500 id=%-6s server fault → dead-letter  |  reason: %s",
                     rec_id, reason,
                 )
+                # import pdb;pdb.set_trace()
                 _write_dead_letter(v3_namespace, record, err_body)
                 raise RecordDeadLettered()
 
@@ -2649,7 +2875,7 @@ def run_job(job: dict, run_id: str, batch_size: int, dry_run: bool) -> bool:
     if transform_key == "reception_visit":
         _backfill_visit_patients(rows, facility, org_cfg)
 
-    transformed_raw = [transform_record(r, transform_key, org_cfg) for r in rows]
+    transformed_raw = [transform_record(r, transform_key, org_cfg, facility) for r in rows]
     transformed = [r for r in transformed_raw if r is not None]
 
     # A visit without a patient is rejected by V3 (opaque 500) — hold it back
@@ -2862,6 +3088,7 @@ def run_migration(
                     failures.append(_job_key(job["facility"], job["namespace"]))
         else:
             with ThreadPoolExecutor(max_workers=workers) as pool:
+                print(job['facility'])
                 future_to_job = {
                     pool.submit(run_job, job, run_id, batch_size, dry_run): job
                     for job in tier_jobs

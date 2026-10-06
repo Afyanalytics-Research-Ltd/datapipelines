@@ -103,7 +103,9 @@ import snowflake.connector
 from dotenv import load_dotenv
 
 import v2_to_v3_api_migration as v2v3
-from facility_to_snowflake_fast_resume import build_namespace, snake_to_pascal
+from facility_to_snowflake_fast_resume import (
+    OLD_SYSTEM_HISTORY_TABLES, build_namespace, snake_to_pascal,
+)
 
 load_dotenv(Path(__file__).resolve().parent / ".env", override=False)
 
@@ -126,6 +128,21 @@ SF_DB              = "HOSPITALS"
 PIPELINE_WORKERS   = int(os.getenv("PIPELINE_WORKERS", "8"))   # parallel tables within a tier
 RECORD_WORKERS     = int(os.getenv("RECORD_WORKERS", "3"))     # parallel V3 POSTs per table
 RECORD_LOG_EVERY   = int(os.getenv("RECORD_LOG_EVERY", "100"))
+
+# _id_to_uuid (raw V2 id -> uuid, per source table) used to be purely
+# in-memory, rebuilt fresh every run from whatever tables that run itself
+# fetched. That's a real gap, not just a theoretical one: confirmed 2026-10
+# that running `--table visits` on its own (patients already migrated in an
+# earlier, separate process) leaves _id_to_uuid["patients"] empty, so
+# _remap_fks_via_uuid can't translate a visit's raw patient id into the
+# parent's uuid, falls through to a direct id_map lookup that's keyed by
+# uuid (not raw id) because patients went through this same uuid-keyed
+# pipeline — and silently leaves patient_id as the raw V2 int, which fails
+# V3's FK constraint on every single visit. Persisting this table to disk,
+# exactly like v2v3's ID_MAP_FILE, closes that gap: a table's id->uuid
+# mapping survives past the run that ingested it, so any later run
+# migrating a child table can still resolve the parent correctly.
+ID_TO_UUID_FILE = Path(__file__).resolve().parent / ".migration_id_to_uuid.json"
 
 # NOTE on shared state: v2v3.ID_MAP_FILE / DONE_FILE / RECORD_PROGRESS_FILE /
 # DEAD_LETTER_FILE / VISIT_PATIENT_FILE / VISIT_ADMISSION_FILE are reused
@@ -256,17 +273,67 @@ def dedupe_by_uuid(records: list[dict], table: str) -> list[dict]:
 _alias_to_table: dict[str, str] = {}
 _alias_to_table_lock = threading.Lock()
 
-# source_table -> {v2_id: uuid}, populated as each table's rows are fetched
+# source_table -> {v2_id: uuid}, populated as each table's rows are fetched.
+# Persisted to ID_TO_UUID_FILE (see its comment above) so a later run
+# migrating a child table can still resolve a parent it didn't itself fetch.
 _id_to_uuid: dict[str, dict] = {}
 _id_to_uuid_lock = threading.Lock()
 
 
+def _load_id_to_uuid() -> None:
+    """Load both _id_to_uuid AND _alias_to_table — _remap_fks_via_uuid needs
+    both together (alias -> table name, then table name -> {id: uuid}), so
+    persisting only one of them would still leave the other empty on a fresh
+    process and silently break FK resolution exactly like the bug this was
+    written to fix."""
+    global _id_to_uuid, _alias_to_table
+    if not ID_TO_UUID_FILE.exists():
+        _id_to_uuid = {}
+        _alias_to_table = {}
+        return
+    try:
+        raw = json.loads(ID_TO_UUID_FILE.read_text())
+        _id_to_uuid = {
+            table: {(int(k) if k.isdigit() else k): v for k, v in mapping.items()}
+            for table, mapping in raw.get("id_to_uuid", {}).items()
+        }
+        _alias_to_table = dict(raw.get("alias_to_table", {}))
+        total = sum(len(v) for v in _id_to_uuid.values())
+        if total:
+            log.info("id->uuid map loaded — %d entries across %d tables (%d aliases)",
+                      total, len(_id_to_uuid), len(_alias_to_table))
+    except Exception as e:
+        log.warning("Could not load %s: %s — starting fresh", ID_TO_UUID_FILE.name, e)
+        _id_to_uuid = {}
+        _alias_to_table = {}
+
+
 def _register_table(alias: str, table: str, records: list[dict]) -> None:
+    """Updates _id_to_uuid/_alias_to_table in memory AND on disk.
+
+    The disk write merges with whatever is currently on disk rather than
+    overwriting it with just this process's in-memory state — confirmed
+    this matters in practice: a process that only ever fetches "visits"
+    never loads "patients" into its own memory, so writing its in-memory
+    dict verbatim would silently erase the "patients" entries an earlier,
+    separate process had already persisted. This isn't airtight against two
+    processes writing at the exact same instant, but it closes the much
+    more common case of sequential separate-table runs stepping on each
+    other, which is exactly what happened before this fix existed.
+    """
     id_uuid = {r["id"]: r["uuid"] for r in records if r.get("id") is not None and r.get("uuid")}
-    with _alias_to_table_lock:
+    with _alias_to_table_lock, _id_to_uuid_lock:
         _alias_to_table.setdefault(alias, table)
-    with _id_to_uuid_lock:
         _id_to_uuid[table] = id_uuid
+        try:
+            on_disk = json.loads(ID_TO_UUID_FILE.read_text()) if ID_TO_UUID_FILE.exists() else {}
+        except Exception:
+            on_disk = {}
+        merged_id_to_uuid = {**on_disk.get("id_to_uuid", {}), **_id_to_uuid}
+        merged_alias_to_table = {**on_disk.get("alias_to_table", {}), **_alias_to_table}
+        ID_TO_UUID_FILE.write_text(json.dumps(
+            {"id_to_uuid": merged_id_to_uuid, "alias_to_table": merged_alias_to_table}, indent=2,
+        ))
 
 
 def _store_uuid_mapping(alias: str, uuid_or_id, v3_id) -> None:
@@ -275,7 +342,51 @@ def _store_uuid_mapping(alias: str, uuid_or_id, v3_id) -> None:
     v2v3._store_id_mapping(alias, uuid_or_id, v3_id)
 
 
-def _remap_fks_via_uuid(record: dict, transform_key: str, v3_namespace: str) -> dict:
+# FK fields that MUST resolve for a record to be worth posting at all — if
+# one of these is still unresolved after _remap_fks_via_uuid, the insert is
+# guaranteed to fail on V3's FK constraint (confirmed: this is exactly what
+# was happening for every afya_api_auth visit whose patient hadn't reached
+# V3 yet). Posting anyway just burns an error_id on a doomed request and
+# dead-letters a record that would succeed on its own a few minutes later
+# once the parent catches up — so these are held back instead, same as the
+# existing orphan-handling for vitals/doctor_notes with an unresolved visit.
+_CRITICAL_FK_FIELDS: dict[str, list] = {
+    "reception_visit": ["patient_id"],
+}
+
+# "visit" (singular, reception service) is ALSO a registered, insertable
+# gateway alias — a separate, parallel table from this one, in reception's
+# own database. v2v3._v3_alias() always prefers the singular form whenever
+# both exist, with no way to know they're two different tables rather than
+# a naming variant of the same one. Per explicit instruction, "visits"
+# (plural, evaluation service, database "evaluationmigrate") is the one to
+# use — confirmed live via that service's own Laravel error log (SQLSTATE
+# in_morgue/inpatient NOT NULL violations on a visits insert, same
+# service/database). Note: `describe` on this model shows
+# "excluded": [..., "patient_id", ...] — the gateway silently drops
+# patient_id on insert there (confirmed: a test insert didn't error, just
+# never stored it) — patient linkage for visits migrated into this table is
+# not established through this field; flag to the backend team if this
+# needs to be resolved differently.
+_ALIAS_OVERRIDE: dict[str, str] = {"reception_visit": "visits"}
+_SERVICE_OVERRIDE: dict[str, str] = {"reception_visit": "evaluation"}
+
+# Some source tables carry the parent's uuid directly as a sibling column,
+# which is a more direct and robust resolution path than bridging through a
+# raw int id + the separately persisted _id_to_uuid table (which depends on
+# that parent table having been fetched by *some* run, ever, and that run's
+# write never getting clobbered by a concurrent one — confirmed fragile in
+# practice). Checked empirically against real afya_api_auth data: visits'
+# "reception_patient_uuid" column matches the patient's real migrated uuid
+# 20/20 — the similarly-named "patient_uuid" column does NOT (0/20; it's a
+# different uuid, likely the Evaluation-side patient record's own identity,
+# since visits live in V2's Evaluation module) — so don't use that one.
+_DIRECT_UUID_SOURCE: dict[str, dict[str, str]] = {
+    "reception_visit": {"patient_id": "reception_patient_uuid"},
+}
+
+
+def _remap_fks_via_uuid(record: dict, transform_key: str, v3_namespace: str) -> tuple[dict, list[str]]:
     """Like v2v3._remap_fks, but resolves each declared FK field through the
     parent's uuid instead of assuming the raw V2 id is a safe id-map key.
 
@@ -287,15 +398,22 @@ def _remap_fks_via_uuid(record: dict, transform_key: str, v3_namespace: str) -> 
          parent tables this facility never ingested into Snowflake at all
          (it populates id_map with plain int V2 ids, not uuids).
       3. Otherwise log the same "no mapping" warning v2v3._remap_fks would.
+
+    Returns (record_with_resolved_fks, unresolved_critical_fields) — the
+    second element lists any field named in _CRITICAL_FK_FIELDS that
+    couldn't be resolved, for the caller to hold the record back on.
     """
     fk_config = {
         **v2v3._NS_FK_REMAP.get(v3_namespace, {}),
         **v2v3._FK_REMAP.get(transform_key, {}),
     }
+    critical = set(_CRITICAL_FK_FIELDS.get(transform_key, []))
     if not fk_config:
-        return record
+        return record, []
 
+    direct_sources = _DIRECT_UUID_SOURCE.get(transform_key, {})
     out = dict(record)
+    unresolved = []
     for field, alias in fk_config.items():
         raw_id = out.get(field)
         if raw_id is None:
@@ -303,11 +421,19 @@ def _remap_fks_via_uuid(record: dict, transform_key: str, v3_namespace: str) -> 
         raw_id = int(raw_id) if str(raw_id).isdigit() else raw_id
 
         v3_id = None
-        parent_table = _alias_to_table.get(alias)
-        if parent_table is not None:
-            parent_uuid = _id_to_uuid.get(parent_table, {}).get(raw_id)
-            if parent_uuid is not None:
-                v3_id = v2v3._id_map.get(alias, {}).get(parent_uuid)
+
+        direct_uuid_field = direct_sources.get(field)
+        if direct_uuid_field:
+            direct_uuid = record.get(direct_uuid_field)
+            if direct_uuid:
+                v3_id = v2v3._id_map.get(alias, {}).get(direct_uuid)
+
+        if v3_id is None:
+            parent_table = _alias_to_table.get(alias)
+            if parent_table is not None:
+                parent_uuid = _id_to_uuid.get(parent_table, {}).get(raw_id)
+                if parent_uuid is not None:
+                    v3_id = v2v3._id_map.get(alias, {}).get(parent_uuid)
 
         if v3_id is None:
             v3_id = v2v3._id_map.get(alias, {}).get(raw_id)
@@ -317,7 +443,9 @@ def _remap_fks_via_uuid(record: dict, transform_key: str, v3_namespace: str) -> 
         else:
             log.warning("  No V3 ID mapping for %s id=%s (via %s) — %s will fail FK constraint",
                         alias, raw_id, parent_table or "no Snowflake table for this facility", field)
-    return out
+            if field in critical:
+                unresolved.append(field)
+    return out, unresolved
 
 
 # ─── PER-TABLE JOB ───────────────────────────────────────────────────────────
@@ -349,14 +477,35 @@ def post_table_to_v3(v3_namespace: str, org_cfg: dict, records: list[dict],
 
     done_count = 0
     dead_letter_count = 0
+    orphan_count = 0
     progress_lock = threading.Lock()
 
     def _post_one(record: dict) -> None:
-        nonlocal done_count, dead_letter_count
-        remapped = _remap_fks_via_uuid(record, transform_key, v3_namespace)
+        nonlocal done_count, dead_letter_count, orphan_count
+        remapped, unresolved = _remap_fks_via_uuid(record, transform_key, v3_namespace)
         rec_key = record.get("uuid") or record.get("id")
+        if unresolved:
+            # Parent not migrated yet — posting is guaranteed to fail on
+            # V3's FK constraint, so skip it entirely rather than burn a
+            # request and dead-letter a record that'll succeed on its own
+            # once the parent catches up. Not marked inserted, so the next
+            # run retries it automatically.
+            v2v3._write_dead_letter(v3_namespace, record, {
+                "reason": f"{', '.join(unresolved)} unresolved — parent not migrated to V3 yet",
+            })
+            with progress_lock:
+                orphan_count += 1
+                done_count += 1
+                n = done_count
+            if n % RECORD_LOG_EVERY == 0 or n == len(pending):
+                log.info("  Posted %d / %d → %s", n, len(pending), v3_namespace)
+            return
         try:
-            v3_id = v2v3._post_to_v3_batch(v3_namespace, org_cfg, remapped)
+            v3_id = v2v3._post_to_v3_batch(
+                v3_namespace, org_cfg, remapped,
+                alias_override=_ALIAS_OVERRIDE.get(transform_key),
+                service_override=_SERVICE_OVERRIDE.get(transform_key),
+            )
         except v2v3.RecordDeadLettered:
             with progress_lock:
                 dead_letter_count += 1
@@ -382,7 +531,10 @@ def post_table_to_v3(v3_namespace: str, org_cfg: dict, records: list[dict],
 
     if dead_letter_count:
         log.warning("  %d / %d record(s) dead-lettered → %s", dead_letter_count, len(pending), v3_namespace)
-    return dead_letter_count
+    if orphan_count:
+        log.warning("  %d / %d record(s) held back (parent not migrated yet) → %s",
+                    orphan_count, len(pending), v3_namespace)
+    return dead_letter_count + orphan_count
 
 
 def _run_vitals_split(entry: dict, facility: str, rows: list[dict], org_cfg: dict,
@@ -445,7 +597,7 @@ def run_table_job(entry: dict, facility: str, org_cfg: dict, dry_run: bool) -> b
     """Fetch one table's CLEAN view, dedupe by uuid, transform, and migrate.
     Returns True on success (including "nothing to do"), False on failure."""
     table, v3_namespace, transform_key = entry["table"], entry["v3"], entry["transform"]
-    alias = v2v3._v3_alias(v3_namespace)
+    alias = _ALIAS_OVERRIDE.get(transform_key) or v2v3._v3_alias(v3_namespace)
     job_key = f"{facility}|sf:{table}"
     label = f"[{facility}] {table} → {alias}"
     log.info("▶ %s", label)
@@ -486,7 +638,7 @@ def run_table_job(entry: dict, facility: str, org_cfg: dict, dry_run: bool) -> b
             v2v3._mark_done(_run_id, job_key)
         return True
 
-    transformed_raw = [v2v3.transform_record(r, transform_key, org_cfg) for r in rows]
+    transformed_raw = [v2v3.transform_record(r, transform_key, org_cfg, facility) for r in rows]
     transformed = [r for r in transformed_raw if r is not None]
     n_dropped = len(transformed_raw) - len(transformed)
     if n_dropped:
@@ -531,11 +683,12 @@ _run_id: str = ""
 
 
 def run_migration(facility: str, only_tables: list[str] | None,
-                  *, workers: int, dry_run: bool) -> None:
+                  *, workers: int, dry_run: bool) -> list[str]:
     global _run_id
     _run_id = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
 
     v2v3._load_id_map()
+    _load_id_to_uuid()
     v2v3._load_visit_patient_map()
     v2v3._load_visit_admission_map()
     v2v3._load_record_progress()
@@ -546,7 +699,14 @@ def run_migration(facility: str, only_tables: list[str] | None,
     # equal the authenticated account's own organization or every gateway
     # call 403s ("foreign tenant"), so whatever org the AFYA_USERNAME/
     # AFYA_PASSWORD account belongs to is the only valid destination.
-    org_cfg = v2v3.v3_login_org_cfg()
+    # Target this facility's tenant: AFYA_<FACILITY>_USERNAME/PASSWORD if set,
+    # and FACILITY_V3_CONFIG[facility] picks/validates the org + facility.
+    v2v3.set_v3_target_facility(facility)
+    try:
+        org_cfg = v2v3.v3_login_org_cfg()
+    except RuntimeError as e:
+        log.error("%s", e)
+        sys.exit(1)
     if org_cfg.get("organization_id") is None:
         log.error(
             "Could not derive organization_id from the V3 login response — "
@@ -566,6 +726,17 @@ def run_migration(facility: str, only_tables: list[str] | None,
 
     if only_tables:
         entries = [e for e in entries if e["table"] in only_tables]
+    else:
+        # The old-system-history tables are archive copies meant for
+        # old_system_history, not per-table V3 inserts — several of them
+        # (reception_patients, evaluation_prescriptions, ...) resolve to real
+        # V3 models and would otherwise be loaded a second time. Only an
+        # explicit --table sends one of them through this path.
+        history = [e for e in entries if e["table"] in OLD_SYSTEM_HISTORY_TABLES]
+        if history:
+            log.info("Skipping %d old-system-history tables (name one with --table to force): %s",
+                     len(history), ", ".join(sorted(e["table"] for e in history)))
+            entries = [e for e in entries if e["table"] not in OLD_SYSTEM_HISTORY_TABLES]
 
     mapped   = [e for e in entries if e["v3"]]
     unmapped = [e for e in entries if not e["v3"]]
@@ -628,6 +799,7 @@ def run_migration(facility: str, only_tables: list[str] | None,
         len(unmapped), len(no_insert),
         f"  FAILED: {', '.join(failures)}\n" if failures else "",
     )
+    return failures
 
 
 def list_tables(facility: str) -> None:
