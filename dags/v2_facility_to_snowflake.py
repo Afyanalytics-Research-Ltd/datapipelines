@@ -101,7 +101,9 @@ def _job_label(job: dict) -> str:
                          description="Extract and count only; write nothing."),
         "skip_merge": Param(False, type="boolean", title="Skip CLEAN.EVENTS merge"),
         "update_watermark": Param(True, type="boolean", title="Update watermark"),
-        "page_workers": Param(4, type="integer", minimum=1, maximum=64, title="Page workers per table"),
+        "page_workers": Param(min(int_env("PAGE_WORKERS", 4), 64), type="integer", minimum=1, maximum=64,
+                              title="Page workers per table",
+                              description="Default = PAGE_WORKERS (env / repo .env), same as the CLI."),
         "trigger_flatten": Param(True, type="boolean", title="Trigger flatten DAG after load"),
     },
 )
@@ -158,7 +160,7 @@ def v2_facility_to_snowflake():
 
     @task(
         map_index_template="{{ map_label }}",
-        max_active_tis_per_dagrun=int_env("V2_LOADER_PARALLEL_TABLES", 8),
+        max_active_tis_per_dagrun=int_env("V2_LOADER_PARALLEL_TABLES", int_env("PIPELINE_WORKERS", 8)),
         execution_timeout=timedelta(hours=6),
     )
     def extract_load(job: dict) -> dict:

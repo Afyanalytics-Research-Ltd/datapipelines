@@ -268,7 +268,17 @@ def clean_schema(facility: str) -> str:
 
 
 def int_env(name: str, default: int) -> int:
+    """Integer setting from the environment, else the repo .env (where the
+    CLI gets it, e.g. PAGE_WORKERS=32), else `default` — so DAG defaults
+    match what the scripts use when run by hand."""
+    value = os.getenv(name)
+    if value is None:
+        try:
+            from dotenv import dotenv_values
+            value = dotenv_values(PIPELINES_DIR / ".env").get(name)
+        except Exception:
+            value = None
     try:
-        return max(1, int(os.getenv(name, str(default))))
+        return max(1, int(str(value).strip().strip("'\""))) if value is not None else default
     except ValueError:
         return default

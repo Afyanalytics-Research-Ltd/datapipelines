@@ -403,7 +403,6 @@ def _safe_s3_token(s: str) -> str:
 #       — no namespace resolves (404 on every variant tried)
 OLD_SYSTEM_HISTORY_TABLES: dict[str, tuple[str, str]] = {
     # visit-level
-    "evaluation_visits":                 ("Evaluation", "Ignite\\Evaluation\\Entities\\Visit"),
     "evaluation_visit_destinations":     ("Evaluation", "Ignite\\Evaluation\\Entities\\VisitDestinations"),
     "evaluation_visit_metas":            ("Evaluation", "Ignite\\Evaluation\\Entities\\VisitMeta"),
     "evaluation_vitals":                 ("Evaluation", "Ignite\\Evaluation\\Entities\\Vitals"),
@@ -427,7 +426,6 @@ OLD_SYSTEM_HISTORY_TABLES: dict[str, tuple[str, str]] = {
     "discharges":                        ("Inpatient",  "Ignite\\Inpatient\\Entities\\Discharge"),
     "evaluation_opnotes":                ("Evaluation", "Ignite\\Evaluation\\Entities\\OpNotes"),
     # patient-level
-    "reception_patients":                ("Reception",  "Ignite\\Reception\\Entities\\Patients"),
     "reception_patients_nok":            ("Reception",  "Ignite\\Reception\\Entities\\NextOfKin"),
     "reception_patient_documents":       ("Reception",  "Ignite\\Reception\\Entities\\PatientDocuments"),
     "reception_appointments":            ("Reception",  "Ignite\\Reception\\Entities\\Appointments"),
@@ -438,6 +436,15 @@ OLD_SYSTEM_HISTORY_TABLES: dict[str, tuple[str, str]] = {
     "settings_clinics":                  ("Settings",   "Ignite\\Settings\\Entities\\Clinics"),
     "inpatient_wards":                   ("Inpatient",  "Ignite\\Inpatient\\Entities\\Ward"),
     "inpatient_beds":                    ("Inpatient",  "Ignite\\Inpatient\\Entities\\Bed"),
+}
+
+# History inputs that the sheet run already loads from the same V2 endpoints
+# (Reception\Patients, Evaluation\Visit). They are NOT re-extracted here:
+# the history step reads them from these existing source tables and stores
+# them under the V2 table name on the left.
+OLD_SYSTEM_HISTORY_ALIASES: dict[str, str] = {
+    "reception_patients": "patients",
+    "evaluation_visits":  "visits",
 }
 
 TABLE_SETS = ("sheet", "old_system_history")
