@@ -75,7 +75,6 @@ def all_new_dag_module_names() -> list[str]:
         "orthopedic_raw_to_clean",
         "orthopedic_v2_raw_pipeline",
         "orthopedic_v2_clean_pipeline",
-        "siaya_medical_report_analyzer",
         "siaya_v2_visits_to_snowflake",
         "siaya_v3_visits_to_snowflake",
         "v3_snowflake_writeback",

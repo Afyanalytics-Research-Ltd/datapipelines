@@ -46,6 +46,7 @@ import base64
 import hashlib
 import hmac
 import json
+import mimetypes
 import logging
 import os
 import re
@@ -62,14 +63,27 @@ import requests.adapters
 from dotenv import load_dotenv
 from requests.exceptions import ConnectionError, HTTPError, ReadTimeout, Timeout
 
+def _json_default(o):
+    """Types the encoders don't know. Snowflake NUMBER columns with a scale
+    (prices, quantities) come back as Decimal: whole values go as ints, the
+    rest as floats. Dates/datetimes go as ISO strings."""
+    from datetime import date, datetime
+    from decimal import Decimal
+    if isinstance(o, Decimal):
+        return int(o) if o == o.to_integral_value() else float(o)
+    if isinstance(o, (datetime, date)):
+        return o.isoformat()
+    raise TypeError(f"Type is not JSON serializable: {type(o).__module__}.{type(o).__name__}")
+
+
 # Optional fast JSON encoder
 try:
     import orjson
     def _dumps(obj) -> str:
-        return orjson.dumps(obj).decode()
+        return orjson.dumps(obj, default=_json_default).decode()
 except ImportError:
     def _dumps(obj) -> str:
-        return json.dumps(obj, separators=(",", ":"))
+        return json.dumps(obj, separators=(",", ":"), default=_json_default)
 
 load_dotenv(Path(__file__).resolve().parent / ".env", override=False)
 
@@ -92,6 +106,8 @@ if not log.handlers:
 PIPELINE_WORKERS   = int(os.getenv("PIPELINE_WORKERS", "8"))
 PAGE_WORKERS       = int(os.getenv("PAGE_WORKERS", "4"))
 RECORD_WORKERS     = int(os.getenv("RECORD_WORKERS", "3"))    # parallel POSTs per job — keep low to avoid 504s
+GARBLED_KEY = "__garbled__"   # transform → poster only: encoded fallbacks for nulled garbled fields
+ENCODE_CORRUPTED_PII = os.getenv("ENCODE_CORRUPTED_PII", "0").strip() in ("1", "true", "yes")  # see transform_record step 4c
 RECORD_LOG_EVERY   = int(os.getenv("RECORD_LOG_EVERY", "100")) # log progress every N records
 RECORD_FLUSH_EVERY = int(os.getenv("RECORD_FLUSH_EVERY", "50")) # flush progress file every N records
 TOKEN_TTL_SECONDS  = int(os.getenv("TOKEN_TTL_SECONDS", str(50 * 60)))
@@ -275,8 +291,10 @@ NAMESPACE_MAP: dict[str, dict] = {
     r"Ignite\Settings\Entities\County":                      {"v3": r"App\Models\County",                      "transform": "generic"},
     r"Ignite\Settings\Entities\Departments":                 {"v3": r"App\Models\Department",                  "transform": "generic"},
     r"Ignite\Settings\Entities\Department":                  {"v3": r"App\Models\Department",                  "transform": "generic"},
-    r"Ignite\Settings\Entities\Clinics":                     {"v3": r"App\Models\Clinic",                      "transform": "generic"},
-    r"Ignite\Settings\Entities\Clinic":                      {"v3": r"App\Models\Clinic",                      "transform": "generic"},
+    # A V2 clinic is the hospital itself (facility_code, address, email...),
+    # which V3 models as core-service's facilities, not inpatient's clinic.
+    r"Ignite\Settings\Entities\Clinics":                     {"v3": r"App\Models\Facility",                    "transform": "settings_clinic"},
+    r"Ignite\Settings\Entities\Clinic":                      {"v3": r"App\Models\Facility",                    "transform": "settings_clinic"},
     r"Ignite\Settings\Entities\Specialties":                 {"v3": r"App\Models\Specialty",                   "transform": "generic"},
     r"Ignite\Settings\Entities\Specialty":                   {"v3": r"App\Models\Specialty",                   "transform": "generic"},
     r"Ignite\Settings\Entities\AgeGroups":                   {"v3": r"App\Models\AgeGroup",                    "transform": "generic"},
@@ -400,10 +418,10 @@ NAMESPACE_MAP: dict[str, dict] = {
     # Inpatient config (must precede wards → beds → admissions chain)
     r"Ignite\Inpatient\Entities\BedTypes":                   {"v3": r"App\Models\BedType",                     "transform": "generic"},
     r"Ignite\Inpatient\Entities\BedType":                    {"v3": r"App\Models\BedType",                     "transform": "generic"},
-    r"Ignite\Inpatient\Entities\AdmissionTypes":             {"v3": r"App\Models\AdmissionType",               "transform": "generic"},
-    r"Ignite\Inpatient\Entities\AdmissionType":              {"v3": r"App\Models\AdmissionType",               "transform": "generic"},
-    r"Ignite\Inpatient\Entities\DischargeTypes":             {"v3": r"App\Models\DischargeType",               "transform": "generic"},
-    r"Ignite\Inpatient\Entities\DischargeType":              {"v3": r"App\Models\DischargeType",               "transform": "generic"},
+    r"Ignite\Inpatient\Entities\AdmissionTypes":             {"v3": r"App\Models\AdmissionType",               "transform": "inpatient_admission_type"},
+    r"Ignite\Inpatient\Entities\AdmissionType":              {"v3": r"App\Models\AdmissionType",               "transform": "inpatient_admission_type"},
+    r"Ignite\Inpatient\Entities\DischargeTypes":             {"v3": r"App\Models\DischargeType",               "transform": "inpatient_discharge_type"},
+    r"Ignite\Inpatient\Entities\DischargeType":              {"v3": r"App\Models\DischargeType",               "transform": "inpatient_discharge_type"},
 
     # ── TIER 2: Reception — patients root, then all children ─────────────────
     r"Ignite\Reception\Entities\Customers":                  {"v3": r"App\Models\Customer",                    "transform": "generic"},
@@ -421,10 +439,12 @@ NAMESPACE_MAP: dict[str, dict] = {
     r"Ignite\Evaluation\Entities\Visits":                    {"v3": r"App\Models\Visit",                       "transform": "reception_visit"},
     r"Ignite\Reception\Entities\PatientSchemes":             {"v3": r"App\Models\PatientInsurance",            "transform": "reception_patient_scheme"},
     r"Ignite\Reception\Entities\PatientScheme":              {"v3": r"App\Models\PatientInsurance",            "transform": "reception_patient_scheme"},
+    # V2's actual class for next of kin (reception_patients_nok)
+    r"Ignite\Reception\Entities\NextOfKin":                     {"v3": r"App\Models\PatientNextOfKin",               "transform": "reception_patient_nok"},
     r"Ignite\Reception\Entities\PatientNextOfKins":          {"v3": r"App\Models\PatientNextOfKin",            "transform": "generic"},
     r"Ignite\Reception\Entities\PatientNextOfKin":           {"v3": r"App\Models\PatientNextOfKin",            "transform": "generic"},
-    r"Ignite\Reception\Entities\PatientDocuments":           {"v3": r"App\Models\PatientDocument",             "transform": "generic"},
-    r"Ignite\Reception\Entities\PatientDocument":            {"v3": r"App\Models\PatientDocument",             "transform": "generic"},
+    r"Ignite\Reception\Entities\PatientDocuments":           {"v3": r"App\Models\PatientDocument",             "transform": "reception_patient_document"},
+    r"Ignite\Reception\Entities\PatientDocument":            {"v3": r"App\Models\PatientDocument",             "transform": "reception_patient_document"},
     r"Ignite\Reception\Entities\PatientDependants":          {"v3": r"App\Models\PatientDependant",            "transform": "generic"},
     r"Ignite\Reception\Entities\PatientDependant":           {"v3": r"App\Models\PatientDependant",            "transform": "generic"},
     r"Ignite\Reception\Entities\PatientGuarantors":          {"v3": r"App\Models\PatientGuarantor",            "transform": "generic"},
@@ -439,6 +459,9 @@ NAMESPACE_MAP: dict[str, dict] = {
     r"Ignite\Reception\Entities\PatientConsent":             {"v3": r"App\Models\PatientConsent",              "transform": "generic"},
     r"Ignite\Reception\Entities\MorgueAdmissions":           {"v3": r"App\Models\MorgueAdmission",             "transform": "generic"},
     r"Ignite\Reception\Entities\MorgueAdmission":            {"v3": r"App\Models\MorgueAdmission",             "transform": "generic"},
+    # V2 actually keeps visit destinations under Evaluation (evaluation_visit_destinations)
+    r"Ignite\Evaluation\Entities\VisitDestinations":         {"v3": r"App\Models\VisitDestination",            "transform": "evaluation_visit_destination"},
+    r"Ignite\Evaluation\Entities\VisitDestination":          {"v3": r"App\Models\VisitDestination",            "transform": "evaluation_visit_destination"},
     r"Ignite\Reception\Entities\VisitDestinations":          {"v3": r"App\Models\VisitDestination",            "transform": "generic"},
     r"Ignite\Reception\Entities\VisitDestination":           {"v3": r"App\Models\VisitDestination",            "transform": "generic"},
     r"Ignite\Reception\Entities\VisitConsultants":           {"v3": r"App\Models\VisitConsultant",             "transform": "generic"},
@@ -499,11 +522,21 @@ NAMESPACE_MAP: dict[str, dict] = {
     r"Ignite\Evaluation\Entities\Investigation":             {"v3": r"App\Models\Investigation",               "transform": "generic"},
     r"Ignite\Evaluation\Entities\InvestigationResults":      {"v3": r"App\Models\InvestigationResult",         "transform": "evaluation_inv_result"},
     r"Ignite\Evaluation\Entities\InvestigationResult":       {"v3": r"App\Models\InvestigationResult",         "transform": "evaluation_inv_result"},
+    # evaluation-service `samples` (lab samples: patient_id, visit_id, type …)
+    r"Ignite\Evaluation\Entities\Samples":                   {"v3": r"App\Models\Sample",                      "transform": "evaluation_sample"},
+    r"Ignite\Evaluation\Entities\Sample":                    {"v3": r"App\Models\Sample",                      "transform": "evaluation_sample"},
+    # inp_discharge_requests.admission_id → inp_admissions.id (tier 3). Kept
+    # in tier 4 so they land before the discharges that point at them (tier 5).
+    r"Ignite\Inpatient\Entities\DischargeRequests":          {"v3": r"App\Models\DischargeRequest",            "transform": "inpatient_discharge_request"},
+    r"Ignite\Inpatient\Entities\DischargeRequest":           {"v3": r"App\Models\DischargeRequest",            "transform": "inpatient_discharge_request"},
 
     # ── TIER 5: Inpatient vitals / notes (admissions must exist first) ────────
     # inp_vitals.admission_id → inp_admissions.id
     r"Ignite\Evaluation\Entities\Vitals":                    {"v3": r"App\Models\Vital",                       "transform": "inpatient_vital"},
     r"Ignite\Evaluation\Entities\Vital":                     {"v3": r"App\Models\Vital",                       "transform": "inpatient_vital"},
+    # inp_discharges.discharge_request_id → inp_discharge_requests.id (tier 4)
+    r"Ignite\Inpatient\Entities\Discharges":                 {"v3": r"App\Models\Discharge",                   "transform": "inpatient_discharge"},
+    r"Ignite\Inpatient\Entities\Discharge":                  {"v3": r"App\Models\Discharge",                   "transform": "inpatient_discharge"},
 
     # ── TIER 6: Finance transactional (patients + insurance must exist) ───────
     r"Ignite\Finance\Entities\PatientAccounts":              {"v3": r"App\Models\PatientAccount",              "transform": "generic"},
@@ -587,6 +620,23 @@ _GLOBAL_FK_RENAMES: dict[str, str] = {
 
 # Layer 2: per-transform-key table-specific renames
 _PER_KEY_RENAMES: dict[str, dict[str, str]] = {
+    "evaluation_visit_destination": {
+        # V2's department is empty on every migrated row; the destination's
+        # name ("Pharmacy", "Laboratory" …) is what's filled
+        "destination_name": "department_name",
+        "finish_at":        "completed_at",
+    },
+    "reception_patient_nok": {},
+    "reception_patient_document": {
+        "filename": "file_name",
+        "document": "file_path",
+        "mime":     "file_type",
+    },
+    "settings_clinic": {
+        "telephone":     "phone",
+        "town":          "city",
+        "facility_code": "code",
+    },
     "generic": {},
     "finance_invoice": {
         "visit": "visit_id",
@@ -642,6 +692,9 @@ _PER_KEY_RENAMES: dict[str, dict[str, str]] = {
         "os":       "left_eye_data",
     },
     "inventory_product": {
+        # V3's inventory_products table names the column generic_name (the
+        # gateway's describe still says `name`, but posting `name` 500s)
+        "name":      "generic_name",
         "bar_code":  "barcode",
         "category":  "category_id",
         "unit":      "unit_id",
@@ -684,15 +737,35 @@ _PER_KEY_RENAMES: dict[str, dict[str, str]] = {
     "eval_procedure_category": {
         "revenueAccount": "revenue_account",
     },
-    "eval_procedure": {},
+    # V3 procedures names the category FK plain `category` (the global FK
+    # rename turned V2's `category` into category_id)
+    "eval_procedure": {"category_id": "category", "is_active": "active",
+                       "departmentcode": "departmentCode"},
     "eval_sample_type": {},
     "settings_rebate": {},
     "inpatient_vital": {},               # admission_id FK remapped via _FK_REMAP
     "outpatient_vital": {},              # visit_id remapped via _FK_REMAP; patient_id injected below
     "inpatient_bed": {},                 # ward_id / bed_type_id FK remapped via _FK_REMAP
     "inpatient_admission": {},           # admission_type_id FK remapped via _FK_REMAP
+    "inpatient_admission_type": {},
     "inpatient_admission_request": {},   # preferred_ward_id / preferred_bed_type_id via _FK_REMAP
     "evaluation_prescription": {},       # prescribed_by dropped+reinjected as V3 user id below
+    "evaluation_sample": {},             # V2 Sample columns match V3 samples' fillable 1:1
+    "inpatient_discharge_type": {},
+    # V2 discharge requests are the clinical discharge summary; the sections
+    # with a V3 column of their own are renamed here, the rest are folded
+    # into discharge_notes (_PER_KEY_INJECT) so nothing is lost.
+    "inpatient_discharge_request": {
+        "principal":    "reason",                  # principal diagnosis
+        "conditions":   "discharge_summary",       # condition on discharge
+        "treatment":    "medications_prescribed",
+        "tca":          "follow_up_instructions",  # "to come again"
+        "user_id":      "requested_by",
+        "finalized_by": "reviewed_by",
+    },
+    "inpatient_discharge": {
+        "doctor_id": "discharged_by",
+    },
     "settings_user": {
         "username":   "email",
         "first_name": "first_name",
@@ -737,6 +810,59 @@ _PER_KEY_DROP_FIELDS: dict[str, list] = {
 # constraint only rules out dropping them, not hashing them. A hash is a
 # non-null string just like the raw garbled text was, and confirmed by
 # direct testing to be accepted the same way.
+# Per-key column whitelist, applied last: everything else is dropped. For
+# models where V2 carries many columns the V3 table doesn't have (unknown
+# columns make the gateway 500).
+_PER_KEY_KEEP_ONLY: dict[str, set[str]] = {
+    # region_id is required by core_facilities (passed through as V2's value)
+    "settings_clinic": {"name", "code", "type", "address", "city", "phone", "email",
+                        "status", "region_id", "created_at", "updated_at"},
+    # columns of reception-service's patient documents (gateway describe) + the FK
+    "reception_patient_document": {"patient_id", "title", "document_type", "description", "file_name",
+                                   "file_path", "file_type", "file_extension", "document_date", "notes"},
+    # V2 admissions arrive with the embedded doctor/ward/bed/bed_type records
+    # flattened into ~90 extra columns (doctor_profile_mpdb, ward_cash_cost …)
+    # that inp_admissions doesn't have. Keep the admission's own fields only.
+    "inpatient_admission": {"patient_id", "visit_id", "ward_id", "bed_id", "admission_type_id",
+                            "admission_request_id", "admitting_doctor_id", "admission_number",
+                            "admission_date", "admitted_at", "discharged_at", "reason", "cost",
+                            "days_admitted", "payment_mode", "external_doctor", "created_at", "updated_at"},
+    # columns of reception-service's patient_next_of_kin (gateway describe) + the FK
+    "reception_patient_nok": {"patient_id", "first_name", "middle_name", "last_name", "relationship",
+                              "relationship_id", "id_no", "mobile", "alt_phone", "email", "address",
+                              "city", "county", "is_primary", "is_emergency_contact"},
+    # reception-service visit_destination columns we can fill reliably. Left
+    # out: destination_id/department_id (V2 ids, their lookups aren't
+    # migrated), status (V3's allowed values unknown), created_by (V2 users
+    # don't exist in V3).
+    "evaluation_visit_destination": {"visit_id", "department_name", "arrived_at", "completed_at", "notes"},
+    # columns of inpatient-service's inp_admission_types (gateway describe)
+    "inpatient_admission_type": {"code", "name", "description", "deposit", "associated_procedure"},
+    # columns of evaluation-service's `procedures` table (gateway describe)
+    "eval_procedure": {"name", "code", "category", "gender", "description", "sub_title", "td_spacing",
+                       "use_bio_ref_flagging", "default_comment", "default_result", "active",
+                       "has_quick_results", "sub_category_id", "departmentCode", "tag", "revenue_tag"},
+    # evaluation-service App\Models\Sample::$fillable (minus organization_id,
+    # set by the gateway). vtm_no is left out: V2's is empty on every row and
+    # V3 generates one per org when it's missing.
+    "evaluation_sample": {"patient_id", "visit_id", "type_id", "details", "user_id", "collection_method_id",
+                          "collection_point", "queued", "queued_by", "queued_at", "collection_point_name",
+                          "result", "region_id", "clinic_id", "request_type", "tobe_contacted", "status",
+                          "received_on", "investigation_id", "procedure_id", "created_at", "updated_at"},
+    # inpatient-service inp_discharge_types (gateway describe copy_safe)
+    "inpatient_discharge_type": {"code", "name", "description"},
+    # inpatient-service inp_discharge_requests (create + 2026-06/09 migrations)
+    "inpatient_discharge_request": {"request_number", "admission_id", "visit_id", "discharge_type_id",
+                                    "reason", "discharge_notes", "requested_by", "requested_at", "status",
+                                    "discharge_summary", "follow_up_instructions", "medications_prescribed",
+                                    "reviewed_by", "reviewed_at", "created_at", "updated_at"},
+    # inpatient-service inp_discharges (create migration)
+    "inpatient_discharge": {"discharge_number", "admission_id", "discharge_request_id", "discharge_type_id",
+                            "discharge_date", "discharged_by", "discharge_diagnosis", "discharge_summary",
+                            "treatment_summary", "procedures_performed", "discharge_instructions",
+                            "follow_up_instructions", "approved_by", "approved_at", "created_at", "updated_at"},
+}
+
 _PER_KEY_CORRUPTION_WATCH: dict[str, list] = {
     "reception_patient": ["id_no", "mobile", "email", "address",
                           "middle_name", "telephone", "alt_number",
@@ -753,11 +879,17 @@ _PER_KEY_FACILITY_SCOPE_FIELDS: dict[str, list] = {
 
 # Fields that must be non-null for a record to be sent; records missing them are skipped
 _PER_KEY_REQUIRED_FIELDS: dict[str, list] = {
+    "inpatient_admission":     ["admitting_doctor_id"],
     "settings_insurance":      ["name"],
     "eval_procedure_category": ["name"],
     "settings_user":           ["email"],
     "evaluation_inv_result":   ["investigation_id"],
     "outpatient_vital":        ["patient_id"],
+    # NOT NULL in V3. The *_by columns are V3 user ids: like admissions'
+    # admitting doctor, they resolve only once the backend has created the
+    # V2 staff as V3 users (and the users id map knows them).
+    "inpatient_discharge_request": ["admission_id", "discharge_type_id", "requested_by"],
+    "inpatient_discharge":         ["admission_id", "discharge_type_id", "discharged_by"],
 }
 
 # Default values to inject when V3 returns a NOT NULL constraint violation for a column
@@ -813,12 +945,124 @@ def _clean_photo_path(v) -> Any:
 # Each entry: field_name → fn(record_dict) → value.
 # Only called when the field is absent or None in the record after all renames.
 # Use this (not _V3_NULL_DEFAULTS) whenever the default must be unique per row.
+_v3_users_by_email: dict[str, int] | None = None
+_v3_users_lock = threading.Lock()
+
+
+def _v3_user_id_by_email(email) -> int | None:
+    """V3 user id for an email (case-insensitive), from the destination org's
+    users — read once per process. V3 users can't be inserted through the
+    gateway, so V2 staff only resolve once the backend has created them."""
+    global _v3_users_by_email
+    if not email:
+        return None
+    with _v3_users_lock:
+        if _v3_users_by_email is None:
+            org_cfg = v3_login_org_cfg()
+            users = _fetch_v3_records(_v3_alias(r"App\Models\User"), org_cfg, service_name="core")
+            _v3_users_by_email = {str(u["email"]).strip().lower(): u["id"] for u in users if u.get("email")}
+            log.info("Loaded %d V3 users for doctor/staff lookups", len(_v3_users_by_email))
+    return _v3_users_by_email.get(str(email).strip().lower())
+
+
+def _v3_user_for_v2_id(v2_user_id) -> int | None:
+    """V3 user id for a V2 user id, via the users id map — None until the
+    backend has created that V2 staff member as a V3 user and the map knows
+    them (no guessing: a wrong *_by would misattribute clinical records)."""
+    if v2_user_id in (None, "", 0, "0"):
+        return None
+    key = int(v2_user_id) if str(v2_user_id).isdigit() else v2_user_id
+    return _id_map.get(_v3_alias(r"App\Models\User"), {}).get(key)
+
+
+def _v2_admission_for_visit(visit_id) -> int | None:
+    """V2 admission id of a V2 visit (persisted visit→admission map). V2
+    discharge requests only carry visit_id; V3 requires admission_id."""
+    try:
+        return _visit_admission_map.get(int(visit_id))
+    except (TypeError, ValueError):
+        return None
+
+
+# Sections of a V2 discharge request with no V3 column of their own —
+# folded, labelled, into inp_discharge_requests.discharge_notes.
+_DISCHARGE_REQUEST_SECTIONS = [
+    ("Presenting complaints", "complains"), ("General examination", "general_examination"),
+    ("CVS", "cvs"), ("RS", "rs"), ("PA", "pa"), ("CNS", "cns"), ("ENT", "ent"), ("MSS", "mss"),
+    ("Investigations", "investigations"), ("Procedures", "procedures"), ("Other", "other"),
+]
+_DISCHARGE_REQUEST_STATUSES = {"pending", "approved", "rejected", "discharged", "cancelled"}
+_NOT_RECORDED = "Not recorded in V2"
+
+
+def _discharge_request_notes(r: dict) -> str | None:
+    parts = [f"{label}: {str(r[k]).strip()}" for label, k in _DISCHARGE_REQUEST_SECTIONS
+             if r.get(k) is not None and str(r[k]).strip()]
+    return "\n\n".join(parts) or None
+
+
 _PER_KEY_INJECT: dict[str, dict[str, Any]] = {
+    "inpatient_discharge_type": {
+        # inp_discharge_types needs a code (unique per org); V2 types only have a name
+        "code": lambda r: "_".join(str(r.get("name") or f"TYPE {r.get('id')}").upper().split()),
+    },
+    "inpatient_discharge_request": {
+        # V2 admission id here; remapped to the V3 admission at post time
+        "admission_id":    lambda r: _v2_admission_for_visit(r.get("visit_id")),
+        # unique in V3, absent in V2. source_schema keeps two facilities'
+        # request #12 apart.
+        "request_number":  lambda r: f"DRQ-{r.get('source_schema') or 'v2'}-{r.get('id')}",
+        "requested_at":    lambda r: r.get("created_at"),
+        "status":          lambda r: (r.get("discharge_status")
+                                      if r.get("discharge_status") in _DISCHARGE_REQUEST_STATUSES
+                                      else "pending"),
+        "discharge_notes": _discharge_request_notes,
+    },
+    "inpatient_discharge": {
+        "discharge_number":       lambda r: f"DIS-{r.get('source_schema') or 'v2'}-{r.get('id')}",
+        "discharge_date":         lambda r: r.get("created_at"),
+        # V2 discharges carry no clinical text — it lives on their discharge
+        # request (joined in as request_* by snowflake_to_v3_migration). These
+        # three are NOT NULL in V3, hence the explicit placeholder.
+        "discharge_diagnosis":    lambda r: r.get("request_principal") or _NOT_RECORDED,
+        "discharge_summary":      lambda r: r.get("request_conditions") or _NOT_RECORDED,
+        "discharge_instructions": lambda r: r.get("request_tca") or _NOT_RECORDED,
+        "follow_up_instructions": lambda r: r.get("request_tca"),
+        "treatment_summary":      lambda r: r.get("request_treatment"),
+        "procedures_performed":   lambda r: r.get("request_procedures"),
+        "approved_at":            lambda r: r.get("updated_at") if r.get("approved_by") else None,
+    },
+    "evaluation_visit_destination": {
+        "arrived_at": lambda r: r.get("begin_at") or r.get("created_at"),
+    },
+    "reception_patient_document": {
+        # V2 stores the literal string "null" (or "2") as document_type and
+        # V3 org 4 has no document types set up — agreed default for all.
+        "document_type":  lambda r: "medical_report",
+        "title":          lambda r: r.get("file_name"),
+        "file_extension": lambda r: (Path(str(r.get("file_name") or "")).suffix.lstrip(".").lower() or None),
+        "file_type":      lambda r: mimetypes.guess_type(str(r.get("file_name") or ""))[0],
+        "document_date":  lambda r: r.get("created_at"),
+    },
+    "inpatient_admission_type": {
+        # inp_admission_types needs a code; V2 types only have a name
+        "code": lambda r: "_".join(str(r.get("name") or f"TYPE {r.get('id')}").upper().split()),
+    },
+    "settings_clinic": {
+        # code is required on core_facilities; V2 facility_code is often null
+        "code":   lambda r: r.get("name"),
+        "type":   lambda r: "medical",
+        "status": lambda r: "active",
+    },
     "inpatient_admission_request": {
         # V3 inp_admission_requests requires a unique request_number; V2 had none.
         "request_number": lambda r: f"REQ-{r.get('id', 'unknown')}",
     },
     "inpatient_admission": {
+        # V2 doctor (embedded, flattened as doctor_email) -> V3 user by email.
+        # None until the backend has created the doctor as a V3 user; the
+        # required-field check then holds the admission back for a later run.
+        "admitting_doctor_id": lambda r: _v3_user_id_by_email(r.get("doctor_email")),
         # V3 inp_admissions requires a unique admission_number; V2 had none.
         "admission_number": lambda r: f"ADM-{r.get('id', 'unknown')}",
         # Fall back to created_at if V2 didn't carry an explicit admission_date.
@@ -867,6 +1111,21 @@ _PER_KEY_INJECT: dict[str, dict[str, Any]] = {
 }
 
 _PER_KEY_COERCIONS: dict[str, dict[str, Any]] = {
+    # V2 user ids → V3 user ids (None when V3 doesn't have that user yet:
+    # required *_by fields then hold the record back, optional ones go null)
+    "inpatient_discharge_request": {
+        "requested_by": _v3_user_for_v2_id,
+        "reviewed_by":  _v3_user_for_v2_id,
+    },
+    "inpatient_discharge": {
+        "discharged_by": _v3_user_for_v2_id,
+        "approved_by":   _v3_user_for_v2_id,
+    },
+    "reception_patient_document": {
+        # V2 holds the literal string "null" (truthy, so the injection default
+        # never fires) or "2" — always replace with the agreed default.
+        "document_type": lambda v: "medical_report",
+    },
     "reception_patient": {
         "photo": _clean_photo_path,
     },
@@ -999,11 +1258,22 @@ def transform_record(record: dict, transform_key: str, org_cfg: dict, facility: 
     # ciphertext across multiple fields/records) hash identically, which is
     # a free signal for a backend investigation. Every replacement is also
     # logged so affected patients are a trackable backlog, not silent loss.
+    # V2 now decrypts PII at source (confirmed 2026-10-07: names/phones arrive
+    # as plain text), so values go to V3 exactly as received. A value that is
+    # still visibly corrupted is logged for follow-up but no longer replaced;
+    # set ENCODE_CORRUPTED_PII=1 to bring back the encoded placeholder.
+    # Garbled values (V2 data that was corrupted before decryption) are sent
+    # as null; the encoded form is stashed under GARBLED_KEY so the poster can
+    # retry once with it if V3 refuses the null. GARBLED_KEY never reaches V3.
     for field in _PER_KEY_CORRUPTION_WATCH.get(tk, []):
         v = out.get(field)
         if isinstance(v, str) and "�" in v:
             _record_pii_corruption(facility, tk, record, field, v)
-            out[field] = _encode_corrupted_value(v)
+            if ENCODE_CORRUPTED_PII:
+                out[field] = _encode_corrupted_value(v)
+            else:
+                out.setdefault(GARBLED_KEY, {})[field] = _encode_corrupted_value(v)
+                out[field] = None
 
     # 5. Per-key coercions
     coercions = _PER_KEY_COERCIONS.get(tk, {})
@@ -1034,6 +1304,12 @@ def transform_record(record: dict, transform_key: str, org_cfg: dict, facility: 
     for field, fn in _PER_KEY_INJECT.get(tk, {}).items():
         if not out.get(field):
             out[field] = fn(out)
+
+    keep = _PER_KEY_KEEP_ONLY.get(tk)
+    if keep is not None:
+        # id / uuid always survive: they key progress tracking and the id map
+        # (the gateway strips id from inserts itself)
+        out = {k: v for k, v in out.items() if k in keep or k in ("id", "uuid")}
 
     # 6. Required-field validation — skip records missing non-null required fields
     for field in _PER_KEY_REQUIRED_FIELDS.get(tk, []):
@@ -1681,8 +1957,13 @@ def _post_to_v3_batch(
     backoff_factor: int = 2,
     service_override: str | None = None,
     alias_override: str | None = None,
+    match_on: str | None = None,
 ) -> None:
     """POST a single record object to the V3 gateway. Retries on 429/5xx/401.
+
+    match_on: the column the gateway upserts on (default "uuid"). With a
+    match key present, a re-post updates the existing V3 row in place
+    (200 created:false) instead of inserting.
 
     service_override bypasses the alias→service discovery lookup — required
     whenever two services register the same model alias (e.g. "vital" exists
@@ -1700,8 +1981,16 @@ def _post_to_v3_batch(
     against database "evaluationmigrate", app "patient-evaluation-service")
     confirmed "visits" is the one the application actually uses.
     """
+    record       = {k: v for k, v in record.items() if k != GARBLED_KEY}
     alias        = alias_override or _v3_alias(v3_namespace)
     service_name = service_override or _alias_to_service.get(alias, "core")
+    # Facility-scoped models (the gateway's `facility` column, e.g. ward/bed's
+    # facility_id) must carry the DESTINATION facility: V2 rows hold the old
+    # system's facility id, which the gateway rejects with 403 "facility_id 1
+    # is not a facility you are assigned to".
+    facility_col = (_gateway_model_meta.get(alias) or {}).get("facility")
+    if facility_col and org_cfg.get("facility_id") is not None:
+        record = {**record, facility_col: org_cfg["facility_id"]}
     body = {
         "action":                "insert",
         "model":                 alias,
@@ -1710,13 +1999,13 @@ def _post_to_v3_batch(
         # rejects a repeat outright; with it, a re-run updates in place
         # (200 created:false) instead of duplicating, which is what makes a
         # bulk load restartable.
-        "match_on":              "uuid",
+        "match_on":              match_on or "uuid",
         "data":                  record,  # gateway expects a single object, not an array
     }
-    # The uuid comes from V2. A record without one must not be sent with
-    # match_on=uuid — the gateway would match it against an existing row and
+    # A record without a value for the match column must not be sent with
+    # match_on — the gateway would match it against an existing row and
     # overwrite that row (200 created:false) instead of inserting.
-    if not record.get("uuid"):
+    if not record.get(body["match_on"]):
         body.pop("match_on")
 
     attempt, wait, _patched = 0, default_retry_wait, False
@@ -1844,7 +2133,7 @@ def _post_to_v3_batch(
                 # ~60s after the POST). Back off hard instead of re-hammering it
                 # every few seconds. Retrying is safe for records with a uuid:
                 # match_on=uuid turns a post that did land into an update.
-                if r.status_code == 504 and not record.get("uuid"):
+                if r.status_code == 504 and "match_on" not in body:
                     # nginx timed out but the insert may still have landed.
                     # Without a uuid there is no match_on to make a retry
                     # safe, so a retry could insert it twice. Park it instead.
@@ -1905,7 +2194,7 @@ def _post_to_v3_batch(
             # and may have been applied. (Timeouts on the token login, or
             # connect errors, mean it was never sent — safe to retry.)
             req = getattr(e, "request", None)
-            if (isinstance(e, ReadTimeout) and not record.get("uuid")
+            if (isinstance(e, ReadTimeout) and "match_on" not in body
                     and req is not None and str(req.url).rstrip("/").endswith("/v1/gateway")):
                 _uncertain_dead_letter(v3_namespace, record, f"read timeout: {e}")
             if attempt >= max_retries:
@@ -2124,9 +2413,10 @@ _inserted_ids: dict[str, set] = {}  # job_key → set of inserted V2 ids
 
 
 def _load_record_progress() -> None:
-    global _inserted_ids
+    global _inserted_ids, _record_progress_mtime
     if RECORD_PROGRESS_FILE.exists():
         try:
+            _record_progress_mtime = RECORD_PROGRESS_FILE.stat().st_mtime_ns
             data = json.loads(RECORD_PROGRESS_FILE.read_text())
             _inserted_ids = {k: set(v) for k, v in data.items()}
             total = sum(len(v) for v in _inserted_ids.values())
@@ -2148,9 +2438,41 @@ def _record_inserted(job_key: str, record_id) -> bool:
 _record_flush_counter = 0
 
 
+_record_progress_mtime: int | None = None
+
+
+def _atomic_write(path: Path, text: str) -> int:
+    """Write via a temp file + rename, so a run killed mid-write can't leave
+    a truncated file (which the loaders would treat as empty). Returns the
+    new mtime_ns."""
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    tmp.write_text(text)
+    os.replace(tmp, path)
+    return path.stat().st_mtime_ns
+
+
+def _changed_on_disk(path: Path, last_mtime: int | None) -> bool:
+    try:
+        return path.stat().st_mtime_ns != last_mtime
+    except FileNotFoundError:
+        return False
+
+
 def _flush_record_progress() -> None:
-    RECORD_PROGRESS_FILE.write_text(json.dumps(
-        {k: sorted(v) for k, v in _inserted_ids.items()},
+    """Caller holds _record_progress_lock. If another process (the DAG, a
+    second CLI run) wrote the file since we last did, union its ids in first
+    — ids are only ever added, and writing just our own view would erase
+    theirs, and for records without a uuid an erased id means a duplicate
+    insert on the next run."""
+    global _record_progress_mtime
+    if _changed_on_disk(RECORD_PROGRESS_FILE, _record_progress_mtime):
+        try:
+            for k, ids in json.loads(RECORD_PROGRESS_FILE.read_text()).items():
+                _inserted_ids.setdefault(k, set()).update(ids)
+        except (OSError, ValueError) as e:
+            log.warning("Could not merge %s before writing: %s", RECORD_PROGRESS_FILE.name, e)
+    _record_progress_mtime = _atomic_write(RECORD_PROGRESS_FILE, json.dumps(
+        {k: sorted(v, key=str) for k, v in _inserted_ids.items()},
         indent=2,
     ))
 
@@ -2245,7 +2567,7 @@ _FK_REMAP: dict[str, dict[str, str]] = {
     },
     # procedures.category_id → procedure_categories V3 id
     "eval_procedure": {
-        "category_id": "procedure_categories",
+        "category": "procedure_categories",
     },
     # sample_types.procedure_id → procedures V3 id
     "eval_sample_type": {
@@ -2273,6 +2595,15 @@ _FK_REMAP: dict[str, dict[str, str]] = {
     "inpatient_admission": {
         "admission_type_id":    "admission_type",
         "admission_request_id": "admission_request",
+        # without these the V2 ids went out unchanged (patient 271806, visit
+        # 309215 …) — ids that don't exist, or are other records, in V3
+        "patient_id":           "patient",
+        "visit_id":             "visit",
+        "ward_id":              "ward",
+        "bed_id":               "bed",
+    },
+    "evaluation_visit_destination": {
+        "visit_id": "visit",
     },
     # inp_vitals.admission_id → inp_admissions.id  (THE critical blocker)
     "inpatient_vital": {
@@ -2339,6 +2670,7 @@ _NS_FK_REMAP: dict[str, dict[str, str]] = {
 
     # ── Reception: patient children ──────────────────────────────────────────
     r"App\Models\Appointment":      {"appointment_category_id": "appointment_category"},
+    r"App\Models\PatientDocument":  {"patient_id": "patient"},
     r"App\Models\PatientFollowup":  {"patient_id": "patient",  "visit_id": "visit"},
     r"App\Models\PatientGuarantor": {"patient_id": "patient"},
     r"App\Models\PatientNextOfKin": {"patient_id": "patient"},
@@ -2360,7 +2692,8 @@ _NS_FK_REMAP: dict[str, dict[str, str]] = {
     # own field is "visit" — moved to _FK_REMAP["evaluation_prescription"]
     # above, which is keyed correctly and takes precedence anyway.
     r"App\Models\EyeExam":          {"visit_id": "visit"},
-    r"App\Models\Sample":           {"visit_id": "visit"},
+    r"App\Models\Sample":           {"patient_id": "patient", "visit_id": "visits",
+                                     "investigation_id": "investigations"},
     r"App\Models\Diagnosis":        {"visit_id": "visit"},
 
     # ── Evaluation reference chain ────────────────────────────────────────────
@@ -2386,6 +2719,14 @@ _NS_FK_REMAP: dict[str, dict[str, str]] = {
 
     # ── Inpatient ─────────────────────────────────────────────────────────────
     r"App\Models\WardCharge":       {"ward_id": "ward", "charge_id": "charge"},
+    # Declared here rather than in _FK_REMAP on purpose: _ensure_id_maps
+    # live-syncs every empty _FK_REMAP alias from the V2 API (one ~20s
+    # request per page), and the admission / discharge_type maps stay empty
+    # until those tables are migrated — these records just wait meanwhile.
+    r"App\Models\DischargeRequest": {"admission_id": "admission", "visit_id": "visits",
+                                     "discharge_type_id": "discharge_type"},
+    r"App\Models\Discharge":        {"admission_id": "admission", "discharge_type_id": "discharge_type",
+                                     "discharge_request_id": "discharge_request"},
 
     # ── Patient account ───────────────────────────────────────────────────────
     r"App\Models\PatientAccount":   {"patient_id": "patient"},
@@ -2393,9 +2734,10 @@ _NS_FK_REMAP: dict[str, dict[str, str]] = {
 
 
 def _load_id_map() -> None:
-    global _id_map
+    global _id_map, _id_map_mtime
     if ID_MAP_FILE.exists():
         try:
+            _id_map_mtime = ID_MAP_FILE.stat().st_mtime_ns
             raw = json.loads(ID_MAP_FILE.read_text())
             # Keys are stored as strings in JSON; convert back to int where possible
             _id_map = {
@@ -2412,10 +2754,29 @@ def _load_id_map() -> None:
         _id_map = {}
 
 
+_id_map_mtime: int | None = None
+
+
+def _write_id_map() -> None:
+    """Caller holds _id_map_lock. Same merge-then-atomic-write as
+    _flush_record_progress: entries another process added since our last
+    write are kept (ours win on conflict), instead of being overwritten."""
+    global _id_map_mtime
+    if _changed_on_disk(ID_MAP_FILE, _id_map_mtime):
+        try:
+            for alias, mapping in json.loads(ID_MAP_FILE.read_text()).items():
+                mine = _id_map.setdefault(alias, {})
+                for k, v in mapping.items():
+                    mine.setdefault(int(k) if k.isdigit() else k, v)
+        except (OSError, ValueError) as e:
+            log.warning("Could not merge %s before writing: %s", ID_MAP_FILE.name, e)
+    _id_map_mtime = _atomic_write(ID_MAP_FILE, json.dumps(_id_map, indent=2))
+
+
 def _store_id_mapping(alias: str, v2_id, v3_id) -> None:
     with _id_map_lock:
         _id_map.setdefault(alias, {})[v2_id] = v3_id
-        ID_MAP_FILE.write_text(json.dumps(_id_map, indent=2))
+        _write_id_map()
 
 
 def _store_id_mappings(alias: str, pairs: list[tuple]) -> None:
@@ -2426,7 +2787,7 @@ def _store_id_mappings(alias: str, pairs: list[tuple]) -> None:
         m = _id_map.setdefault(alias, {})
         for v2_id, v3_id in pairs:
             m[v2_id] = v3_id
-        ID_MAP_FILE.write_text(json.dumps(_id_map, indent=2))
+        _write_id_map()
 
 
 def _existing_v3_uuids(alias: str, org_cfg: dict, service_name: str | None = None) -> dict[str, int]:

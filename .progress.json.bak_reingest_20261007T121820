@@ -1,0 +1,1136 @@
+{
+  "kisumu": {
+    "completed": {
+      "core|core_approval_action_logs": {
+        "at": "2026-05-18T08:54:28.841972+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Core/table=core_approval_action_logs/namespace=Ignite_Core_Entities_ApprovalActionLogs/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "core|core_approval_categories": {
+        "at": "2026-05-18T08:54:26.626656+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Core/table=core_approval_categories/namespace=Ignite_Core_Entities_ApprovalCategories/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "core|core_approvals": {
+        "at": "2026-05-18T08:54:30.440481+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Core/table=core_approvals/namespace=Ignite_Core_Entities_Approvals/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "core|core_dashboard_widgets": {
+        "at": "2026-05-18T08:54:20.325703+00:00",
+        "s3_key": null
+      },
+      "core|core_email_groups": {
+        "at": "2026-05-18T08:54:31.989148+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Core/table=core_email_groups/namespace=Ignite_Core_Entities_EmailGroups/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "core|core_emails": {
+        "at": "2026-05-18T08:54:20.940802+00:00",
+        "s3_key": null
+      },
+      "core|core_external_app_tokens": {
+        "at": "2026-05-18T08:54:20.300049+00:00",
+        "s3_key": null
+      },
+      "core|core_mirth": {
+        "at": "2026-05-18T08:54:20.319901+00:00",
+        "s3_key": null
+      },
+      "core|core_notifications": {
+        "at": "2026-05-18T09:04:13.136414+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Core/table=core_notifications/namespace=Ignite_Core_Entities_Notifications/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "core|system_logs": {
+        "at": "2026-05-18T08:54:36.292192+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Core/table=system_logs/namespace=Ignite_Core_Entities_SystemLogs/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "evaluation|doctor_notes_view_logs": {
+        "at": "2026-05-18T08:55:14.560055+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Evaluation/table=doctor_notes_view_logs/namespace=Ignite_Evaluation_Entities_DoctorNotesViewLogs/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "evaluation|eabl_assessment_wheels": {
+        "at": "2026-05-18T08:54:45.379684+00:00",
+        "s3_key": null
+      },
+      "evaluation|evaluation_age_groups": {
+        "at": "2026-05-18T08:54:34.817079+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Evaluation/table=evaluation_age_groups/namespace=Ignite_Evaluation_Entities_AgeGroups/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "evaluation|evaluation_audio_recordings": {
+        "at": "2026-05-18T08:54:22.509426+00:00",
+        "s3_key": null
+      },
+      "evaluation|evaluation_chits": {
+        "at": "2026-05-18T08:54:25.174938+00:00",
+        "s3_key": null
+      },
+      "evaluation|evaluation_consumable_types": {
+        "at": "2026-05-18T08:54:37.643318+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Evaluation/table=evaluation_consumable_types/namespace=Ignite_Evaluation_Entities_ConsumableTypes/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "evaluation|evaluation_consumables": {
+        "at": "2026-05-18T09:10:44.710749+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Evaluation/table=evaluation_consumables/namespace=Ignite_Evaluation_Entities_Consumables/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "evaluation|evaluation_covid_consent": {
+        "at": "2026-05-18T08:54:29.678258+00:00",
+        "s3_key": null
+      },
+      "evaluation|evaluation_critical_values": {
+        "at": "2026-05-18T08:54:39.247286+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Evaluation/table=evaluation_critical_values/namespace=Ignite_Evaluation_Entities_CriticalValues/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "evaluation|evaluation_dental_notes": {
+        "at": "2026-05-18T08:54:31.147072+00:00",
+        "s3_key": null
+      },
+      "evaluation|evaluation_diagnosis_codes": {
+        "at": "2026-05-18T08:54:31.938312+00:00",
+        "s3_key": null
+      },
+      "evaluation|evaluation_dimension_categories": {
+        "at": "2026-05-18T08:54:43.026652+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Evaluation/table=evaluation_dimension_categories/namespace=Ignite_Evaluation_Entities_DimensionCategories/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "evaluation|evaluation_dimensions": {
+        "at": "2026-05-18T08:54:41.636704+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Evaluation/table=evaluation_dimensions/namespace=Ignite_Evaluation_Entities_Dimensions/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "evaluation|evaluation_discount_transactions": {
+        "at": "2026-05-18T08:54:36.298255+00:00",
+        "s3_key": null
+      },
+      "evaluation|evaluation_dispensing": {
+        "at": "2026-05-18T09:03:54.139929+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Evaluation/table=evaluation_dispensing/namespace=Ignite_Evaluation_Entities_Dispensing/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "evaluation|evaluation_dispensing_details": {
+        "at": "2026-05-18T09:04:03.697934+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Evaluation/table=evaluation_dispensing_details/namespace=Ignite_Evaluation_Entities_DispensingDetails/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "evaluation|evaluation_doctor_notes": {
+        "at": "2026-05-18T08:58:26.406664+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Evaluation/table=evaluation_doctor_notes/namespace=Ignite_Evaluation_Entities_DoctorNotes/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "evaluation|evaluation_dosh13_forms": {
+        "at": "2026-05-18T08:54:44.601782+00:00",
+        "s3_key": null
+      },
+      "evaluation|evaluation_drawings": {
+        "at": "2026-05-18T08:54:45.725012+00:00",
+        "s3_key": null
+      },
+      "evaluation|evaluation_eabl_spine_screenings": {
+        "at": "2026-05-18T08:54:46.042541+00:00",
+        "s3_key": null
+      },
+      "evaluation|evaluation_exam": {
+        "at": "2026-05-18T08:54:46.493617+00:00",
+        "s3_key": null
+      },
+      "evaluation|evaluation_examination_review_details": {
+        "at": "2026-05-18T08:54:51.484826+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Evaluation/table=evaluation_examination_review_details/namespace=Ignite_Evaluation_Entities_ExaminationReviewDetails/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "evaluation|evaluation_examination_reviews": {
+        "at": "2026-05-18T08:54:53.050379+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Evaluation/table=evaluation_examination_reviews/namespace=Ignite_Evaluation_Entities_ExaminationReviews/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "evaluation|evaluation_external_order_details": {
+        "at": "2026-05-18T08:54:52.732450+00:00",
+        "s3_key": null
+      },
+      "evaluation|evaluation_external_orders": {
+        "at": "2026-05-18T08:54:54.661618+00:00",
+        "s3_key": null
+      },
+      "evaluation|evaluation_eye_exams": {
+        "at": "2026-05-18T08:54:57.234271+00:00",
+        "s3_key": null
+      },
+      "evaluation|evaluation_eyewear_prescriptions": {
+        "at": "2026-05-18T08:55:05.959449+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Evaluation/table=evaluation_eyewear_prescriptions/namespace=Ignite_Evaluation_Entities_EyewearPrescriptions/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "evaluation|evaluation_facilities": {
+        "at": "2026-05-18T08:55:04.238227+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Evaluation/table=evaluation_facilities/namespace=Ignite_Evaluation_Entities_Facilities/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "evaluation|evaluation_formula": {
+        "at": "2026-05-18T08:55:05.720786+00:00",
+        "s3_key": null
+      },
+      "evaluation|evaluation_icd10_categories": {
+        "at": "2026-05-18T08:55:11.505199+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Evaluation/table=evaluation_icd10_categories/namespace=Ignite_Evaluation_Entities_Icd10Categories/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "evaluation|evaluation_icd10_notes": {
+        "at": "2026-05-18T08:57:54.278643+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Evaluation/table=evaluation_icd10_notes/namespace=Ignite_Evaluation_Entities_Icd10Notes/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "evaluation|evaluation_icd10_sub_categories": {
+        "at": "2026-05-18T08:55:20.183683+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Evaluation/table=evaluation_icd10_sub_categories/namespace=Ignite_Evaluation_Entities_Icd10SubCategories/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "evaluation|evaluation_icd10_types": {
+        "at": "2026-05-18T08:55:28.566521+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Evaluation/table=evaluation_icd10_types/namespace=Ignite_Evaluation_Entities_Icd10Types/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "evaluation|evaluation_icd10_variations": {
+        "at": "2026-05-18T09:04:19.823161+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Evaluation/table=evaluation_icd10_variations/namespace=Ignite_Evaluation_Entities_Icd10Variations/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "evaluation|evaluation_integration_machines": {
+        "at": "2026-05-18T09:04:01.805750+00:00",
+        "s3_key": null
+      },
+      "evaluation|evaluation_investigation_analytics_group_procedures": {
+        "at": "2026-05-18T09:04:03.054545+00:00",
+        "s3_key": null
+      },
+      "evaluation|evaluation_investigation_analytics_groups": {
+        "at": "2026-05-18T09:04:04.669866+00:00",
+        "s3_key": null
+      },
+      "evaluation|evaluation_investigation_approval_statuses": {
+        "at": "2026-05-18T09:04:11.357830+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Evaluation/table=evaluation_investigation_approval_statuses/namespace=Ignite_Evaluation_Entities_InvestigationApprovalStatuses/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "evaluation|evaluation_investigation_approvals": {
+        "at": "2026-05-18T09:12:37.932707+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Evaluation/table=evaluation_investigation_approvals/namespace=Ignite_Evaluation_Entities_InvestigationApprovals/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "evaluation|evaluation_investigation_items_consumed": {
+        "at": "2026-05-18T09:04:09.894830+00:00",
+        "s3_key": null
+      },
+      "evaluation|evaluation_investigation_result_details": {
+        "at": "2026-05-18T10:57:32.258917+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Evaluation/table=evaluation_investigation_result_details/namespace=Ignite_Evaluation_Entities_InvestigationResultDetails/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "evaluation|evaluation_investigation_result_reviews": {
+        "at": "2026-05-18T09:04:22.713129+00:00",
+        "s3_key": null
+      },
+      "evaluation|evaluation_investigation_results": {
+        "at": "2026-05-18T09:09:14.712873+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Evaluation/table=evaluation_investigation_results/namespace=Ignite_Evaluation_Entities_InvestigationResults/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "evaluation|evaluation_lab_result_status_change": {
+        "at": "2026-05-18T09:09:08.553014+00:00",
+        "s3_key": null
+      },
+      "evaluation|evaluation_lab_test_additive": {
+        "at": "2026-05-18T09:09:17.048958+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Evaluation/table=evaluation_lab_test_additive/namespace=Ignite_Evaluation_Entities_LabTestAdditive/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "evaluation|evaluation_lab_test_categories": {
+        "at": "2026-05-18T09:09:23.939263+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Evaluation/table=evaluation_lab_test_categories/namespace=Ignite_Evaluation_Entities_LabTestCategories/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "evaluation|evaluation_lab_test_unit": {
+        "at": "2026-05-18T09:09:26.248134+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Evaluation/table=evaluation_lab_test_unit/namespace=Ignite_Evaluation_Entities_LabTestUnit/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "evaluation|evaluation_lost_sales": {
+        "at": "2026-05-18T09:09:26.663458+00:00",
+        "s3_key": null
+      },
+      "evaluation|evaluation_machine_code_mappings": {
+        "at": "2026-05-18T09:09:30.517833+00:00",
+        "s3_key": null
+      },
+      "evaluation|evaluation_machine_investigation_results": {
+        "at": "2026-05-18T09:09:29.135981+00:00",
+        "s3_key": null
+      },
+      "evaluation|evaluation_op_notes": {
+        "at": "2026-05-18T09:09:33.255176+00:00",
+        "s3_key": null
+      },
+      "evaluation|evaluation_package_details": {
+        "at": "2026-05-18T09:10:49.915410+00:00",
+        "s3_key": null
+      },
+      "evaluation|evaluation_packages": {
+        "at": "2026-05-18T09:10:47.677022+00:00",
+        "s3_key": null
+      },
+      "evaluation|evaluation_partner_institution": {
+        "at": "2026-05-18T09:10:54.120763+00:00",
+        "s3_key": null
+      },
+      "evaluation|evaluation_patient_images": {
+        "at": "2026-05-18T09:10:59.506272+00:00",
+        "s3_key": null
+      },
+      "evaluation|evaluation_patient_meta": {
+        "at": "2026-05-18T09:11:03.701459+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Evaluation/table=evaluation_patient_meta/namespace=Ignite_Evaluation_Entities_PatientMeta/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "evaluation|evaluation_pos_sale_details": {
+        "at": "2026-05-18T09:18:46.925403+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Evaluation/table=evaluation_pos_sale_details/namespace=Ignite_Evaluation_Entities_PosSaleDetails/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "evaluation|evaluation_preliminary": {
+        "at": "2026-05-18T09:12:40.516654+00:00",
+        "s3_key": null
+      },
+      "evaluation|evaluation_prescription_payments": {
+        "at": "2026-05-18T09:23:09.473234+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Evaluation/table=evaluation_prescription_payments/namespace=Ignite_Evaluation_Entities_PrescriptionPayments/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "evaluation|evaluation_prescription_type": {
+        "at": "2026-05-18T09:14:36.689087+00:00",
+        "s3_key": null
+      },
+      "evaluation|evaluation_procedure_categories": {
+        "at": "2026-05-18T09:14:42.037091+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Evaluation/table=evaluation_procedure_categories/namespace=Ignite_Evaluation_Entities_ProcedureCategories/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "evaluation|evaluation_procedure_category_templates": {
+        "at": "2026-05-18T09:14:44.072668+00:00",
+        "s3_key": null
+      },
+      "evaluation|evaluation_procedure_inventory_items": {
+        "at": "2026-05-18T09:14:47.690432+00:00",
+        "s3_key": null
+      },
+      "evaluation|evaluation_procedure_prices": {
+        "at": "2026-05-18T09:16:39.677419+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Evaluation/table=evaluation_procedure_prices/namespace=Ignite_Evaluation_Entities_ProcedurePrices/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "evaluation|evaluation_procedure_templates": {
+        "at": "2026-05-18T09:15:09.450586+00:00",
+        "s3_key": null
+      },
+      "evaluation|evaluation_procedures": {
+        "at": "2026-05-18T09:15:06.560284+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Evaluation/table=evaluation_procedures/namespace=Ignite_Evaluation_Entities_Procedures/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "evaluation|evaluation_reference_range": {
+        "at": "2026-05-18T09:15:23.775795+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Evaluation/table=evaluation_reference_range/namespace=Ignite_Evaluation_Entities_ReferenceRange/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "evaluation|evaluation_refraction": {
+        "at": "2026-05-18T09:15:35.207568+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Evaluation/table=evaluation_refraction/namespace=Ignite_Evaluation_Entities_Refraction/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "evaluation|evaluation_remarks": {
+        "at": "2026-05-18T09:15:43.253489+00:00",
+        "s3_key": null
+      },
+      "evaluation|evaluation_requested_samples": {
+        "at": "2026-05-18T09:15:45.597216+00:00",
+        "s3_key": null
+      },
+      "evaluation|evaluation_result_deliveries": {
+        "at": "2026-05-18T09:15:49.627081+00:00",
+        "s3_key": null
+      },
+      "evaluation|evaluation_result_details_reference_ranges": {
+        "at": "2026-05-18T10:07:04.910632+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Evaluation/table=evaluation_result_details_reference_ranges/namespace=Ignite_Evaluation_Entities_ResultDetailsReferenceRanges/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "evaluation|evaluation_sample_collection_methods": {
+        "at": "2026-05-18T09:18:52.105407+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Evaluation/table=evaluation_sample_collection_methods/namespace=Ignite_Evaluation_Entities_SampleCollectionMethods/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "evaluation|evaluation_sample_types": {
+        "at": "2026-05-18T09:19:01.798070+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Evaluation/table=evaluation_sample_types/namespace=Ignite_Evaluation_Entities_SampleTypes/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "evaluation|evaluation_samples": {
+        "at": "2026-05-18T09:19:15.189914+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Evaluation/table=evaluation_samples/namespace=Ignite_Evaluation_Entities_Samples/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "evaluation|evaluation_sensitivity": {
+        "at": "2026-05-18T09:19:03.799385+00:00",
+        "s3_key": null
+      },
+      "evaluation|evaluation_slit_lamp_exam": {
+        "at": "2026-05-18T09:19:17.291311+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Evaluation/table=evaluation_slit_lamp_exam/namespace=Ignite_Evaluation_Entities_SlitLampExam/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "evaluation|evaluation_sub_procedures": {
+        "at": "2026-05-18T09:19:27.109500+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Evaluation/table=evaluation_sub_procedures/namespace=Ignite_Evaluation_Entities_SubProcedures/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "evaluation|evaluation_systems_reviews": {
+        "at": "2026-05-18T09:19:29.379555+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Evaluation/table=evaluation_systems_reviews/namespace=Ignite_Evaluation_Entities_SystemsReviews/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "evaluation|evaluation_tags": {
+        "at": "2026-05-18T09:19:32.007025+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Evaluation/table=evaluation_tags/namespace=Ignite_Evaluation_Entities_Tags/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "evaluation|evaluation_template_lab": {
+        "at": "2026-05-18T09:19:34.557046+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Evaluation/table=evaluation_template_lab/namespace=Ignite_Evaluation_Entities_TemplateLab/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "evaluation|evaluation_tews_vitals": {
+        "at": "2026-05-18T09:19:33.879018+00:00",
+        "s3_key": null
+      },
+      "evaluation|evaluation_treatment_locations": {
+        "at": "2026-05-18T09:19:40.968759+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Evaluation/table=evaluation_treatment_locations/namespace=Ignite_Evaluation_Entities_TreatmentLocations/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "evaluation|evaluation_typed_prescriptions": {
+        "at": "2026-05-18T09:19:39.177164+00:00",
+        "s3_key": null
+      },
+      "evaluation|evaluation_visit_consultants": {
+        "at": "2026-05-18T09:22:25.885006+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Evaluation/table=evaluation_visit_consultants/namespace=Ignite_Evaluation_Entities_VisitConsultants/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "evaluation|evaluation_visit_metas": {
+        "at": "2026-05-18T09:22:29.934010+00:00",
+        "s3_key": null
+      },
+      "evaluation|evaluation_visits": {
+        "at": "2026-05-18T09:26:13.771167+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Evaluation/table=evaluation_visits/namespace=Ignite_Evaluation_Entities_Visits/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "evaluation|evaluation_vitals": {
+        "at": "2026-05-18T09:27:10.338059+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Evaluation/table=evaluation_vitals/namespace=Ignite_Evaluation_Entities_Vitals/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "evaluation|haemogram_titles": {
+        "at": "2026-05-18T08:55:13.037150+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Evaluation/table=haemogram_titles/namespace=Ignite_Evaluation_Entities_HaemogramTitles/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "evaluation|immunization_notes": {
+        "at": "2026-05-18T08:55:33.948305+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Evaluation/table=immunization_notes/namespace=Ignite_Evaluation_Entities_ImmunizationNotes/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "evaluation|inpatient_doctor_notes_view_logs": {
+        "at": "2026-05-18T09:20:11.750873+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Evaluation/table=inpatient_doctor_notes_view_logs/namespace=Ignite_Evaluation_Entities_InpatientDoctorNotesViewLogs/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "evaluation|inpatient_history_view_logs": {
+        "at": "2026-05-18T08:58:02.154312+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Evaluation/table=inpatient_history_view_logs/namespace=Ignite_Evaluation_Entities_InpatientHistoryViewLogs/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "evaluation|inpatient_investigation_result_view_logs": {
+        "at": "2026-05-18T09:01:24.253528+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Evaluation/table=inpatient_investigation_result_view_logs/namespace=Ignite_Evaluation_Entities_InpatientInvestigationResultViewLogs/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "evaluation|inpatient_nurse_notes_view_logs": {
+        "at": "2026-05-18T09:34:38.825907+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Evaluation/table=inpatient_nurse_notes_view_logs/namespace=Ignite_Evaluation_Entities_InpatientNurseNotesViewLogs/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "evaluation|inpatient_prescriptions_view_logs": {
+        "at": "2026-05-18T09:09:07.787351+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Evaluation/table=inpatient_prescriptions_view_logs/namespace=Ignite_Evaluation_Entities_InpatientPrescriptionsViewLogs/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "evaluation|insurance_preauths": {
+        "at": "2026-05-18T09:03:56.168247+00:00",
+        "s3_key": null
+      },
+      "evaluation|insurance_scheme_preauths": {
+        "at": "2026-05-18T09:03:57.768385+00:00",
+        "s3_key": null
+      },
+      "evaluation|machine_investigation_results_details": {
+        "at": "2026-05-18T09:09:31.488154+00:00",
+        "s3_key": null
+      },
+      "evaluation|out_patient_notes_history_view_log": {
+        "at": "2026-05-18T09:13:00.581935+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Evaluation/table=out_patient_notes_history_view_log/namespace=Ignite_Evaluation_Entities_OutPatientNotesHistoryViewLog/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "evaluation|page_count": {
+        "at": "2026-05-18T09:10:52.082632+00:00",
+        "s3_key": null
+      },
+      "evaluation|recurrent_charges": {
+        "at": "2026-05-18T09:15:13.424014+00:00",
+        "s3_key": null
+      },
+      "evaluation|refraction_prescriptions": {
+        "at": "2026-05-18T09:15:41.739633+00:00",
+        "s3_key": null
+      },
+      "evaluation|symptoms": {
+        "at": "2026-05-18T09:19:22.326589+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Evaluation/table=symptoms/namespace=Ignite_Evaluation_Entities_Symptoms/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "finance|accounting_api_reference_stats": {
+        "at": "2026-05-18T09:27:55.826525+00:00",
+        "s3_key": null
+      },
+      "finance|finance_account_groups": {
+        "at": "2026-05-18T09:23:35.931203+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Finance/table=finance_account_groups/namespace=Ignite_Finance_Entities_AccountGroups/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "finance|finance_account_types": {
+        "at": "2026-05-18T09:24:19.634497+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Finance/table=finance_account_types/namespace=Ignite_Finance_Entities_AccountTypes/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "finance|finance_accounting_api_references": {
+        "at": "2026-05-18T09:23:15.684860+00:00",
+        "s3_key": null
+      },
+      "finance|finance_accounting_soln_logs": {
+        "at": "2026-05-18T09:28:01.579428+00:00",
+        "s3_key": null
+      },
+      "finance|finance_bank_accounts": {
+        "at": "2026-05-18T09:28:05.832116+00:00",
+        "s3_key": null
+      },
+      "finance|finance_banking_cheques": {
+        "at": "2026-05-18T09:23:25.099004+00:00",
+        "s3_key": null
+      },
+      "finance|finance_banks": {
+        "at": "2026-05-18T09:27:02.818722+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Finance/table=finance_banks/namespace=Ignite_Finance_Entities_Banks/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "finance|finance_copay": {
+        "at": "2026-05-18T09:27:21.994795+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Finance/table=finance_copay/namespace=Ignite_Finance_Entities_Copay/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "finance|finance_dispatch": {
+        "at": "2026-05-18T09:28:56.471698+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Finance/table=finance_dispatch/namespace=Ignite_Finance_Entities_Dispatch/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "finance|finance_evaluation_insurance_payments": {
+        "at": "2026-05-18T09:23:44.553755+00:00",
+        "s3_key": null
+      },
+      "finance|finance_evaluation_payments": {
+        "at": "2026-05-18T09:32:27.748608+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Finance/table=finance_evaluation_payments/namespace=Ignite_Finance_Entities_EvaluationPayments/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "finance|finance_gl_accounts": {
+        "at": "2026-05-18T09:24:00.084077+00:00",
+        "s3_key": null
+      },
+      "finance|finance_insurance_cheques": {
+        "at": "2026-05-18T09:27:35.841856+00:00",
+        "s3_key": null
+      },
+      "finance|finance_invoice_batch_dispatch_emails": {
+        "at": "2026-05-18T09:29:45.012996+00:00",
+        "s3_key": null
+      },
+      "finance|finance_invoice_items": {
+        "at": "2026-05-18T10:41:33.475029+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Finance/table=finance_invoice_items/namespace=Ignite_Finance_Entities_InvoiceItems/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "finance|finance_invoice_payments": {
+        "at": "2026-05-18T09:26:41.333451+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Finance/table=finance_invoice_payments/namespace=Ignite_Finance_Entities_InvoicePayments/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "finance|finance_invoices": {
+        "at": "2026-05-18T09:29:19.597772+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Finance/table=finance_invoices/namespace=Ignite_Finance_Entities_Invoices/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "finance|finance_patient_accounts": {
+        "at": "2026-05-18T09:27:53.936993+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Finance/table=finance_patient_accounts/namespace=Ignite_Finance_Entities_PatientAccounts/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "finance|finance_patient_deposits": {
+        "at": "2026-05-18T09:27:37.633493+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Finance/table=finance_patient_deposits/namespace=Ignite_Finance_Entities_PatientDeposits/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "finance|finance_patient_invoices": {
+        "at": "2026-05-18T09:23:21.202331+00:00",
+        "s3_key": null
+      },
+      "finance|finance_patient_transactions": {
+        "at": "2026-05-18T09:24:29.697376+00:00",
+        "s3_key": null
+      },
+      "finance|finance_patient_withdrawals": {
+        "at": "2026-05-18T09:27:31.917048+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Finance/table=finance_patient_withdrawals/namespace=Ignite_Finance_Entities_PatientWithdrawals/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "finance|finance_payments_card": {
+        "at": "2026-05-18T09:29:02.143869+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Finance/table=finance_payments_card/namespace=Ignite_Finance_Entities_PaymentsCard/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "finance|finance_payments_cash": {
+        "at": "2026-05-18T09:27:17.882373+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Finance/table=finance_payments_cash/namespace=Ignite_Finance_Entities_PaymentsCash/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "finance|finance_payments_cheque": {
+        "at": "2026-05-18T09:29:03.890276+00:00",
+        "s3_key": null
+      },
+      "finance|finance_payments_mpesa": {
+        "at": "2026-05-18T09:29:39.970998+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Finance/table=finance_payments_mpesa/namespace=Ignite_Finance_Entities_PaymentsMpesa/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "finance|finance_payments_pesa_pal_card": {
+        "at": "2026-05-18T09:29:58.793016+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Finance/table=finance_payments_pesa_pal_card/namespace=Ignite_Finance_Entities_PaymentsPesaPalCard/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "finance|finance_payments_pesa_pal_mpesa": {
+        "at": "2026-05-18T09:30:09.956377+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Finance/table=finance_payments_pesa_pal_mpesa/namespace=Ignite_Finance_Entities_PaymentsPesaPalMpesa/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "finance|finance_petty_cash": {
+        "at": "2026-05-18T09:27:38.929125+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Finance/table=finance_petty_cash/namespace=Ignite_Finance_Entities_PettyCash/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "finance|finance_petty_cash_updates": {
+        "at": "2026-05-18T09:29:51.143211+00:00",
+        "s3_key": null
+      },
+      "finance|finance_transactions": {
+        "at": "2026-05-18T09:23:50.033037+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Finance/table=finance_transactions/namespace=Ignite_Finance_Entities_Transactions/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "finance|finance_vouchers": {
+        "at": "2026-05-18T09:27:25.150975+00:00",
+        "s3_key": null
+      },
+      "finance|finance_waivers": {
+        "at": "2026-05-18T09:27:20.351352+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Finance/table=finance_waivers/namespace=Ignite_Finance_Entities_Waivers/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "finance|gl_accounts": {
+        "at": "2026-09-18T10:02:55.011432+00:00",
+        "s3_key": null
+      },
+      "finance|invoice_payers": {
+        "at": "2026-05-18T09:29:42.507292+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Finance/table=invoice_payers/namespace=Ignite_Finance_Entities_InvoicePayers/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "finance|points": {
+        "at": "2026-05-18T09:29:54.801248+00:00",
+        "s3_key": null
+      },
+      "finance|vouchers": {
+        "at": "2026-09-18T10:01:56.891357+00:00",
+        "s3_key": null
+      },
+      "inpatient|inpatient_admission_requests": {
+        "at": "2026-05-18T10:05:27.970100+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Inpatient/table=inpatient_admission_requests/namespace=Ignite_Inpatient_Entities_AdmissionRequests/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "inpatient|inpatient_admission_types": {
+        "at": "2026-05-18T10:05:33.245917+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Inpatient/table=inpatient_admission_types/namespace=Ignite_Inpatient_Entities_AdmissionTypes/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "inpatient|inpatient_admissions": {
+        "at": "2026-05-18T10:04:21.278272+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Inpatient/table=inpatient_admissions/namespace=Ignite_Inpatient_Entities_Admissions/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "inpatient|inpatient_bed_types": {
+        "at": "2026-05-18T10:04:44.148024+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Inpatient/table=inpatient_bed_types/namespace=Ignite_Inpatient_Entities_BedTypes/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "inpatient|inpatient_beds": {
+        "at": "2026-05-18T10:04:29.851970+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Inpatient/table=inpatient_beds/namespace=Ignite_Inpatient_Entities_Beds/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "inpatient|inpatient_charge_sheet": {
+        "at": "2026-05-18T10:05:35.190290+00:00",
+        "s3_key": null
+      },
+      "inpatient|inpatient_charges": {
+        "at": "2026-05-18T10:04:49.410522+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Inpatient/table=inpatient_charges/namespace=Ignite_Inpatient_Entities_Charges/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "inpatient|inpatient_discharge_types": {
+        "at": "2026-05-18T10:07:05.922542+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Inpatient/table=inpatient_discharge_types/namespace=Ignite_Inpatient_Entities_DischargeTypes/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "inpatient|inpatient_discharges": {
+        "at": "2026-05-18T10:05:11.584654+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Inpatient/table=inpatient_discharges/namespace=Ignite_Inpatient_Entities_Discharges/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "inpatient|inpatient_inpatient_visit_charges": {
+        "at": "2026-05-18T10:06:10.171503+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Inpatient/table=inpatient_inpatient_visit_charges/namespace=Ignite_Inpatient_Entities_InpatientVisitCharges/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "inpatient|inpatient_inpatient_visit_rebates": {
+        "at": "2026-05-18T10:06:48.790249+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Inpatient/table=inpatient_inpatient_visit_rebates/namespace=Ignite_Inpatient_Entities_InpatientVisitRebates/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "inpatient|inpatient_notes": {
+        "at": "2026-05-18T10:24:31.083046+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Inpatient/table=inpatient_notes/namespace=Ignite_Inpatient_Entities_Notes/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "inpatient|inpatient_nursing_care_plan": {
+        "at": "2026-05-18T10:10:15.021164+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Inpatient/table=inpatient_nursing_care_plan/namespace=Ignite_Inpatient_Entities_NursingCarePlan/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "inpatient|inpatient_obstetric_histories": {
+        "at": "2026-05-18T10:10:20.582664+00:00",
+        "s3_key": null
+      },
+      "inpatient|inpatient_partial_bill_breakdowns": {
+        "at": "2026-05-18T10:06:54.988515+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Inpatient/table=inpatient_partial_bill_breakdowns/namespace=Ignite_Inpatient_Entities_PartialBillBreakdowns/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "inpatient|inpatient_visit_wards": {
+        "at": "2026-05-18T10:06:38.072321+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Inpatient/table=inpatient_visit_wards/namespace=Ignite_Inpatient_Entities_VisitWards/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "inpatient|inpatient_vitals": {
+        "at": "2026-05-18T10:10:09.227814+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Inpatient/table=inpatient_vitals/namespace=Ignite_Inpatient_Entities_Vitals/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "inpatient|inpatient_ward_assigned": {
+        "at": "2026-05-18T10:06:56.084537+00:00",
+        "s3_key": null
+      },
+      "inpatient|inpatient_wards": {
+        "at": "2026-05-18T10:04:36.466876+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Inpatient/table=inpatient_wards/namespace=Ignite_Inpatient_Entities_Wards/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "inpatient|partograph": {
+        "at": "2026-05-18T10:10:26.955340+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Inpatient/table=partograph/namespace=Ignite_Inpatient_Entities_Partograph/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "inpatient|partograph_vitals": {
+        "at": "2026-05-18T10:10:29.735780+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Inpatient/table=partograph_vitals/namespace=Ignite_Inpatient_Entities_PartographVitals/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "inpatient|patient_management": {
+        "at": "2026-05-18T10:11:17.996587+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Inpatient/table=patient_management/namespace=Ignite_Inpatient_Entities_PatientManagement/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "inventory|collabmed_order_quotation_details": {
+        "at": "2026-05-18T10:11:30.964441+00:00",
+        "s3_key": null
+      },
+      "inventory|collabmed_order_quotations": {
+        "at": "2026-05-18T10:11:28.755843+00:00",
+        "s3_key": null
+      },
+      "inventory|inventory_approval_levels": {
+        "at": "2026-05-18T10:11:19.823626+00:00",
+        "s3_key": null
+      },
+      "inventory|inventory_batch_purchases": {
+        "at": "2026-05-18T10:11:27.022887+00:00",
+        "s3_key": null
+      },
+      "inventory|inventory_customers": {
+        "at": "2026-05-18T10:11:53.618844+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Inventory/table=inventory_customers/namespace=Ignite_Inventory_Entities_Customers/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "inventory|inventory_dispensing_queues": {
+        "at": "2026-05-18T10:24:15.188202+00:00",
+        "s3_key": null
+      },
+      "inventory|inventory_goods_received": {
+        "at": "2026-05-18T10:11:58.324034+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Inventory/table=inventory_goods_received/namespace=Ignite_Inventory_Entities_GoodsReceived/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "inventory|inventory_goods_received_details": {
+        "at": "2026-05-18T10:11:59.727069+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Inventory/table=inventory_goods_received_details/namespace=Ignite_Inventory_Entities_GoodsReceivedDetails/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "inventory|inventory_holding_stock": {
+        "at": "2026-05-18T10:12:02.072289+00:00",
+        "s3_key": null
+      },
+      "inventory|inventory_internal_order": {
+        "at": "2026-05-18T10:12:07.669400+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Inventory/table=inventory_internal_order/namespace=Ignite_Inventory_Entities_InternalOrder/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "inventory|inventory_internal_order_details": {
+        "at": "2026-05-18T10:12:11.893053+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Inventory/table=inventory_internal_order_details/namespace=Ignite_Inventory_Entities_InternalOrderDetails/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "inventory|inventory_inventory_batch_product_sales": {
+        "at": "2026-05-18T10:25:35.694753+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Inventory/table=inventory_inventory_batch_product_sales/namespace=Ignite_Inventory_Entities_InventoryBatchProductSales/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "inventory|inventory_inventory_batch_purchases": {
+        "at": "2026-05-18T10:24:45.124722+00:00",
+        "s3_key": null
+      },
+      "inventory|inventory_inventory_categories": {
+        "at": "2026-05-18T10:24:48.580180+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Inventory/table=inventory_inventory_categories/namespace=Ignite_Inventory_Entities_InventoryCategories/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "inventory|inventory_inventory_consumables": {
+        "at": "2026-05-18T10:24:53.170512+00:00",
+        "s3_key": null
+      },
+      "inventory|inventory_inventory_dispensing": {
+        "at": "2026-05-18T10:25:06.414813+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Inventory/table=inventory_inventory_dispensing/namespace=Ignite_Inventory_Entities_InventoryDispensing/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "inventory|inventory_inventory_insurance_details": {
+        "at": "2026-05-18T10:24:17.317913+00:00",
+        "s3_key": null
+      },
+      "inventory|inventory_inventory_invoices": {
+        "at": "2026-05-18T10:12:16.708860+00:00",
+        "s3_key": null
+      },
+      "inventory|inventory_inventory_payment_terms": {
+        "at": "2026-05-18T10:24:42.630677+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Inventory/table=inventory_inventory_payment_terms/namespace=Ignite_Inventory_Entities_InventoryPaymentTerms/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "inventory|inventory_inventory_payments": {
+        "at": "2026-05-18T10:24:40.303058+00:00",
+        "s3_key": null
+      },
+      "inventory|inventory_inventory_products": {
+        "at": "2026-05-18T10:12:48.801272+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Inventory/table=inventory_inventory_products/namespace=Ignite_Inventory_Entities_InventoryProducts/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "inventory|inventory_inventory_stock_adjustments": {
+        "at": "2026-05-18T10:23:55.883034+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Inventory/table=inventory_inventory_stock_adjustments/namespace=Ignite_Inventory_Entities_InventoryStockAdjustments/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "inventory|inventory_inventory_stocks": {
+        "at": "2026-05-18T10:37:13.645784+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Inventory/table=inventory_inventory_stocks/namespace=Ignite_Inventory_Entities_InventoryStocks/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "inventory|inventory_inventory_tax_categories": {
+        "at": "2026-05-18T10:24:01.490481+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Inventory/table=inventory_inventory_tax_categories/namespace=Ignite_Inventory_Entities_InventoryTaxCategories/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "inventory|inventory_inventory_units": {
+        "at": "2026-05-18T10:24:05.028732+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Inventory/table=inventory_inventory_units/namespace=Ignite_Inventory_Entities_InventoryUnits/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "inventory|inventory_invoice_payments": {
+        "at": "2026-05-18T10:24:22.959495+00:00",
+        "s3_key": null
+      },
+      "inventory|inventory_invoice_service_charges": {
+        "at": "2026-05-18T10:24:06.829891+00:00",
+        "s3_key": null
+      },
+      "inventory|inventory_order_to_collabmed": {
+        "at": "2026-05-18T10:24:25.287620+00:00",
+        "s3_key": null
+      },
+      "inventory|inventory_purchase_order_details": {
+        "at": "2026-05-18T10:24:34.307740+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Inventory/table=inventory_purchase_order_details/namespace=Ignite_Inventory_Entities_PurchaseOrderDetails/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "inventory|inventory_purchase_orders": {
+        "at": "2026-05-18T10:24:32.055128+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Inventory/table=inventory_purchase_orders/namespace=Ignite_Inventory_Entities_PurchaseOrders/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "inventory|inventory_requisition_approvals": {
+        "at": "2026-05-18T10:24:36.087942+00:00",
+        "s3_key": null
+      },
+      "inventory|inventory_requisition_details": {
+        "at": "2026-05-18T10:24:38.945194+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Inventory/table=inventory_requisition_details/namespace=Ignite_Inventory_Entities_RequisitionDetails/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "inventory|inventory_requisitions": {
+        "at": "2026-05-18T10:24:36.874768+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Inventory/table=inventory_requisitions/namespace=Ignite_Inventory_Entities_Requisitions/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "inventory|inventory_requistion_action_logs": {
+        "at": "2026-05-18T10:24:38.330762+00:00",
+        "s3_key": null
+      },
+      "inventory|inventory_store_products": {
+        "at": "2026-05-18T10:13:07.650859+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Inventory/table=inventory_store_products/namespace=Ignite_Inventory_Entities_StoreProducts/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "inventory|inventory_stores": {
+        "at": "2026-05-18T10:11:38.072550+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Inventory/table=inventory_stores/namespace=Ignite_Inventory_Entities_Stores/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "reception|appointments": {
+        "at": "2026-09-18T10:03:04.618040+00:00",
+        "s3_key": null
+      },
+      "reception|counties": {
+        "at": "2026-05-18T10:26:04.444802+00:00",
+        "s3_key": null
+      },
+      "reception|reception_appointment_categories": {
+        "at": "2026-05-18T10:25:44.373530+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Reception/table=reception_appointment_categories/namespace=Ignite_Reception_Entities_AppointmentCategories/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "reception|reception_appointments": {
+        "at": "2026-05-18T10:25:37.859710+00:00",
+        "s3_key": null
+      },
+      "reception|reception_cash_pickups": {
+        "at": "2026-05-18T10:29:21.871615+00:00",
+        "s3_key": null
+      },
+      "reception|reception_contact_trace_details_updates": {
+        "at": "2026-05-18T10:25:54.097748+00:00",
+        "s3_key": null
+      },
+      "reception|reception_contact_tracing_details": {
+        "at": "2026-05-18T10:25:50.226354+00:00",
+        "s3_key": null
+      },
+      "reception|reception_contact_tracings": {
+        "at": "2026-05-18T10:25:48.563275+00:00",
+        "s3_key": null
+      },
+      "reception|reception_corporate_account_transactions": {
+        "at": "2026-05-18T10:25:59.917706+00:00",
+        "s3_key": null
+      },
+      "reception|reception_corporate_accounts": {
+        "at": "2026-05-18T10:25:56.221773+00:00",
+        "s3_key": null
+      },
+      "reception|reception_growth_chart_references": {
+        "at": "2026-05-18T10:26:06.441036+00:00",
+        "s3_key": null
+      },
+      "reception|reception_next_of_kin": {
+        "at": "2026-05-18T10:27:02.578072+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Reception/table=reception_next_of_kin/namespace=Ignite_Reception_Entities_NextOfKin/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "reception|reception_patient_dependants": {
+        "at": "2026-05-18T10:27:07.201136+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Reception/table=reception_patient_dependants/namespace=Ignite_Reception_Entities_PatientDependants/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "reception|reception_patient_documents": {
+        "at": "2026-05-18T10:27:11.120342+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Reception/table=reception_patient_documents/namespace=Ignite_Reception_Entities_PatientDocuments/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "reception|reception_patient_insurance": {
+        "at": "2026-05-18T10:29:05.711286+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Reception/table=reception_patient_insurance/namespace=Ignite_Reception_Entities_PatientInsurance/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "reception|reception_patient_movements": {
+        "at": "2026-05-18T10:29:09.342516+00:00",
+        "s3_key": null
+      },
+      "reception|reception_patient_random_notes": {
+        "at": "2026-05-18T10:29:16.823333+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Reception/table=reception_patient_random_notes/namespace=Ignite_Reception_Entities_PatientRandomNotes/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "reception|reception_patients": {
+        "at": "2026-05-18T10:33:15.876067+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Reception/table=reception_patients/namespace=Ignite_Reception_Entities_Patients/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "reception|reception_reception_cash_pickups": {
+        "at": "2026-05-18T10:29:25.802260+00:00",
+        "s3_key": null
+      },
+      "reception|reception_reception_shifts": {
+        "at": "2026-05-18T10:29:29.879894+00:00",
+        "s3_key": null
+      },
+      "reception|reception_referrals": {
+        "at": "2026-05-18T10:29:34.297681+00:00",
+        "s3_key": null
+      },
+      "reception|reception_time_trackers": {
+        "at": "2026-05-18T10:43:44.906866+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Reception/table=reception_time_trackers/namespace=Ignite_Reception_Entities_TimeTrackers/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "reception|referrals": {
+        "at": "2026-09-18T10:03:35.610433+00:00",
+        "s3_key": null
+      },
+      "reception|sub_counties": {
+        "at": "2026-05-18T10:29:38.311935+00:00",
+        "s3_key": null
+      },
+      "reception|type_of_visits": {
+        "at": "2026-05-18T10:33:18.377464+00:00",
+        "s3_key": null
+      },
+      "reception|visit_purposes": {
+        "at": "2026-05-18T10:33:23.470794+00:00",
+        "s3_key": null
+      },
+      "reports|moh717_finance_reports": {
+        "at": "2026-05-18T10:33:28.333793+00:00",
+        "s3_key": null
+      },
+      "settings|company_prices": {
+        "at": "2026-05-18T10:33:37.579917+00:00",
+        "s3_key": null
+      },
+      "settings|settings_clinics": {
+        "at": "2026-05-18T10:33:33.055924+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Settings/table=settings_clinics/namespace=Ignite_Settings_Entities_Clinics/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "settings|settings_counties": {
+        "at": "2026-05-18T10:33:42.905532+00:00",
+        "s3_key": null
+      },
+      "settings|settings_departments": {
+        "at": "2026-05-18T10:33:46.020787+00:00",
+        "s3_key": null
+      },
+      "settings|settings_insurance": {
+        "at": "2026-05-18T10:33:49.226294+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Settings/table=settings_insurance/namespace=Ignite_Settings_Entities_Insurance/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "settings|settings_organization": {
+        "at": "2026-05-18T10:33:52.959792+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Settings/table=settings_organization/namespace=Ignite_Settings_Entities_Organization/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "settings|settings_practice": {
+        "at": "2026-05-18T10:33:57.458903+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Settings/table=settings_practice/namespace=Ignite_Settings_Entities_Practice/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "settings|settings_rebates": {
+        "at": "2026-05-18T10:34:04.458966+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Settings/table=settings_rebates/namespace=Ignite_Settings_Entities_Rebates/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "settings|settings_regions": {
+        "at": "2026-05-18T10:34:08.343757+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Settings/table=settings_regions/namespace=Ignite_Settings_Entities_Regions/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "settings|settings_scheme_types": {
+        "at": "2026-05-18T10:34:48.272955+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Settings/table=settings_scheme_types/namespace=Ignite_Settings_Entities_SchemeTypes/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "settings|settings_schemes": {
+        "at": "2026-05-18T10:34:43.043095+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Settings/table=settings_schemes/namespace=Ignite_Settings_Entities_Schemes/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "settings|settings_settings": {
+        "at": "2026-05-18T10:34:57.134857+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Settings/table=settings_settings/namespace=Ignite_Settings_Entities_Settings/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "theatre|theatre": {
+        "at": "2026-05-18T10:35:01.565871+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Theatre/table=theatre/namespace=Ignite_Theatre_Entities_Theatre/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "theatre|theatre_consumable_requirements": {
+        "at": "2026-05-18T10:37:21.133182+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Theatre/table=theatre_consumable_requirements/namespace=Ignite_Theatre_Entities_ConsumableRequirements/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "theatre|theatre_medic": {
+        "at": "2026-05-18T10:36:32.099094+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Theatre/table=theatre_medic/namespace=Ignite_Theatre_Entities_Medic/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "theatre|theatre_operation_investigations": {
+        "at": "2026-05-18T10:37:27.271515+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Theatre/table=theatre_operation_investigations/namespace=Ignite_Theatre_Entities_OperationInvestigations/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "theatre|theatre_operation_procedures": {
+        "at": "2026-05-18T10:37:39.785316+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Theatre/table=theatre_operation_procedures/namespace=Ignite_Theatre_Entities_OperationProcedures/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "theatre|theatre_theatre_before_anaesthesias": {
+        "at": "2026-05-18T10:37:33.661241+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Theatre/table=theatre_theatre_before_anaesthesias/namespace=Ignite_Theatre_Entities_TheatreBeforeAnaesthesias/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "theatre|theatre_theatre_before_leaving_theatres": {
+        "at": "2026-05-18T10:37:42.036378+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Theatre/table=theatre_theatre_before_leaving_theatres/namespace=Ignite_Theatre_Entities_TheatreBeforeLeavingTheatres/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "theatre|theatre_theatre_before_skin_incisions": {
+        "at": "2026-05-18T10:37:40.825642+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Theatre/table=theatre_theatre_before_skin_incisions/namespace=Ignite_Theatre_Entities_TheatreBeforeSkinIncisions/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "theatre|theatre_theatre_bookings": {
+        "at": "2026-05-18T10:35:23.769230+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Theatre/table=theatre_theatre_bookings/namespace=Ignite_Theatre_Entities_TheatreBookings/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "theatre|theatre_theatre_deposits": {
+        "at": "2026-05-18T10:36:48.770130+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Theatre/table=theatre_theatre_deposits/namespace=Ignite_Theatre_Entities_TheatreDeposits/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "theatre|theatre_theatre_medic_types": {
+        "at": "2026-05-18T10:36:41.846910+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Theatre/table=theatre_theatre_medic_types/namespace=Ignite_Theatre_Entities_TheatreMedicTypes/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "theatre|theatre_theatre_operation_blood_pressures": {
+        "at": "2026-05-18T10:37:43.577252+00:00",
+        "s3_key": null
+      },
+      "theatre|theatre_theatre_operation_fluids": {
+        "at": "2026-05-18T10:37:47.969884+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Theatre/table=theatre_theatre_operation_fluids/namespace=Ignite_Theatre_Entities_TheatreOperationFluids/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "theatre|theatre_theatre_operation_pulses": {
+        "at": "2026-05-18T10:37:46.290997+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Theatre/table=theatre_theatre_operation_pulses/namespace=Ignite_Theatre_Entities_TheatreOperationPulses/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "theatre|theatre_theatre_operations": {
+        "at": "2026-05-18T10:35:42.938359+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Theatre/table=theatre_theatre_operations/namespace=Ignite_Theatre_Entities_TheatreOperations/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "theatre|theatre_theatre_payment_types": {
+        "at": "2026-05-18T10:37:01.190691+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Theatre/table=theatre_theatre_payment_types/namespace=Ignite_Theatre_Entities_TheatrePaymentTypes/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "theatre|theatre_theatre_payments": {
+        "at": "2026-05-18T10:36:52.526072+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Theatre/table=theatre_theatre_payments/namespace=Ignite_Theatre_Entities_TheatrePayments/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "theatre|theatre_theatre_schedules": {
+        "at": "2026-05-18T10:35:55.830845+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Theatre/table=theatre_theatre_schedules/namespace=Ignite_Theatre_Entities_TheatreSchedules/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "theatre|theatre_theatre_types": {
+        "at": "2026-05-18T10:35:08.289905+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Theatre/table=theatre_theatre_types/namespace=Ignite_Theatre_Entities_TheatreTypes/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "users|activations": {
+        "at": "2026-05-18T10:37:48.645754+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Users/table=activations/namespace=Ignite_Users_Entities_Activations/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "users|chits": {
+        "at": "2026-05-18T10:37:47.298645+00:00",
+        "s3_key": null
+      },
+      "users|dependants": {
+        "at": "2026-05-18T10:37:47.513026+00:00",
+        "s3_key": null
+      },
+      "users|employee_categories": {
+        "at": "2026-05-18T10:37:51.183277+00:00",
+        "s3_key": null
+      },
+      "users|external_platforms": {
+        "at": "2026-05-18T10:37:51.704832+00:00",
+        "s3_key": null
+      },
+      "users|injuries": {
+        "at": "2026-05-18T10:37:50.631951+00:00",
+        "s3_key": null
+      },
+      "users|platform_access_tokens": {
+        "at": "2026-05-18T10:37:54.520760+00:00",
+        "s3_key": null
+      },
+      "users|platform_handshakes": {
+        "at": "2026-05-18T10:37:55.180395+00:00",
+        "s3_key": null
+      },
+      "users|platform_request_logs": {
+        "at": "2026-05-18T10:37:57.992823+00:00",
+        "s3_key": null
+      },
+      "users|user_specialities": {
+        "at": "2026-05-18T10:38:12.027501+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Users/table=user_specialities/namespace=Ignite_Users_Entities_UserSpecialities/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "users|user_uploads": {
+        "at": "2026-05-18T10:38:13.399682+00:00",
+        "s3_key": null
+      },
+      "users|users_permissions": {
+        "at": "2026-05-18T10:38:02.032617+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Users/table=users_permissions/namespace=Ignite_Users_Entities_Permissions/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      },
+      "users|users_roles": {
+        "at": "2026-05-18T10:38:06.386889+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu/module=Users/table=users_roles/namespace=Ignite_Users_Entities_Roles/dt=2026-05-18/manual__2026-05-18T08-54-10Z.jsonl.gz"
+      }
+    },
+    "run_id": "manual__2026-09-18T09-59-30Z"
+  },
+  "kisumu_v3": {
+    "completed": {
+      "evaluation|evaluation_procedure_categories": {
+        "at": "2026-10-07T08:55:00.916884+00:00",
+        "s3_key": "raw/facilities/facility_id=kisumu_v3/module=Evaluation/table=evaluation_procedure_categories/namespace=Ignite_Evaluation_Entities_ProcedureCategories/dt=2026-10-07/manual__2026-10-07T08-54-47Z__p00001-00001.jsonl.gz"
+      }
+    },
+    "run_id": "manual__2026-10-07T08-54-47Z"
+  }
+}

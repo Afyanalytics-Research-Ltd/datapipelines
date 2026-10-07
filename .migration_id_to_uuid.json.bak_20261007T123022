@@ -1,0 +1,42 @@
+{
+  "id_to_uuid": {
+    "visits": {},
+    "patients": {},
+    "settings_clinics": {},
+    "inventory_products": {},
+    "inpatient_wards": {},
+    "inpatient_beds": {},
+    "inventory_units": {},
+    "inpatient_bed_types": {},
+    "inventory_categories": {},
+    "evaluation_doctor_notes": {},
+    "evaluation_procedures": {},
+    "admissions": {},
+    "evaluation_procedure_categories": {},
+    "evaluation_investigations": {},
+    "evaluation_prescriptions": {},
+    "reception_patient_documents": {}
+  },
+  "alias_to_table": {
+    "visit": "visits",
+    "visits": "visits",
+    "patient": "patients",
+    "patients": "patients",
+    "clinic": "settings_clinics",
+    "product": "inventory_products",
+    "ward": "inpatient_wards",
+    "bed": "inpatient_beds",
+    "unit": "inventory_units",
+    "bed_type": "inpatient_bed_types",
+    "product_category": "inventory_categories",
+    "facilities": "settings_clinics",
+    "doctor_notes": "evaluation_doctor_notes",
+    "procedure": "evaluation_procedures",
+    "admission": "admissions",
+    "procedure_categories": "evaluation_procedure_categories",
+    "procedures": "evaluation_procedures",
+    "investigations": "evaluation_investigations",
+    "prescriptions": "evaluation_prescriptions",
+    "patient_document": "reception_patient_documents"
+  }
+}

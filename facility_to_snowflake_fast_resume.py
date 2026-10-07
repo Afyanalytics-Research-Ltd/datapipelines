@@ -436,6 +436,15 @@ OLD_SYSTEM_HISTORY_TABLES: dict[str, tuple[str, str]] = {
     "settings_clinics":                  ("Settings",   "Ignite\\Settings\\Entities\\Clinics"),
     "inpatient_wards":                   ("Inpatient",  "Ignite\\Inpatient\\Entities\\Ward"),
     "inpatient_beds":                    ("Inpatient",  "Ignite\\Inpatient\\Entities\\Bed"),
+    # parents of products (unit_id, category_id) and beds (bed_type_id) —
+    # migrated to V3 ahead of them so those FKs remap to real V3 ids
+    "inventory_units":                   ("Inventory",  "Ignite\\Inventory\\Entities\\InventoryUnits"),
+    "inventory_categories":              ("Inventory",  "Ignite\\Inventory\\Entities\\InventoryCategories"),
+    "inpatient_bed_types":               ("Inpatient",  "Ignite\\Inpatient\\Entities\\BedType"),
+    # parent of admissions (admission_type_id)
+    "inpatient_admission_types":         ("Inpatient",  "Ignite\\Inpatient\\Entities\\AdmissionType"),
+    # parent of discharges and discharge requests (discharge_type_id)
+    "inpatient_discharge_types":         ("Inpatient",  "Ignite\\Inpatient\\Entities\\DischargeType"),
 }
 
 # History inputs that the sheet run already loads from the same V2 endpoints
@@ -560,9 +569,11 @@ def post_with_retry_and_fallback(
                 # Cheap one-line at INFO; full body only at DEBUG
                 log.debug("BodyIndex=%s Attempt=%s Status=%s Resp=%.300s",
                           body_index, attempt, r.status_code, r.text)
-                log.info("· ns=%s page=%s status=%s",
-                         base_body.get("namespace", "?"),
-                         base_body.get("page", "?"), r.status_code)
+                # keyset requests have no page number — show their cursor
+                position = (f"page={base_body['page']}" if "page" in base_body
+                            else f"after_id={base_body.get('after_id', '?')}")
+                log.info("· ns=%s %s status=%s",
+                         base_body.get("namespace", "?"), position, r.status_code)
 
                 if r.status_code == 404:
                     log.warning("404 ns=%s — trying next fallback",
@@ -762,8 +773,226 @@ def _s3_client():
                 )
     return _s3_client_singleton
 
+# ─── PAGE-LEVEL RESUME ───────────────────────────────────────────────────
+# A big table is hundreds of API pages (the V2 API serves 100 rows/page
+# whatever `limit` says, and rate-limits to roughly one request per ~20s).
+# Instead of holding every page in memory and uploading once at the end —
+# where one failed page threw away all the others — each page is written to
+# a local spool file the moment it arrives, and every CHUNK_PAGES pages the
+# spooled pages are uploaded to S3 and COPYed into Snowflake as one file.
+# A per-job state file records the page count, the request body the API
+# accepted, and which pages are already in Snowflake, so a re-run only
+# requests the pages it doesn't have: spooled pages are uploaded without
+# being fetched again, loaded pages are skipped entirely.
+#
+# State lives under .page_progress/<facility>/, one file + spool dir per
+# job (keyed by table, namespace and updated_since, so a different
+# extraction window never reuses another's pages), and is removed once the
+# table is fully loaded.
+
+PAGE_STATE_DIR = Path(__file__).resolve().parent / ".page_progress"
+CHUNK_PAGES    = int(os.getenv("CHUNK_PAGES", "50"))
+MAX_PAGES      = 10000
+
+# Tables extracted with the API's keyset (cursor) pagination instead of page
+# numbers: {"after_id": <last id seen>, "per_page": 100} → rows with id >
+# after_id plus pagination.next_after_id. Offset paging on these big tables
+# times out on the V2 server (investigations didn't answer page 1 in 120s);
+# keyset answers in ~1s. after_id is exclusive, so a fresh run starts at 0.
+# The API ignores updated_since in this mode, so every run is a full extract.
+KEYSET_TABLES  = {t.strip() for t in os.getenv("KEYSET_TABLES", "evaluation_investigations").split(",") if t.strip()}
+KEYSET_PER_PAGE = 100
+
+
+def _extract_rows(payload: dict) -> list:
+    rows = payload.get("data")
+    if rows is None:
+        sv = payload.get("success")
+        rows = sv.get("data") or [] if isinstance(sv, dict) else []
+    if isinstance(rows, dict):
+        rows = rows.get("data") or []
+    elif not isinstance(rows, list):
+        rows = []
+    return rows
+
+
+def _page_state_paths(job: dict) -> tuple[Path, Path]:
+    ident = json.dumps({k: job.get(k) for k in
+                        ("facility", "module", "table", "namespace", "database", "updated_since", "limit")},
+                       sort_keys=True)
+    digest = hashlib.sha1(ident.encode()).hexdigest()[:16]
+    base = PAGE_STATE_DIR / job["facility"] / f"{_safe_s3_token(job['table'])}__{digest}"
+    return base.with_suffix(".json"), base
+
+
+def _load_page_state(path: Path) -> dict:
+    try:
+        return json.loads(path.read_text())
+    except (OSError, ValueError):
+        return {}
+
+
+def _save_page_state(path: Path, state: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(state, indent=1, sort_keys=True))
+    tmp.replace(path)   # atomic: a kill mid-write can't leave a truncated state file
+
+
+def _spool_write(spool: Path, page: int, rows: list) -> None:
+    spool.mkdir(parents=True, exist_ok=True)
+    tmp = spool / f"page_{page:05d}.jsonl.gz.tmp"
+    with gzip.open(tmp, "wb") as gz:
+        for row in rows:
+            gz.write(_dumps_bytes(row) + b"\n")
+    tmp.replace(spool / f"page_{page:05d}.jsonl.gz")
+
+
+def _spooled_pages(spool: Path) -> set[int]:
+    if not spool.exists():
+        return set()
+    return {int(f.name[5:10]) for f in spool.glob("page_*.jsonl.gz")}
+
+
+def _s3_key_prefix(job: dict, when: datetime) -> str:
+    return (
+        f"{S3_PREFIX}/"
+        f"facility_id={job['facility']}/"
+        f"module={_safe_s3_token(job.get('module', '')) or 'unknown'}/"
+        f"table={_safe_s3_token(job.get('table', '')) or 'unknown'}/"
+        f"namespace={_safe_s3_token(job['namespace'].replace(chr(92), '_'))}/"
+        f"dt={when.date().isoformat()}/"
+    )
+
+
+def _flush_spool(job: dict, run_id: str, spool: Path, state: dict, state_path: Path,
+                 sf: "SnowflakeClient | None") -> None:
+    """Upload every spooled page as one S3 file, COPY it into RAW, then mark
+    those pages loaded and delete their spool files. Pages are only marked
+    loaded after the COPY succeeds, so a failure here just retries them."""
+    pages = sorted(_spooled_pages(spool) - set(state["loaded_pages"]))
+    if not pages:
+        return
+    buf, n_rows = BytesIO(), 0
+    with gzip.GzipFile(fileobj=buf, mode="wb") as out:
+        for p in pages:
+            with gzip.open(spool / f"page_{p:05d}.jsonl.gz", "rb") as f:
+                data = f.read()
+            n_rows += data.count(b"\n")
+            out.write(data)
+    if n_rows:
+        now = datetime.now(timezone.utc)
+        key = f"{_s3_key_prefix(job, now)}{run_id}__p{pages[0]:05d}-{pages[-1]:05d}.jsonl.gz"
+        _s3_client().put_object(Bucket=S3_BUCKET, Key=key, Body=buf.getvalue())
+        copy_into_snowflake({"facility": job["facility"], "s3_key": key, "ingested_at": now.isoformat(),
+                             "module": job.get("module"), "table": job.get("table"),
+                             "namespace": job["namespace"]}, sf=sf)
+        state["s3_keys"].append(key)
+        state["rows_loaded"] += n_rows
+        if state.get("mode") == "keyset":
+            log.info("    %s · batches %s–%s (up to id %s) → s3://%s/%s rows=%s (%d rows loaded so far)",
+                     job["table"], pages[0], pages[-1], state.get("after_id"), S3_BUCKET, key, n_rows,
+                     state["rows_loaded"])
+        else:
+            log.info("    %s · pages %s–%s → s3://%s/%s rows=%s (loaded %d/%s pages)", job["table"],
+                     pages[0], pages[-1], S3_BUCKET, key, n_rows,
+                     len(state["loaded_pages"]) + len(pages), state.get("last_page") or "?")
+    state["loaded_pages"] = sorted(set(state["loaded_pages"]) | set(pages))
+    _save_page_state(state_path, state)
+    for p in pages:
+        (spool / f"page_{p:05d}.jsonl.gz").unlink(missing_ok=True)
+
+
+def _extract_keyset(job: dict, run_id: str, dry_run: bool, sf: "SnowflakeClient | None", *,
+                    url: str, headers: dict, session) -> dict | None:
+    """Keyset version of the page loop (see KEYSET_TABLES): batches are
+    fetched in id order, each spooled as it arrives (batch number = spool
+    page number) with the next cursor saved alongside, and loaded every
+    CHUNK_PAGES batches. A resume continues from the saved cursor, so no
+    batch that was already received is requested again."""
+    body = {"namespace": job["namespace"], "action": "get", "database": job["database"],
+            "per_page": KEYSET_PER_PAGE}
+    state_path, spool = _page_state_paths(job)
+    state = {} if dry_run else _load_page_state(state_path)
+    state.setdefault("mode", "keyset")
+    state.setdefault("after_id", 0)
+    state.setdefault("batch", 0)
+    state.setdefault("loaded_pages", [])
+    state.setdefault("s3_keys", [])
+    state.setdefault("rows_loaded", 0)
+    if state["batch"]:
+        log.info("    %s — resuming keyset after id %s: %d batch(es) already in Snowflake, %d spooled",
+                 job["table"], state["after_id"], len(state["loaded_pages"]), len(_spooled_pages(spool)))
+
+    counted, error = 0, None
+    while state["batch"] < MAX_PAGES:
+        try:
+            r, _ = post_with_retry_and_fallback(
+                url=url, headers=headers, session=session, timeout=60,
+                bodies=[{**body, "after_id": state["after_id"]}],
+            )
+        except Exception as e:
+            error = e
+            break
+        payload = r.json()
+        rows = _extract_rows(payload)
+        pagination = payload.get("pagination") or {}
+        if dry_run:
+            counted += len(rows)
+        elif rows:
+            state["batch"] += 1
+            _spool_write(spool, state["batch"], rows)
+        next_after = pagination.get("next_after_id") or (rows[-1].get("id") if rows else None)
+        if not rows or not pagination.get("has_more_pages") or next_after in (None, state["after_id"]):
+            break
+        state["after_id"] = next_after
+        if not dry_run:
+            _save_page_state(state_path, state)   # cursor saved with its batch → exact resume point
+            if state["batch"] % CHUNK_PAGES == 0:
+                _flush_spool(job, run_id, spool, state, state_path, sf)
+
+    if dry_run:
+        if error:
+            raise error
+        log.info("DRY-RUN ✓ %-22s %s rows via keyset (would upload to s3://%s/%s)",
+                 job["table"], counted, S3_BUCKET, _s3_key_prefix(job, datetime.now(timezone.utc)))
+        return None
+
+    _save_page_state(state_path, state)
+    _flush_spool(job, run_id, spool, state, state_path, sf)
+    if error:
+        raise RuntimeError(
+            f"{job['table']}: keyset fetch after id {state['after_id']} failed: {error}. "
+            f"{len(state['loaded_pages'])} batch(es) / {state['rows_loaded']} rows are already in "
+            f"Snowflake and won't be requested again — re-run to continue from id {state['after_id']}."
+        ) from error
+
+    result = None
+    if state["rows_loaded"]:
+        result = {
+            "facility": job["facility"], "module": job.get("module"), "table": job.get("table"),
+            "namespace": job["namespace"], "database": job.get("database"),
+            "updated_since": job.get("updated_since"),
+            "ingested_at": datetime.now(timezone.utc).isoformat(),
+            "s3_key": state["s3_keys"][-1], "s3_keys": state["s3_keys"],
+            "row_count": state["rows_loaded"], "copied": True,
+        }
+    else:
+        log.info("    %s · %s — 0 rows, skipping S3", job["module"], job["table"])
+    state_path.unlink(missing_ok=True)
+    if spool.exists():
+        for f in spool.iterdir():
+            f.unlink(missing_ok=True)
+        spool.rmdir()
+    return result
+
+
 def extract_one_model(job: dict, run_id: str, dry_run: bool = False,
-                      page_workers: int = DEFAULT_PAGE_WORKERS) -> dict | None:
+                      page_workers: int = DEFAULT_PAGE_WORKERS,
+                      sf: "SnowflakeClient | None" = None) -> dict | None:
+    """Extract one table and load it into RAW chunk by chunk (see PAGE-LEVEL
+    RESUME above). Returns a summary with copied=True — the caller must not
+    COPY again — or None when the table has no rows (or on a dry run)."""
     facility = job["facility"]
     cfg      = FACILITIES[facility]
 
@@ -781,62 +1010,135 @@ def extract_one_model(job: dict, run_id: str, dry_run: bool = False,
     double_namespace_body          = {**body, "namespace": double_namespace_model(job["namespace"])}
     double_namespace_singular_body = {**body, "namespace": double_namespace_model(namespace_to_singular_model(job["namespace"]))}
 
-    rows, _ = extract_all_pages(
-        url=url, headers=headers, body=body,
-        singular_body=singular_body,
-        double_namespace_body=double_namespace_body,
-        double_namespace_singular_body=double_namespace_singular_body,
-        session=session, timeout=60, max_pages=10000,
-        page_workers=page_workers,
-    )
-
-    # No rows? Skip the upload entirely.
-    if not rows:
-        log.info("    %s · %s — 0 rows, skipping S3", job["module"], job["table"])
-        return None
-
-    ingested_at = datetime.now(timezone.utc)
-    dt = ingested_at.date().isoformat()
-    ns_safe     = _safe_s3_token(job["namespace"].replace("\\", "_"))
-    module_safe = _safe_s3_token(job.get("module", ""))
-    table_safe  = _safe_s3_token(job.get("table", ""))
-
-    key_prefix = (
-        f"{S3_PREFIX}/"
-        f"facility_id={facility}/"
-        f"module={module_safe or 'unknown'}/"
-        f"table={table_safe or 'unknown'}/"
-        f"namespace={ns_safe}/"
-        f"dt={dt}/"
-    )
-    key = f"{key_prefix}{run_id}.jsonl.gz"
-
-    # Encode (orjson when available)
-    parts = [_dumps_bytes(row) for row in rows]
-    jsonl_bytes = b"\n".join(parts) + b"\n"
+    if job["table"] in KEYSET_TABLES:
+        return _extract_keyset(job, run_id, dry_run, sf, url=url, headers=headers, session=session)
 
     if dry_run:
-        log.info("DRY-RUN ✓ %-22s %s rows (would upload to s3://%s/%s)",
-                 job["table"], len(rows), S3_BUCKET, key)
+        # Count only — nothing spooled, uploaded or checkpointed.
+        rows, _ = extract_all_pages(
+            url=url, headers=headers, body=body,
+            singular_body=singular_body,
+            double_namespace_body=double_namespace_body,
+            double_namespace_singular_body=double_namespace_singular_body,
+            session=session, timeout=60, max_pages=MAX_PAGES,
+            page_workers=page_workers,
+        )
+        if not rows:
+            log.info("    %s · %s — 0 rows, skipping S3", job["module"], job["table"])
+        else:
+            log.info("DRY-RUN ✓ %-22s %s rows (would upload to s3://%s/%s%s.jsonl.gz)",
+                     job["table"], len(rows), S3_BUCKET,
+                     _s3_key_prefix(job, datetime.now(timezone.utc)), run_id)
         return None
 
-    buf = BytesIO()
-    with gzip.GzipFile(fileobj=buf, mode="wb") as gz:
-        gz.write(jsonl_bytes)
-    _s3_client().put_object(Bucket=S3_BUCKET, Key=key, Body=buf.getvalue())
-    log.info("Uploaded to s3://%s/%s rows=%s", S3_BUCKET, key, len(rows))
+    state_path, spool = _page_state_paths(job)
+    state = _load_page_state(state_path)
+    state.setdefault("loaded_pages", [])
+    state.setdefault("s3_keys", [])
+    state.setdefault("rows_loaded", 0)
 
-    return {
-        "facility":      facility,
-        "module":        job.get("module"),
-        "table":         job.get("table"),
-        "namespace":     job["namespace"],
-        "database":      job.get("database"),
-        "updated_since": job.get("updated_since"),
-        "ingested_at":   ingested_at.isoformat(),
-        "s3_key":        key,
-        "row_count":     len(rows),
-    }
+    def _fetch(page: int) -> tuple[int, list, dict]:
+        r, _ = post_with_retry_and_fallback(
+            url=url, headers=headers, bodies=[{**state["chosen_body"], "page": page}],
+            session=session, timeout=60,
+        )
+        payload = r.json()
+        return page, _extract_rows(payload), payload.get("pagination") or {}
+
+    # Page 1 — only on a fresh start: it discovers the body shape the API
+    # accepts (fallback chain) and the page count. On resume both come from
+    # the state file and page 1 is never requested again.
+    if "chosen_body" not in state:
+        r, chosen = post_with_retry_and_fallback(
+            url=url, headers=headers, session=session, timeout=60,
+            bodies=[{**b, "page": 1} for b in (body, singular_body, double_namespace_body,
+                                               double_namespace_singular_body)],
+        )
+        payload = r.json()
+        pagination = payload.get("pagination") or {}
+        last_page = pagination.get("last_page")
+        if not pagination.get("has_more_pages"):
+            last_page = 1
+        state["chosen_body"] = {k: v for k, v in chosen.items() if k != "page"}
+        state["last_page"] = min(int(last_page), MAX_PAGES) if last_page is not None else None
+        _spool_write(spool, 1, _extract_rows(payload))
+        _save_page_state(state_path, state)
+    else:
+        log.info("    %s — resuming: %d page(s) already in Snowflake, %d spooled, last_page=%s",
+                 job["table"], len(state["loaded_pages"]), len(_spooled_pages(spool)),
+                 state.get("last_page") or "?")
+
+    failures: list[tuple[int, Exception]] = []
+    if state.get("last_page") is not None:
+        # Known page count: fetch only the pages we don't have, CHUNK_PAGES
+        # at a time, and load each chunk before starting the next.
+        have = set(state["loaded_pages"]) | _spooled_pages(spool)
+        missing = [p for p in range(1, state["last_page"] + 1) if p not in have]
+        for i in range(0, len(missing), CHUNK_PAGES):
+            window = missing[i:i + CHUNK_PAGES]
+            with ThreadPoolExecutor(max_workers=max(1, page_workers)) as pool:
+                futures = {pool.submit(_fetch, p): p for p in window}
+                for fut in as_completed(futures):
+                    try:
+                        page, rows, _ = fut.result()
+                        _spool_write(spool, page, rows)
+                    except Exception as e:
+                        failures.append((futures[fut], e))
+            _flush_spool(job, run_id, spool, state, state_path, sf)
+            if failures:
+                break
+        if not missing:
+            _flush_spool(job, run_id, spool, state, state_path, sf)
+    else:
+        # Unknown page count: walk forward from the last page we have until
+        # an empty page / has_more_pages=false.
+        page = max(set(state["loaded_pages"]) | _spooled_pages(spool) | {1})
+        while page < MAX_PAGES:
+            page += 1
+            try:
+                _, rows, pagination = _fetch(page)
+            except Exception as e:
+                failures.append((page, e))
+                break
+            _spool_write(spool, page, rows)
+            if not rows or not pagination.get("has_more_pages"):
+                break
+            if page % CHUNK_PAGES == 0:
+                _flush_spool(job, run_id, spool, state, state_path, sf)
+        _flush_spool(job, run_id, spool, state, state_path, sf)
+
+    if failures:
+        page, err = min(failures, key=lambda f: f[0])
+        raise RuntimeError(
+            f"{job['table']}: {len(failures)} page(s) failed (first: page {page}: {err}). "
+            f"{len(state['loaded_pages'])} page(s) / {state['rows_loaded']} rows are already in "
+            f"Snowflake and won't be requested again — re-run to fetch only the rest."
+        ) from err
+
+    if state["rows_loaded"] == 0:
+        log.info("    %s · %s — 0 rows, skipping S3", job["module"], job["table"])
+        result = None
+    else:
+        result = {
+            "facility":      facility,
+            "module":        job.get("module"),
+            "table":         job.get("table"),
+            "namespace":     job["namespace"],
+            "database":      job.get("database"),
+            "updated_since": job.get("updated_since"),
+            "ingested_at":   datetime.now(timezone.utc).isoformat(),
+            "s3_key":        state["s3_keys"][-1],
+            "s3_keys":       state["s3_keys"],
+            "row_count":     state["rows_loaded"],
+            "copied":        True,
+        }
+    # Table fully loaded — drop its page state and spool.
+    state_path.unlink(missing_ok=True)
+    if spool.exists():
+        for f in spool.iterdir():
+            f.unlink(missing_ok=True)
+        spool.rmdir()
+    return result
 
 def copy_into_snowflake(job_result: dict, sf: SnowflakeClient | None = None) -> None:
     facility      = job_result["facility"]
@@ -847,15 +1149,23 @@ def copy_into_snowflake(job_result: dict, sf: SnowflakeClient | None = None) -> 
     namespace     = job_result.get("namespace") or ""
 
     raw_table = f"{sf_schema(facility, 'RAW')}.EVENTS_RAW"
+
+    def lit(value: str) -> str:
+        # Snowflake string literals treat backslash as an escape: an unescaped
+        # 'Ignite\Evaluation\Entities\Sample' was stored as
+        # 'IgniteEvaluationEntitiesSample' (snowflake_to_v3_migration's
+        # _stored_namespace still repairs rows loaded before this fix).
+        return str(value).replace("\\", "\\\\").replace("'", "\\'")
+
     sql = f"""
     COPY INTO {raw_table} (facility_id, ingested_at, module_source, source_table, namespace, payload)
     FROM (
       SELECT
-        '{facility}'::STRING        AS facility_id,
-        '{ingested_at}'::TIMESTAMP_TZ AS ingested_at,
-        '{module_source}'::STRING   AS module_source,
-        '{source_table}'::STRING    AS source_table,
-        '{namespace}'::STRING       AS namespace,
+        '{lit(facility)}'::STRING        AS facility_id,
+        '{lit(ingested_at)}'::TIMESTAMP_TZ AS ingested_at,
+        '{lit(module_source)}'::STRING   AS module_source,
+        '{lit(source_table)}'::STRING    AS source_table,
+        '{lit(namespace)}'::STRING       AS namespace,
         PARSE_JSON($1)              AS payload
       FROM @{SF_STAGE}
     )
@@ -969,13 +1279,13 @@ def run_pipeline(facility: str, *, since: str | None = None,
             log.info("──[%d/%d] start · %s · %s",
                      idx, len(jobs), job["module"], job["table"])
             try:
+                # Loads into RAW chunk by chunk itself (page-level resume).
                 result = extract_one_model(job, run_id=run_id, dry_run=dry_run,
-                                           page_workers=page_workers)
+                                           page_workers=page_workers, sf=sf_client)
                 if result is None:
                     if not dry_run:
                         _mark_done(skey, run_id, job, s3_key=None)
                     return ("skip", None, job)
-                copy_into_snowflake(result, sf=sf_client)
                 _mark_done(skey, run_id, job, s3_key=result["s3_key"])
                 return ("ok", result, job)
             except Exception as e:

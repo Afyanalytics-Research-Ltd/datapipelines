@@ -176,7 +176,8 @@ def v2_facility_to_snowflake():
             # 0 rows, or a dry run (which logs its row count itself)
             return {"facility": job["facility"], "table": job["table"], "rows": 0,
                     "status": "dry_run" if p["dry_run"] else "empty"}
-        loader.copy_into_snowflake(result)
+        # extract_one_model already loaded every chunk into RAW (page-level
+        # resume: a retried/cleared task only fetches the pages still missing).
         return {"facility": job["facility"], "table": job["table"],
                 "rows": result["row_count"], "status": "loaded", "s3_key": result["s3_key"]}
 
