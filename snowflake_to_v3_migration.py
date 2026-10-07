@@ -395,6 +395,7 @@ _CRITICAL_FK_FIELDS: dict[str, list] = {
     # facility's data (see _FETCH_SQL), so a set one must resolve.
     "inpatient_discharge_request": ["admission_id", "discharge_type_id"],
     "inpatient_discharge":    ["admission_id", "discharge_type_id", "discharge_request_id"],
+    "inventory_dispensing":   ["store_id", "patient_id"],
 }
 
 # Optional FKs: when the parent isn't in V3, send null rather than the raw
@@ -402,6 +403,8 @@ _CRITICAL_FK_FIELDS: dict[str, list] = {
 _NULL_IF_UNRESOLVED: dict[str, set[str]] = {
     "evaluation_sample":           {"investigation_id"},
     "inpatient_discharge_request": {"visit_id"},
+    # stores are posted in parallel, so a parent may not be in V3 yet
+    "inventory_store":             {"parent_store_id"},
 }
 
 # Rows whose parent isn't part of this facility's migrated data at all are
@@ -409,13 +412,16 @@ _NULL_IF_UNRESOLVED: dict[str, set[str]] = {
 # visit destinations hang off 2017-era visits that were never extracted.
 # A parent that IS in the facility's Snowflake table but not yet in V3 is
 # still held back by the critical-FK check and retried later.
-# transform key -> (V2 field on the row, parent Snowflake source table, parent column)
-_SKIP_IF_PARENT_NOT_IN_FACILITY: dict[str, tuple[str, str, str]] = {
-    "evaluation_visit_destination": ("visit_id", "visits", "id"),
-    "evaluation_sample":            ("visit_id", "visits", "id"),
+# transform key -> [(V2 field on the row, parent Snowflake source table, parent column), …]
+_SKIP_IF_PARENT_NOT_IN_FACILITY: dict[str, list[tuple[str, str, str]]] = {
+    "evaluation_visit_destination": [("visit_id", "visits", "id")],
+    "evaluation_sample":            [("visit_id", "visits", "id")],
     # a request whose visit never had an admission can't get an admission_id
-    "inpatient_discharge_request":  ("visit_id", "admissions", "visit_id"),
-    "inpatient_discharge":          ("admission_id", "admissions", "id"),
+    "inpatient_discharge_request":  [("visit_id", "admissions", "visit_id")],
+    "inpatient_discharge":          [("admission_id", "admissions", "id")],
+    # 56 dispensings have no store (their prescription is missing / store 0)
+    "inventory_dispensing":         [("store_id", "inventory_stores", "id"),
+                                     ("visit_id", "visits", "id")],
 }
 
 # Source tables read with their own query instead of SELECT *. V2 discharges
@@ -432,6 +438,12 @@ _FETCH_SQL: dict[str, str] = {
                r.procedures AS request_procedures
         FROM {clean}.DISCHARGES d
         LEFT JOIN {clean}.INPATIENT_DISCHARGE_REQUESTS r ON r.id = d.discharge_request_id
+    """,
+    # V2 dispensing rows carry no store — the store is on their prescription
+    "inventory_evaluation_dispensing": """
+        SELECT d.*, NULLIF(p.store_id, 0) AS store_id
+        FROM {clean}.INVENTORY_EVALUATION_DISPENSING d
+        LEFT JOIN {clean}.EVALUATION_PRESCRIPTIONS p ON p.id = d.prescription
     """,
 }
 
@@ -806,19 +818,21 @@ def run_table_job(entry: dict, facility: str, org_cfg: dict, dry_run: bool) -> b
         return True
 
     pairs = [(r, v2v3.transform_record(r, transform_key, org_cfg, facility)) for r in rows]
-    skip_rule = _SKIP_IF_PARENT_NOT_IN_FACILITY.get(transform_key)
-    if skip_rule:
+    for field, parent_table, parent_col in _SKIP_IF_PARENT_NOT_IN_FACILITY.get(transform_key, []):
         # Decided per source row, before the required-field check: a skipped
         # row is permanently out of scope, not "held back", and must not keep
         # the job open.
-        field, parent_table, parent_col = skip_rule
         with _snowflake_connect() as conn:
             parent_ids = {str(r[0]) for r in conn.cursor().execute(
                 f"SELECT DISTINCT {parent_col} FROM {sf_schema(facility, 'CLEAN')}.{parent_table.upper()}"
             ).fetchall()}
         before = len(pairs)
+        # transformed value first; else the source row, under the field's
+        # own name or V2's bare FK name (visit for visit_id) — the keep-list
+        # may drop a field the target model has no column for
+        bare = field[:-3] if field.endswith("_id") else field
         pairs = [(r, t) for r, t in pairs
-                 if str((t or {}).get(field) or r.get(field)) in parent_ids]
+                 if str((t or {}).get(field) or r.get(field) or r.get(bare)) in parent_ids]
         if before - len(pairs):
             log.info("  %s — skipped %d record(s) whose %s isn't in this facility's %s.%s (never extracted)",
                      label, before - len(pairs), field, parent_table, parent_col)

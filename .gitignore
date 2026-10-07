@@ -65,6 +65,17 @@ failed_mapped_logs/*
 
 # But allow jsons inside this folder
 !dags/jsons/*.json
+
+# V3 migration state, committed so the online Airflow (which imports the
+# scripts from the repo root) starts from the same id maps / progress as the
+# local runs. Only V2/V3 ids — no patient data (that's in the *.jsonl logs,
+# which stay ignored). Commit them only when no local migration is running.
+!.migration_id_map.json
+!.migration_id_to_uuid.json
+!.migration_visit_patient.json
+!.migration_visit_admission.json
+!.migration_record_progress.json
+!.migration_done.json
 *.csv
 rsa_key*
 *.pdf

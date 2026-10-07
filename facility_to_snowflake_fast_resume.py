@@ -445,6 +445,11 @@ OLD_SYSTEM_HISTORY_TABLES: dict[str, tuple[str, str]] = {
     "inpatient_admission_types":         ("Inpatient",  "Ignite\\Inpatient\\Entities\\AdmissionType"),
     # parent of discharges and discharge requests (discharge_type_id)
     "inpatient_discharge_types":         ("Inpatient",  "Ignite\\Inpatient\\Entities\\DischargeType"),
+    # V2's generic lookup lists (module + option group + item_name/item_meta:
+    # card_types, age_groups, …)
+    "settings_options":                  ("Settings",   "Ignite\\Settings\\Entities\\SettingsOption"),
+    # parent of dispensing → V3 sales (inv_sales.store_id is a required FK)
+    "inventory_stores":                  ("Inventory",  "Ignite\\Inventory\\Entities\\Store"),
 }
 
 # History inputs that the sheet run already loads from the same V2 endpoints

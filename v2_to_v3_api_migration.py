@@ -402,8 +402,8 @@ NAMESPACE_MAP: dict[str, dict] = {
     r"Ignite\Inventory\Entities\Category":                   {"v3": r"App\Models\ProductCategory",             "transform": "inventory_category"},
     r"Ignite\Inventory\Entities\Suppliers":                  {"v3": r"App\Models\Supplier",                    "transform": "generic"},
     r"Ignite\Inventory\Entities\Supplier":                   {"v3": r"App\Models\Supplier",                    "transform": "generic"},
-    r"Ignite\Inventory\Entities\Stores":                     {"v3": r"App\Models\Store",                       "transform": "generic"},
-    r"Ignite\Inventory\Entities\Store":                      {"v3": r"App\Models\Store",                       "transform": "generic"},
+    r"Ignite\Inventory\Entities\Stores":                     {"v3": r"App\Models\Store",                       "transform": "inventory_store"},
+    r"Ignite\Inventory\Entities\Store":                      {"v3": r"App\Models\Store",                       "transform": "inventory_store"},
 
     # Theatre config
     r"Ignite\Theatre\Entities\TheatreTypes":                 {"v3": r"App\Models\TheatreType",                 "transform": "generic"},
@@ -529,6 +529,11 @@ NAMESPACE_MAP: dict[str, dict] = {
     # in tier 4 so they land before the discharges that point at them (tier 5).
     r"Ignite\Inpatient\Entities\DischargeRequests":          {"v3": r"App\Models\DischargeRequest",            "transform": "inpatient_discharge_request"},
     r"Ignite\Inpatient\Entities\DischargeRequest":           {"v3": r"App\Models\DischargeRequest",            "transform": "inpatient_discharge_request"},
+    # A V2 dispensing (pharmacy issue of a prescription: amount, payment
+    # status) → inventory-service sale, V3's dispensing/POS record (since the
+    # 2026-09-02 migrations it carries patient_id + payment_status). Needs
+    # stores (tier 1) and patients/visits (tier 2) first.
+    r"Ignite\Evaluation\Entities\Dispensing":                {"v3": r"App\Models\Sale",                        "transform": "inventory_dispensing"},
 
     # ── TIER 5: Inpatient vitals / notes (admissions must exist first) ────────
     # inp_vitals.admission_id → inp_admissions.id
@@ -766,6 +771,10 @@ _PER_KEY_RENAMES: dict[str, dict[str, str]] = {
     "inpatient_discharge": {
         "doctor_id": "discharged_by",
     },
+    "inventory_store": {},
+    "inventory_dispensing": {
+        "user_id": "served_by",   # after the global user → user_id rename
+    },
     "settings_user": {
         "username":   "email",
         "first_name": "first_name",
@@ -856,6 +865,17 @@ _PER_KEY_KEEP_ONLY: dict[str, set[str]] = {
                                     "reason", "discharge_notes", "requested_by", "requested_at", "status",
                                     "discharge_summary", "follow_up_instructions", "medications_prescribed",
                                     "reviewed_by", "reviewed_at", "created_at", "updated_at"},
+    # inventory-service App\Models\Store::$fillable (minus organization_id /
+    # facility_id, set by the gateway; department_id: V2 departments aren't
+    # migrated)
+    "inventory_store": {"name", "code", "description", "location", "type", "is_consumable", "parent_store_id",
+                        "can_order_from_suppliers", "can_update_product_prices", "is_main_store",
+                        "is_active", "open_time", "close_time"},
+    # inventory-service App\Models\Sale::$fillable — the sale header only:
+    # the gateway exposes no sale_item model, so the dispensed drug/quantity
+    # stay on the (already migrated) prescription, referenced in notes.
+    "inventory_dispensing": {"receipt_number", "store_id", "patient_id", "subtotal", "total_amount",
+                             "status", "payment_status", "notes", "served_by", "created_at", "updated_at"},
     # inpatient-service inp_discharges (create migration)
     "inpatient_discharge": {"discharge_number", "admission_id", "discharge_request_id", "discharge_type_id",
                             "discharge_date", "discharged_by", "discharge_diagnosis", "discharge_summary",
@@ -876,6 +896,10 @@ _PER_KEY_CORRUPTION_WATCH: dict[str, list] = {
 _PER_KEY_FACILITY_SCOPE_FIELDS: dict[str, list] = {
     "reception_patient": ["patient_no"],
 }
+
+# *_id columns where V3 itself stores 0 (not an FK) — left as 0 by transform
+# step 3b. V3 prescriptions hold walkin_sale_id=0 for every non-walk-in row.
+_ZERO_IS_NOT_NULL: set[str] = {"walkin_sale_id"}
 
 # Fields that must be non-null for a record to be sent; records missing them are skipped
 _PER_KEY_REQUIRED_FIELDS: dict[str, list] = {
@@ -949,30 +973,60 @@ _v3_users_by_email: dict[str, int] | None = None
 _v3_users_lock = threading.Lock()
 
 
+# V2 staff created in V3 by create_v3_users.py get a placeholder address,
+# "<real email>.v2-<V2 user id>.invalid": core sends no welcome email to
+# *.invalid, and the V2 id rides in the address so the V2→V3 user mapping can
+# be rebuilt from V3's own user list on any host, with no state file.
+_V2_PLACEHOLDER_EMAIL = re.compile(r"^(?P<email>.*?)\.v2-(?P<v2_id>\d+)\.invalid$", re.IGNORECASE)
+_v3_users_by_v2_id: dict[int, int] = {}
+
+
+def _load_v3_users() -> None:
+    """Caller holds _v3_users_lock. Read the destination org's users once."""
+    global _v3_users_by_email, _v3_users_by_v2_id
+    org_cfg = v3_login_org_cfg()
+    users = _fetch_v3_records(_v3_alias(r"App\Models\User"), org_cfg, service_name="core")
+    by_email, by_v2 = {}, {}
+    for u in users:
+        email = str(u.get("email") or "").strip().lower()
+        if not email:
+            continue
+        by_email[email] = u["id"]
+        m = _V2_PLACEHOLDER_EMAIL.match(email)
+        if m:
+            by_v2[int(m["v2_id"])] = u["id"]
+            if m["email"]:
+                by_email.setdefault(m["email"], u["id"])   # the real V2 address it stands for
+    _v3_users_by_email, _v3_users_by_v2_id = by_email, by_v2
+    log.info("Loaded %d V3 users for doctor/staff lookups (%d migrated V2 staff)", len(by_email), len(by_v2))
+
+
 def _v3_user_id_by_email(email) -> int | None:
     """V3 user id for an email (case-insensitive), from the destination org's
     users — read once per process. V3 users can't be inserted through the
-    gateway, so V2 staff only resolve once the backend has created them."""
-    global _v3_users_by_email
+    gateway; V2 staff resolve once they exist in V3 (create_v3_users.py)."""
     if not email:
         return None
     with _v3_users_lock:
         if _v3_users_by_email is None:
-            org_cfg = v3_login_org_cfg()
-            users = _fetch_v3_records(_v3_alias(r"App\Models\User"), org_cfg, service_name="core")
-            _v3_users_by_email = {str(u["email"]).strip().lower(): u["id"] for u in users if u.get("email")}
-            log.info("Loaded %d V3 users for doctor/staff lookups", len(_v3_users_by_email))
+            _load_v3_users()
     return _v3_users_by_email.get(str(email).strip().lower())
 
 
 def _v3_user_for_v2_id(v2_user_id) -> int | None:
-    """V3 user id for a V2 user id, via the users id map — None until the
-    backend has created that V2 staff member as a V3 user and the map knows
-    them (no guessing: a wrong *_by would misattribute clinical records)."""
+    """V3 user id for a V2 user id — via the users id map, else via the V2 id
+    in a migrated user's placeholder address. None when that V2 staff member
+    isn't in V3 (no guessing: a wrong *_by would misattribute clinical records)."""
     if v2_user_id in (None, "", 0, "0"):
         return None
     key = int(v2_user_id) if str(v2_user_id).isdigit() else v2_user_id
-    return _id_map.get(_v3_alias(r"App\Models\User"), {}).get(key)
+    found = _id_map.get(_v3_alias(r"App\Models\User"), {}).get(key)
+    if found is not None:
+        return found
+    with _v3_users_lock:
+        if _v3_users_by_email is None:
+            _load_v3_users()
+    return _v3_users_by_v2_id.get(key)
 
 
 def _v2_admission_for_visit(visit_id) -> int | None:
@@ -995,6 +1049,30 @@ _DISCHARGE_REQUEST_STATUSES = {"pending", "approved", "rejected", "discharged", 
 _NOT_RECORDED = "Not recorded in V2"
 
 
+def _v2_patient_for_visit(visit_id) -> int | None:
+    """V2 patient id of a V2 visit (persisted visit→patient map)."""
+    try:
+        return _visit_patient_map.get(int(visit_id))
+    except (TypeError, ValueError):
+        return None
+
+
+def _store_type(r: dict) -> str:
+    """inv_stores.type enum from a V2 store name (V2 has no type column)."""
+    name = str(r.get("name") or "").lower()
+    for word, kind in (("pharmac", "pharmacy"), ("laborator", "laboratory"), ("theat", "theater"),
+                       ("main store", "main"), ("maternity", "ward"), ("medsurg", "ward"),
+                       ("ward", "ward")):
+        if word in name:
+            return kind
+    return "department"
+
+
+def _dispensing_notes(r: dict) -> str:
+    return (f"Migrated V2 dispensing #{r.get('id')} of {r.get('created_at')}: "
+            f"prescription #{r.get('prescription')}, visit #{r.get('visit_id')}")
+
+
 def _discharge_request_notes(r: dict) -> str | None:
     parts = [f"{label}: {str(r[k]).strip()}" for label, k in _DISCHARGE_REQUEST_SECTIONS
              if r.get(k) is not None and str(r[k]).strip()]
@@ -1002,6 +1080,21 @@ def _discharge_request_notes(r: dict) -> str | None:
 
 
 _PER_KEY_INJECT: dict[str, dict[str, Any]] = {
+    "inventory_store": {
+        "type":          _store_type,
+        "is_main_store": lambda r: str(r.get("name") or "").strip().lower() == "main store",
+    },
+    "inventory_dispensing": {
+        # V2 patient id here (via the visit); remapped to V3 at post time
+        "patient_id":     lambda r: _v2_patient_for_visit(r.get("visit_id")),
+        # unique in V3; source_schema keeps facilities' dispensing #1 apart
+        "receipt_number": lambda r: f"DSP-{r.get('source_schema') or 'v2'}-{r.get('id')}",
+        "subtotal":       lambda r: r.get("amount"),
+        "total_amount":   lambda r: r.get("amount"),
+        "status":         lambda r: "completed",
+        "payment_status": lambda r: "pending",   # only if V2 had none (see _PER_KEY_COERCIONS)
+        "notes":          _dispensing_notes,
+    },
     "inpatient_discharge_type": {
         # inp_discharge_types needs a code (unique per org); V2 types only have a name
         "code": lambda r: "_".join(str(r.get("name") or f"TYPE {r.get('id')}").upper().split()),
@@ -1121,6 +1214,11 @@ _PER_KEY_COERCIONS: dict[str, dict[str, Any]] = {
         "discharged_by": _v3_user_for_v2_id,
         "approved_by":   _v3_user_for_v2_id,
     },
+    "inventory_dispensing": {
+        "served_by":      _v3_user_for_v2_id,
+        # V2 0 = not paid yet → V3's 'pending'; anything else → 'paid'
+        "payment_status": lambda v: "pending" if str(v) in ("0", "", "None") else "paid",
+    },
     "reception_patient_document": {
         # V2 holds the literal string "null" (truthy, so the injection default
         # never fires) or "2" — always replace with the agreed default.
@@ -1210,6 +1308,13 @@ def transform_record(record: dict, transform_key: str, org_cfg: dict, facility: 
                 out[new] = out.pop(old)
             else:
                 out.pop(old)
+
+    # 3b. V2 uses 0 for "no parent" in FK columns (samples: procedure_id=0,
+    # region_id=0). V3 ids start at 1, so 0 can only fail the FK
+    # constraint (generic 500) — send null, which is what V3 means by none.
+    for field, v in out.items():
+        if field.endswith("_id") and field not in _ZERO_IS_NOT_NULL and v in (0, "0"):
+            out[field] = None
 
     # 4. Per-key drops (fields that cannot be mapped in API-to-API)
     for field in _PER_KEY_DROP_FIELDS.get(tk, []):
@@ -2417,20 +2522,37 @@ _record_progress_lock = threading.Lock()
 _inserted_ids: dict[str, set] = {}  # job_key → set of inserted V2 ids
 
 
+def _read_state_json(path: Path, attempts: int = 10, wait: float = 2.0) -> tuple[dict, int]:
+    """(parsed content, mtime_ns) of a state file. A file that exists but
+    doesn't parse is almost always another process mid-write (older code
+    rewrote these in place on every insert), so re-read for a while — and if
+    it still won't parse, stop. Carrying on with an empty map would hold
+    every child record back; an empty progress file would re-post records
+    that are already in V3."""
+    for attempt in range(1, attempts + 1):
+        try:
+            mtime = path.stat().st_mtime_ns
+            return json.loads(path.read_text()), mtime
+        except (OSError, ValueError) as e:
+            if attempt == attempts:
+                raise RuntimeError(
+                    f"{path.name} exists but can't be read ({e}). Another migration process may be "
+                    f"writing it — wait for it, or restore the newest {path.name}.bak_*."
+                ) from e
+            log.warning("%s unreadable (%s) — another process writing it? retry %d/%d in %.0fs",
+                        path.name, e, attempt, attempts - 1, wait)
+            time.sleep(wait)
+
+
 def _load_record_progress() -> None:
     global _inserted_ids, _record_progress_mtime
     if RECORD_PROGRESS_FILE.exists():
-        try:
-            _record_progress_mtime = RECORD_PROGRESS_FILE.stat().st_mtime_ns
-            data = json.loads(RECORD_PROGRESS_FILE.read_text())
-            _inserted_ids = {k: set(v) for k, v in data.items()}
-            total = sum(len(v) for v in _inserted_ids.values())
-            if total:
-                log.info("Record progress loaded — %d records already inserted across %d jobs",
-                         total, len(_inserted_ids))
-        except Exception as e:
-            log.warning("Could not load record progress: %s — starting fresh", e)
-            _inserted_ids = {}
+        data, _record_progress_mtime = _read_state_json(RECORD_PROGRESS_FILE)
+        _inserted_ids = {k: set(v) for k, v in data.items()}
+        total = sum(len(v) for v in _inserted_ids.values())
+        if total:
+            log.info("Record progress loaded — %d records already inserted across %d jobs",
+                     total, len(_inserted_ids))
     else:
         _inserted_ids = {}
 
@@ -2610,6 +2732,11 @@ _FK_REMAP: dict[str, dict[str, str]] = {
     "evaluation_visit_destination": {
         "visit_id": "visit",
     },
+    # Here (not only in _NS_FK_REMAP) so _ensure_id_maps rebuilds the map by
+    # name from V2 + V3 when it's empty — 6 rows, one page — e.g. after the
+    # id map file lost it, or on a host that never had it.
+    "inpatient_discharge_request": {"discharge_type_id": "discharge_type"},
+    "inpatient_discharge":         {"discharge_type_id": "discharge_type"},
     # inp_vitals.admission_id → inp_admissions.id  (THE critical blocker)
     "inpatient_vital": {
         "admission_id": "admission",
@@ -2733,6 +2860,10 @@ _NS_FK_REMAP: dict[str, dict[str, str]] = {
     r"App\Models\Discharge":        {"admission_id": "admission", "discharge_type_id": "discharge_type",
                                      "discharge_request_id": "discharge_request"},
 
+    # ── Inventory ─────────────────────────────────────────────────────────────
+    r"App\Models\Store":            {"parent_store_id": "store"},
+    r"App\Models\Sale":             {"store_id": "store", "patient_id": "patient"},
+
     # ── Patient account ───────────────────────────────────────────────────────
     r"App\Models\PatientAccount":   {"patient_id": "patient"},
 }
@@ -2741,20 +2872,15 @@ _NS_FK_REMAP: dict[str, dict[str, str]] = {
 def _load_id_map() -> None:
     global _id_map, _id_map_mtime
     if ID_MAP_FILE.exists():
-        try:
-            _id_map_mtime = ID_MAP_FILE.stat().st_mtime_ns
-            raw = json.loads(ID_MAP_FILE.read_text())
-            # Keys are stored as strings in JSON; convert back to int where possible
-            _id_map = {
-                alias: {(int(k) if k.isdigit() else k): v for k, v in mapping.items()}
-                for alias, mapping in raw.items()
-            }
-            total = sum(len(v) for v in _id_map.values())
-            if total:
-                log.info("ID map loaded — %d entries across %d models", total, len(_id_map))
-        except Exception as e:
-            log.warning("Could not load ID map: %s — starting fresh", e)
-            _id_map = {}
+        raw, _id_map_mtime = _read_state_json(ID_MAP_FILE)
+        # Keys are stored as strings in JSON; convert back to int where possible
+        _id_map = {
+            alias: {(int(k) if k.isdigit() else k): v for k, v in mapping.items()}
+            for alias, mapping in raw.items()
+        }
+        total = sum(len(v) for v in _id_map.values())
+        if total:
+            log.info("ID map loaded — %d entries across %d models", total, len(_id_map))
     else:
         _id_map = {}
 

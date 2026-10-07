@@ -43,7 +43,8 @@ Every table in the old-system-history set must be named in `tables` and
 needs allow_history_tables ticked, e.g. for the discharge/sample set:
   tables: evaluation_samples, reception_patients_nok,
           reception_patient_documents, inpatient_discharge_types,
-          inpatient_discharge_requests, discharges
+          inpatient_discharge_requests, discharges,
+          inventory_stores, inventory_evaluation_dispensing
 They run in dependency order (tiers) whatever order they're listed in.
 
 The destination org/facility come from FACILITY_V3_CONFIG and the V3
