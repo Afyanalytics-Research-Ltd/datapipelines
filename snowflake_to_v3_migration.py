@@ -388,6 +388,9 @@ _CRITICAL_FK_FIELDS: dict[str, list] = {
     "evaluation_doctor_note": ["visit_id"],
     "evaluation_visit_destination": ["visit_id"],
     "evaluation_sample":      ["patient_id", "visit_id"],
+    # an unresolved patient went out as the raw V2 id → FK 500 on every record
+    "reception_patient_nok":      ["patient_id"],
+    "reception_patient_document": ["patient_id"],
     # discharge_request_id is only set when the request exists in this
     # facility's data (see _FETCH_SQL), so a set one must resolve.
     "inpatient_discharge_request": ["admission_id", "discharge_type_id"],
@@ -905,6 +908,10 @@ def run_migration(facility: str, only_tables: list[str] | None,
     v2v3._load_visit_admission_map()
     v2v3._load_record_progress()
     v2v3._load_permanently_done()
+    # The id map is local state (gitignored): a server that never got this
+    # file posts children with raw V2 parent ids. Show what this run has.
+    log.info("ID map on this host (%s): %s", v2v3.ID_MAP_FILE,
+             ", ".join(f"{a}={len(m)}" for a, m in sorted(v2v3._id_map.items())) or "EMPTY")
 
     # destination_tenant_id is derived from THIS account's own login response,
     # not a static per-facility table — source/destination_tenant_id must

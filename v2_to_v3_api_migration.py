@@ -2054,6 +2054,10 @@ def _post_to_v3_batch(
                 )
                 rec_id    = record.get("id", "?")
                 reason    = debug_msg or r.text[:300]
+                # Production hides the SQL error; error_id is the reference the
+                # backend team needs to find it in the V3 server log.
+                if isinstance(err_body, dict) and err_body.get("error_id"):
+                    reason = f"error_id={err_body['error_id']} {reason}"
 
                 # Category 1 — NOT NULL / missing-default constraint: patch and retry
                 # Catches both:
@@ -2160,8 +2164,9 @@ def _post_to_v3_batch(
                     err_body = {}
                 rec_id = record.get("id", "?")
                 log.error(
-                    "  V3 422 id=%-6s validation error → dead-letter  |  %s",
-                    rec_id, r.text[:500],
+                    "  V3 422 id=%-6s validation error → dead-letter  |  error_id=%s %s",
+                    rec_id, (err_body.get("error_id") if isinstance(err_body, dict) else None) or "-",
+                    r.text[:500],
                 )
                 _write_dead_letter(v3_namespace, record, err_body)
                 raise RecordDeadLettered()
