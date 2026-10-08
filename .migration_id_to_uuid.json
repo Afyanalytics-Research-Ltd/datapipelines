@@ -24,7 +24,9 @@
     "inpatient_discharge_types": {},
     "evaluation_vitals": {},
     "inventory_stores": {},
-    "inventory_evaluation_dispensing": {}
+    "inventory_evaluation_dispensing": {},
+    "evaluation_investigation_results": {},
+    "evaluation_visit_destinations": {}
   },
   "alias_to_table": {
     "visit": "visits",
@@ -55,6 +57,8 @@
     "discharge_type": "inpatient_discharge_types",
     "vital": "evaluation_vitals",
     "store": "inventory_stores",
-    "sale": "inventory_evaluation_dispensing"
+    "sale": "inventory_evaluation_dispensing",
+    "investigation_results": "evaluation_investigation_results",
+    "visit_destination": "evaluation_visit_destinations"
   }
 }
