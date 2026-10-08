@@ -107,6 +107,7 @@ import snowflake.connector
 from dotenv import load_dotenv
 
 import v2_to_v3_api_migration as v2v3
+import v3_passthrough as v3pt
 from facility_to_snowflake_fast_resume import (
     OLD_SYSTEM_HISTORY_TABLES, build_namespace, snake_to_pascal,
 )
@@ -240,6 +241,11 @@ def _stored_namespace(value: str | None) -> str | None:
     return f"Ignite\\{m.group(1)}\\Entities\\{m.group(2)}" if m else None
 
 
+def _tier(entry: dict) -> int:
+    """Dependency tier: V3 pass-through tables carry their own (from their links)."""
+    return entry.get("tier") or v2v3._namespace_tier(entry["namespace"] or "")
+
+
 def _is_v3_shaped(module_source) -> bool:
     """from_json_mappings_to_snowflake stores the V3 service ("reception-service")
     as module_source; V2 loads store the V2 module ("Reception", "Evaluation")."""
@@ -260,17 +266,20 @@ def discover_tables(cur, facility: str) -> list[dict]:
     """).fetchall()
 
     entries = []
-    v3_shaped = sorted(t for t, module_source, _ in rows if _is_v3_shaped(module_source))
-    if v3_shaped:
+    v3_rows = [(t, ms, _as_list(st)) for t, ms, st in rows if _is_v3_shaped(ms)]
+    if v3_rows:
         # Loaded by from_json_mappings_to_snowflake: rows are already V3 records
-        # (module_source = the V3 service). The V2 transforms below would
-        # re-shape them and remap their links as V2 ids — never run those.
-        log.warning("[%s] %d table(s) hold V3-shaped records (from_json_mappings_to_snowflake) — the V2→V3 "
-                    "migration can't post them yet, skipped: %s", facility, len(v3_shaped), ", ".join(v3_shaped))
+        # (module_source = the V3 service). The V2 transforms would re-shape
+        # them and remap their links as V2 ids — they go through
+        # v3_passthrough instead (gateway model by table, links via the id map).
+        fields = {t: set(_as_list(keys)) for t, keys in cur.execute(f"""
+            SELECT source_table, ARRAY_UNION_AGG(OBJECT_KEYS(payload))
+            FROM {raw_schema}.EVENTS_RAW
+            WHERE IS_OBJECT(payload) AND module_source ILIKE '%-service'
+            GROUP BY source_table""").fetchall()}
+        entries += v3pt.prepare(facility, v3_rows, fields)
     for source_table, module_source, stored in rows:
         if _is_v3_shaped(module_source):
-            entries.append({"table": source_table, "module": module_source, "namespace": None,
-                            "v3": None, "transform": None})
             continue
         candidates = _candidate_namespaces(module_source or "", source_table)
         # Fallback: the V2 class the table was actually extracted with (stored
@@ -730,7 +739,7 @@ def _remap_fks_via_uuid(record: dict, transform_key: str, v3_namespace: str) -> 
     couldn't be resolved, for the caller to hold the record back on.
     """
     fk_config = {
-        **v2v3._NS_FK_REMAP.get(v3_namespace, {}),
+        **({} if v3pt.is_passthrough(transform_key) else v2v3._NS_FK_REMAP.get(v3_namespace, {})),
         **v2v3._FK_REMAP.get(transform_key, {}),
     }
     critical = set(_CRITICAL_FK_FIELDS.get(transform_key, []))
@@ -1105,7 +1114,8 @@ def _run_table_job(entry: dict, facility: str, org_cfg: dict, dry_run: bool) -> 
             # Sequencing: the departments these records point at must exist in
             # V3 before they're transformed (department_id is looked up by name).
             ensure_departments_from_destinations(facility)
-        v2v3._ensure_id_maps(transform_key, facility)
+        if not v3pt.is_passthrough(transform_key):
+            v2v3._ensure_id_maps(transform_key, facility)
 
     total = skipped = n_dropped = posted = failed = held = 0
     pages = 0
@@ -1121,7 +1131,9 @@ def _run_table_job(entry: dict, facility: str, org_cfg: dict, dry_run: bool) -> 
                 held += h
                 posted += len(rows) - f - h
             else:
-                pairs = [(r, v2v3.transform_record(r, transform_key, org_cfg, facility)) for r in rows]
+                convert = (v3pt.transform if v3pt.is_passthrough(transform_key) else
+                           lambda r, tk, cfg: v2v3.transform_record(r, tk, cfg, facility))
+                pairs = [(r, convert(r, transform_key, org_cfg)) for r in rows]
                 for field, parent_table, parent_col, ids in parent_sets:
                     # transformed value first; else the source row, under the
                     # field's own name or V2's bare FK name (visit for visit_id)
@@ -1273,7 +1285,8 @@ def _select_entries(facility: str, only_tables: list[str] | None, exclude_tables
     unmapped = [e for e in entries if not e["v3"]]
 
     def _insertable(e: dict) -> bool:
-        return not available_models or v2v3._v3_alias(e["v3"]) in available_models
+        alias = _ALIAS_OVERRIDE.get(e["transform"]) or v2v3._v3_alias(e["v3"])
+        return not available_models or alias in available_models
 
     no_insert = [e for e in mapped if not _insertable(e)]
     runnable  = [e for e in mapped if _insertable(e)]
@@ -1300,8 +1313,8 @@ def plan_table_jobs(facility: str, only_tables: list[str] | None = None,
     _, available_models = _start(facility)
     runnable, unmapped, no_insert = _select_entries(facility, only_tables, exclude_tables, available_models)
     return {
-        "jobs": [{"facility": facility, "table": e["table"], "tier": v2v3._namespace_tier(e["namespace"])}
-                 for e in sorted(runnable, key=lambda e: (v2v3._namespace_tier(e["namespace"]), e["table"]))],
+        "jobs": [{"facility": facility, "table": e["table"], "tier": _tier(e)}
+                 for e in sorted(runnable, key=lambda e: (_tier(e), e["table"]))],
         "unmapped": sorted(e["table"] for e in unmapped),
         "not_insertable": sorted(e["table"] for e in no_insert),
     }
@@ -1350,7 +1363,7 @@ def run_migration(facility: str, only_tables: list[str] | None,
 
     tier_groups: dict[int, list] = defaultdict(list)
     for e in runnable:
-        tier_groups[v2v3._namespace_tier(e["namespace"])].append(e)
+        tier_groups[_tier(e)].append(e)
 
     failures: list[str] = []
     for tier_num in sorted(tier_groups):
@@ -1399,12 +1412,12 @@ def list_tables(facility: str) -> None:
         cur = conn.cursor()
         entries = discover_tables(cur, facility)
         cur.close()
-    entries.sort(key=lambda e: (e["v3"] is None, v2v3._namespace_tier(e["namespace"]), e["table"]))
+    entries.sort(key=lambda e: (e["v3"] is None, _tier(e), e["table"]))
     print(f"{'table':<38} {'tier':<5} {'v3 target':<40} transform")
     print("-" * 110)
     for e in entries:
         if e["v3"]:
-            tier = v2v3._namespace_tier(e["namespace"])
+            tier = _tier(e)
             print(f"{e['table']:<38} {tier:<5} {e['v3']:<40} {e['transform']}")
         else:
             print(f"{e['table']:<38} {'—':<5} {'(no NAMESPACE_MAP entry)':<40} —")

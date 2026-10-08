@@ -118,12 +118,24 @@ class V3Model:
         out = {"id": row.get("id")}
         for f in self.fields:
             target, column = f["field"], f["column"]
+            if target == "id":
+                continue                      # the source id stays the record's id
             value = row.get(column)
             if value is None:
                 value = row.get(target)
-            if value is not None or target not in out:
+            # several columns mapped to one field (e.g. visit_id → visit AND
+            # id → visit): the first one, in mapping order, with a value wins
+            if out.get(target) is None:
                 out[target] = value
         return out
+
+    @property
+    def shared_targets(self) -> dict[str, list[str]]:
+        """V3 fields that more than one source column maps to."""
+        by_target = defaultdict(list)
+        for f in self.fields:
+            by_target[f["field"]].append(f["column"])
+        return {t: cols for t, cols in by_target.items() if len(cols) > 1}
 
 
 @dataclass
@@ -152,6 +164,10 @@ class Mappings:
         dupes = sorted(n for n, c in Counter(m.table for m in models).items() if c > 1)
         if dupes:
             raise SystemExit(f"{Path(path).name}: several entries map to the same V3 table: {dupes}")
+        for mdl in models:
+            for target, cols in mdl.shared_targets.items():
+                log.warning("%s → %s: %s all map to %r — the first with a value is used",
+                            mdl.source_table, mdl.table, ", ".join(cols), target)
         conn = doc["connection"]
         return cls(int(conn["id"]), str(conn.get("name") or ""), models)
 
