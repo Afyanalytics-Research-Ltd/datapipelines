@@ -106,8 +106,9 @@ def _setup_modules(p: dict, facility: str):
     tags=["v3", "snowflake", "migration"],
     default_args={"owner": "data-eng", "retries": 0},
     params={
-        "facilities": Param(["kisumu_v3"], type="array",
-                            items={"type": "string", "enum": FACILITIES}, title="Facilities"),
+        "facilities": Param(["kisumu_v3"], type="array", items={"type": "string"}, title="Facilities",
+                            description="One per line — any facility with a {NAME}_RAW / {NAME}_CLEAN schema "
+                                        "and a V3 connection afya_v3_<name>, e.g. " + ", ".join(FACILITIES) + "."),
         "tables": Param([], type="array", items={"type": "string"}, title="Tables",
                         description="Only these source tables (one per line). Empty = all mapped tables."),
         "exclude_tables": Param([], type="array", items={"type": "string"}, title="Exclude tables",
@@ -140,9 +141,6 @@ def snowflake_to_v3_migration():
         tables = clean_list(p["tables"])
         if not facilities:
             raise AirflowFailException("Pick at least one facility.")
-        unknown = [f for f in facilities if f not in FACILITIES]
-        if unknown:
-            raise AirflowFailException(f"Unknown facilities {unknown}; known: {FACILITIES}")
         history = sorted(set(tables) & set(old_system_history_tables()))
         if history and not p["allow_history_tables"]:
             raise AirflowFailException(

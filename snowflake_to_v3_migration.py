@@ -240,6 +240,12 @@ def _stored_namespace(value: str | None) -> str | None:
     return f"Ignite\\{m.group(1)}\\Entities\\{m.group(2)}" if m else None
 
 
+def _is_v3_shaped(module_source) -> bool:
+    """from_json_mappings_to_snowflake stores the V3 service ("reception-service")
+    as module_source; V2 loads store the V2 module ("Reception", "Evaluation")."""
+    return str(module_source or "").lower().endswith("-service")
+
+
 def discover_tables(cur, facility: str) -> list[dict]:
     """One entry per distinct source_table ingested for this facility, each
     carrying its resolved V2 namespace and NAMESPACE_MAP lookup (v3 namespace
@@ -254,7 +260,18 @@ def discover_tables(cur, facility: str) -> list[dict]:
     """).fetchall()
 
     entries = []
+    v3_shaped = sorted(t for t, module_source, _ in rows if _is_v3_shaped(module_source))
+    if v3_shaped:
+        # Loaded by from_json_mappings_to_snowflake: rows are already V3 records
+        # (module_source = the V3 service). The V2 transforms below would
+        # re-shape them and remap their links as V2 ids — never run those.
+        log.warning("[%s] %d table(s) hold V3-shaped records (from_json_mappings_to_snowflake) — the V2→V3 "
+                    "migration can't post them yet, skipped: %s", facility, len(v3_shaped), ", ".join(v3_shaped))
     for source_table, module_source, stored in rows:
+        if _is_v3_shaped(module_source):
+            entries.append({"table": source_table, "module": module_source, "namespace": None,
+                            "v3": None, "transform": None})
+            continue
         candidates = _candidate_namespaces(module_source or "", source_table)
         # Fallback: the V2 class the table was actually extracted with (stored
         # per row in RAW). Tables loaded with an explicit class — the old-

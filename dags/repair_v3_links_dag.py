@@ -7,7 +7,7 @@ facility's migration state so re-runs update instead of re-inserting
 
   plan      snapshot V3 + Snowflake, match every V3 row to its V2 row and
             report what would change (writes nothing)
-  prepare   [execute] under the tables' migration locks: repair id map /
+  prepare   [Apply changes to V3, on by default] under the tables' migration locks: repair id map /
             progress / V3 uuids, save each table's updates
   apply     [execute] one task per table, ONE AT A TIME: update the links via
             the gateway (match_on=uuid), then re-read V3 to verify
@@ -75,8 +75,9 @@ def _busy_to_fail(fn):
         "facility": Param("kisumu_v3", type="string", title="Facility", examples=facility_keys()),
         "tables": Param([], type="array", items={"type": "string", "enum": LINK_TABLES}, title="Tables",
                         description="Empty = all five."),
-        "execute": Param(False, type="boolean", title="Execute",
-                         description="Writes to V3 and the state files. Off = plan only."),
+        "execute": Param(True, type="boolean", title="Apply changes to V3",
+                         description="On: plan, repair the state files, update the links in V3. "
+                                     "Off = plan only (prepare and apply are skipped)."),
         "resume": Param(False, type="boolean", title="Resume",
                         description="Skip plan/prepare and continue applying the last prepared updates."),
         "allow_growth": Param(True, type="boolean", title="Allow growth",
