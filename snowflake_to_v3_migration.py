@@ -180,6 +180,9 @@ def _snowflake_connect():
         database=os.getenv("SNOWFLAKE_DATABASE").strip(),
         schema=os.getenv("SNOWFLAKE_SCHEMA", "PUBLIC").strip(),
         private_key_file=os.getenv("SNOWFLAKE_PRIVATE_KEY_PATH").strip(),
+        # Long table jobs read Snowflake page by page for well over an hour;
+        # without keep-alive the session token lapses at ~60 minutes.
+        client_session_keep_alive=True,
     )
 
 

@@ -76,6 +76,7 @@ NOT_MIGRATED_DIRECTLY = {"users"}   # handled by sync_users, never by the table 
 # Natural keys for re-matching prerequisites whose V3 insert didn't return an
 # id (V3 field names, compared case/space-insensitively after the transform).
 RECONCILE_KEYS: dict[str, list[str]] = {
+    "settings_clinics":                ["name"],      # → V3 core facilities
     "inventory_units":                 ["name"],
     "inventory_categories":            ["name", "code"],
     "inventory_stores":                ["name", "code"],
@@ -150,11 +151,17 @@ def _mapped_count(entry: dict, rows: list[dict]) -> int:
 # ─── PHASE 0 ─────────────────────────────────────────────────────────────
 
 def phase_setup(facility: str) -> dict:
-    if facility not in loader.FACILITIES:
-        sys.exit(f"{facility} is not in facility_to_snowflake_fast_resume.FACILITIES — add its V2 base_url/db first.")
-    expected = v2v3.FACILITY_V3_CONFIG.get(facility)
-    if not expected or expected.get("organization_id") is None:
-        sys.exit(f"FACILITY_V3_CONFIG[{facility!r}] needs organization_id/facility_id of its V3 org first.")
+    try:
+        v2 = loader.facility_config(facility)            # FACILITIES, or FACILITY_<F>_BASE_URL/_DB
+    except KeyError as e:
+        sys.exit(str(e))
+    expected = v2v3.facility_v3_config(facility)       # FACILITY_V3_CONFIG, or AFYA_<F>_ORGANIZATION_ID/_FACILITY_ID
+    if expected.get("organization_id") is None or expected.get("facility_id") is None:
+        up = facility.upper()
+        sys.exit(f"No V3 org/facility for {facility!r}: set AFYA_{up}_ORGANIZATION_ID / AFYA_{up}_FACILITY_ID "
+                 f"(Airflow: Extra of Connection afya_v3_{facility}) or add it to FACILITY_V3_CONFIG.")
+    log.info("PHASE 0 · V2 %s (db %s) → V3 org %s facility %s", v2["base_url"], v2["db"],
+             expected["organization_id"], expected["facility_id"])
     loader._facility_token(facility)          # V2 credentials
     v2v3.set_v3_target_facility(facility)
     org = v2v3.v3_login_org_cfg()             # raises on org/facility mismatch

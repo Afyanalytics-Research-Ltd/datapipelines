@@ -480,10 +480,29 @@ def state_key(facility: str, table_set: str) -> str:
 
 # ─── JOB BUILDER ─────────────────────────────────────────────────────────
 
+def facility_config(facility: str) -> dict:
+    """V2 base_url / db for a facility: FACILITY_<F>_BASE_URL / FACILITY_<F>_DB
+    (the DAGs fill these from the Airflow Connection <facility>: host, schema)
+    override the FACILITIES entry, so a new facility needs no code change.
+    The result is cached back into FACILITIES for code that indexes it."""
+    up = facility.upper()
+    cfg = dict(FACILITIES.get(facility, {}))
+    for key, env in (("base_url", f"FACILITY_{up}_BASE_URL"), ("db", f"FACILITY_{up}_DB")):
+        val = (os.getenv(env) or "").strip().strip("'\"")
+        if val:
+            cfg[key] = val
+    if not cfg.get("base_url") or not cfg.get("db"):
+        raise KeyError(f"No V2 base_url/db for {facility!r}: add it to FACILITIES, or set "
+                       f"FACILITY_{up}_BASE_URL and FACILITY_{up}_DB (Airflow: Connection "
+                       f"{facility!r} with host = base URL, schema = database).")
+    FACILITIES[facility] = cfg
+    return cfg
+
+
 def build_jobs_for_facility(facility: str, since: str | None = None,
                              only_tables: set[str] | None = None,
                              table_set: str = "sheet") -> list[dict]:
-    cfg = FACILITIES[facility]
+    cfg = facility_config(facility)
     last_run = since or get_watermark(state_key(facility, table_set))
 
     if table_set == "old_system_history":
@@ -539,7 +558,7 @@ def build_jobs_for_facility(facility: str, since: str | None = None,
 # ─── AUTH ────────────────────────────────────────────────────────────────
 
 def generate_auth_token(facility: str) -> str:
-    cfg = FACILITIES[facility]
+    cfg = facility_config(facility)
     upper = facility.upper()
     user = os.getenv(f"FACILITY_{upper}_USERNAME")
     pwd  = os.getenv(f"FACILITY_{upper}_PASSWORD")
@@ -1022,7 +1041,7 @@ def extract_one_model(job: dict, run_id: str, dry_run: bool = False,
     RESUME above). Returns a summary with copied=True — the caller must not
     COPY again — or None when the table has no rows (or on a dry run)."""
     facility = job["facility"]
-    cfg      = FACILITIES[facility]
+    cfg      = facility_config(facility)
 
     url     = f"{cfg['base_url'].rstrip('/')}/api/finance/access/data/point"
     session = _facility_session(facility)
@@ -1258,8 +1277,7 @@ def run_pipeline(facility: str, *, since: str | None = None,
                  resume: bool = True,
                  table_set: str = "sheet") -> None:
 
-    if facility not in FACILITIES:
-        raise ValueError(f"Unknown facility {facility!r}. Known: {list(FACILITIES)}")
+    facility_config(facility)   # raises with setup instructions if unknown
 
     run_id = datetime.now(timezone.utc).strftime("manual__%Y-%m-%dT%H-%M-%SZ")
     started_at = datetime.now(timezone.utc)

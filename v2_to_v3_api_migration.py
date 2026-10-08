@@ -160,6 +160,20 @@ def use_state_dir(facility: str | None) -> Path:
     return d
 
 
+def v2_facility_config(facility: str) -> dict:
+    """V2_FACILITIES[facility] with base_url/db overridable by
+    FACILITY_<F>_BASE_URL / FACILITY_<F>_DB (see the loader's facility_config)."""
+    up = facility.upper()
+    cfg = dict(V2_FACILITIES.get(facility, {}))
+    for key, env in (("base_url", f"FACILITY_{up}_BASE_URL"), ("db", f"FACILITY_{up}_DB")):
+        val = (os.getenv(env) or "").strip().strip("'\"")
+        if val:
+            cfg[key] = val
+    if not cfg.get("base_url"):
+        raise KeyError(f"No V2 base_url for {facility!r} (V2_FACILITIES or FACILITY_{up}_BASE_URL)")
+    return cfg
+
+
 def facility_v3_config(facility: str | None) -> dict:
     """FACILITY_V3_CONFIG[facility], with organization_id / facility_id
     overridable by AFYA_<FACILITY>_ORGANIZATION_ID / _FACILITY_ID (which the
@@ -3355,7 +3369,7 @@ def sync_id_map(alias: str, v2_namespace: str, facility: str, match_field: str =
             v3_by_key[str(key).strip().lower()] = v3_id
 
     # Extract V2 records
-    cfg = V2_FACILITIES[facility]
+    cfg = v2_facility_config(facility)
     job = {
         "facility":      facility,
         "namespace":     v2_namespace,
@@ -3469,7 +3483,7 @@ _PATIENT_IDENTITY_COLS = ("system_id", "created_at")
 
 
 def _v2_all(facility: str, namespace: str) -> dict:
-    cfg = V2_FACILITIES[facility]
+    cfg = v2_facility_config(facility)
     rows, failed = extract_v2_records({
         "facility": facility, "namespace": namespace, "database": cfg["db"],
         "updated_since": "1970-01-01T00:00:00Z", "limit": DEFAULT_LIMIT,
@@ -3823,7 +3837,7 @@ def run_migration(
     skipped_dedup:        list[str] = []
 
     for facility in facilities:
-        cfg = V2_FACILITIES[facility]
+        cfg = v2_facility_config(facility)
         watermark = since or _get_watermark(facility, "all")
         for ns in all_namespaces:
             if ns not in NAMESPACE_MAP:

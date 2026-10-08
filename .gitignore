@@ -84,6 +84,7 @@ failed_mapped_logs/*
 !.migration_state/*/
 !.migration_state/*/.migration_*.json
 .migration_state/**/*.tmp
+.migration_state/**/*.bak*
 *.csv
 rsa_key*
 *.pdf

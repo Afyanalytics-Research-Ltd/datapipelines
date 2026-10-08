@@ -28,7 +28,8 @@ from pathlib import Path
 PIPELINES_DIR = Path(os.getenv("PIPELINES_DIR", "/opt/airflow/pipelines"))
 LOADER_SCRIPT = PIPELINES_DIR / "facility_to_snowflake_fast_resume.py"
 PIPELINE_MODULES = ("facility_to_snowflake_fast_resume", "flatten_jsons_schemas",
-                    "snowflake_to_v3_migration", "v2_to_v3_api_migration")
+                    "snowflake_to_v3_migration", "v2_to_v3_api_migration",
+                    "migrate_facility", "reingest")
 
 # Used only if the scripts aren't mounted, so the DAGs still parse and the
 # import error surfaces when a task runs, not as a broken DAG.
@@ -139,6 +140,19 @@ def load_airflow_config(facilities=()) -> None:
             if conn is not None:
                 _set_if_missing(f"FACILITY_{up}_USERNAME", conn.login, f"conn {facility}", filled)
                 _set_if_missing(f"FACILITY_{up}_PASSWORD", conn.password, f"conn {facility}", filled)
+        # V2 base URL / database: Variable, else Connection <facility> (host,
+        # schema or Extra "db") — a new facility needs no code change
+        for suffix in ("BASE_URL", "DB"):
+            _set_if_missing(f"FACILITY_{up}_{suffix}", _variable(f"FACILITY_{up}_{suffix}"), "variable", filled)
+        if not os.environ.get(f"FACILITY_{up}_BASE_URL") or not os.environ.get(f"FACILITY_{up}_DB"):
+            v2conn = _connection(facility)
+            if v2conn is not None:
+                host = (v2conn.host or "").strip()
+                if host and not host.startswith("http"):
+                    host = "https://" + host
+                _set_if_missing(f"FACILITY_{up}_BASE_URL", host, f"conn {facility}", filled)
+                _set_if_missing(f"FACILITY_{up}_DB", v2conn.schema or (v2conn.extra_dejson or {}).get("db"),
+                                f"conn {facility}", filled)
         # V3 destination account: AFYA_<F>_* — Variable, else Connection afya_v3_<facility>
         for suffix in ("USERNAME", "PASSWORD"):
             _set_if_missing(f"AFYA_{up}_{suffix}", _variable(f"AFYA_{up}_{suffix}"), "variable", filled)
