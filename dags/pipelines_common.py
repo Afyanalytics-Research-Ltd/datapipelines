@@ -147,6 +147,15 @@ def load_airflow_config(facilities=()) -> None:
             if conn is not None:
                 _set_if_missing(f"AFYA_{up}_USERNAME", conn.login, f"conn afya_v3_{facility}", filled)
                 _set_if_missing(f"AFYA_{up}_PASSWORD", conn.password, f"conn afya_v3_{facility}", filled)
+        # V3 org / facility ids: Variable, else the Connection's Extra
+        # {"organization_id": 4, "facility_id": 4} — overrides FACILITY_V3_CONFIG
+        conn = None
+        for key in ("ORGANIZATION_ID", "FACILITY_ID"):
+            _set_if_missing(f"AFYA_{up}_{key}", _variable(f"AFYA_{up}_{key}"), "variable", filled)
+            if not os.environ.get(f"AFYA_{up}_{key}"):
+                conn = conn or _connection(f"afya_v3_{facility}")
+                extra = (conn.extra_dejson or {}) if conn is not None else {}
+                _set_if_missing(f"AFYA_{up}_{key}", extra.get(key.lower()), f"conn afya_v3_{facility}", filled)
 
     if filled:
         import logging

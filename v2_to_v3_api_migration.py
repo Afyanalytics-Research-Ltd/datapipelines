@@ -42,6 +42,7 @@ ENV VARS  (put them in a .env file next to this script)
 from __future__ import annotations
 
 import argparse
+import atexit
 import base64
 import contextlib
 import hashlib
@@ -132,6 +133,44 @@ VISIT_ADMISSION_FILE = Path(__file__).resolve().parent / ".migration_visit_admis
 DEAD_LETTER_FILE     = Path(__file__).resolve().parent / ".migration_failures.jsonl"
 DONE_FILE            = Path(__file__).resolve().parent / ".migration_done.json"   # cross-run completed jobs
 PII_CORRUPTION_LOG   = Path(__file__).resolve().parent / ".migration_pii_corruption.jsonl"
+
+# Per-facility state. V2 ids are only unique WITHIN a facility (two
+# facilities both have a patient #271700, in different V3 orgs), so the id
+# map, progress, done list and visit maps of one facility must never be
+# shared with another: use_state_dir(facility) points the files above at
+# .migration_state/<facility>/. Without it (the old CLI path) they stay in
+# the repo root. The failure/PII logs stay shared (append-only).
+STATE_ROOT = Path(__file__).resolve().parent / ".migration_state"
+
+
+def use_state_dir(facility: str | None) -> Path:
+    """Point the state files at this facility's own directory. Call before
+    loading any state (the loaders read these paths at call time)."""
+    global PROGRESS_FILE, RECORD_PROGRESS_FILE, ID_MAP_FILE, VISIT_PATIENT_FILE, \
+        VISIT_ADMISSION_FILE, DONE_FILE, _record_progress_mtime, _id_map_mtime
+    d = STATE_ROOT / facility if facility else Path(__file__).resolve().parent
+    d.mkdir(parents=True, exist_ok=True)
+    PROGRESS_FILE        = d / ".migration_progress.json"
+    RECORD_PROGRESS_FILE = d / ".migration_record_progress.json"
+    ID_MAP_FILE          = d / ".migration_id_map.json"
+    VISIT_PATIENT_FILE   = d / ".migration_visit_patient.json"
+    VISIT_ADMISSION_FILE = d / ".migration_visit_admission.json"
+    DONE_FILE            = d / ".migration_done.json"
+    _record_progress_mtime = _id_map_mtime = None
+    return d
+
+
+def facility_v3_config(facility: str | None) -> dict:
+    """FACILITY_V3_CONFIG[facility], with organization_id / facility_id
+    overridable by AFYA_<FACILITY>_ORGANIZATION_ID / _FACILITY_ID (which the
+    DAGs fill from the Airflow Connection afya_v3_<facility>'s Extra), so a
+    new facility needs no code change."""
+    cfg = dict(FACILITY_V3_CONFIG.get(facility or "", {"application_id": 1}))
+    for key in ("organization_id", "facility_id"):
+        val = (os.getenv(f"AFYA_{(facility or '').upper()}_{key.upper()}") or "").strip()
+        if val.isdigit():
+            cfg[key] = int(val)
+    return cfg
 
 # V2 source facilities
 V2_FACILITIES: dict[str, dict] = {
@@ -1689,7 +1728,7 @@ def _generate_v3_token() -> tuple[str, dict]:
     user, pwd, cred_prefix = _v3_credentials()
     if not user or not pwd:
         raise RuntimeError("Missing AFYA_USERNAME / AFYA_PASSWORD env vars")
-    expected = FACILITY_V3_CONFIG.get(_v3_target_facility or "", {})
+    expected = facility_v3_config(_v3_target_facility)
     url = f"{V3_SERVICES['core'].rstrip('/')}/v1/login"
     body = {"username": user, "password": pwd}
 
@@ -2540,10 +2579,11 @@ def post_to_v3(
                 dead_letter_count += 1
         else:
             if record_id is not None:
-                if job_key:
-                    _mark_record_inserted(job_key, record_id)
+                # mapping first — see snowflake_to_v3_migration.post_table_to_v3
                 if v3_id is not None:
                     _store_id_mapping(alias, record_id, v3_id)
+                if job_key:
+                    _mark_record_inserted(job_key, record_id)
         with _record_progress_lock:
             done_count += 1
             n = done_count
@@ -2711,6 +2751,7 @@ def _record_inserted(job_key: str, record_id) -> bool:
 
 
 _record_flush_counter = 0
+_record_progress_unflushed = False   # inserted ids not yet on disk (see _flush_state_at_exit)
 
 
 _record_progress_mtime: tuple | None = None   # _file_sig of the version we last read/wrote
@@ -2765,7 +2806,10 @@ def _flush_record_progress() -> None:
     — ids are only ever added, and writing just our own view would erase
     theirs, and for records without a uuid an erased id means a duplicate
     insert on the next run."""
-    global _record_progress_mtime
+    global _record_progress_mtime, _record_progress_unflushed
+    # mappings first: an id saved as inserted must have its V3 id on disk too
+    _flush_id_map()
+    _record_progress_unflushed = False
     with _file_lock(RECORD_PROGRESS_FILE):
         if _changed_on_disk(RECORD_PROGRESS_FILE, _record_progress_mtime):
             try:
@@ -2780,10 +2824,11 @@ def _flush_record_progress() -> None:
 
 
 def _mark_record_inserted(job_key: str, record_id) -> None:
-    global _record_flush_counter
+    global _record_flush_counter, _record_progress_unflushed
     with _record_progress_lock:
         _inserted_ids.setdefault(job_key, set()).add(record_id)
         _record_flush_counter += 1
+        _record_progress_unflushed = True
         if _record_flush_counter % RECORD_FLUSH_EVERY == 0:
             _flush_record_progress()
 
@@ -3098,10 +3143,48 @@ def _write_id_map() -> None:
         _id_map_mtime = _atomic_write(ID_MAP_FILE, json.dumps(_id_map, indent=2))
 
 
+_id_map_dirty = 0
+
+
 def _store_id_mapping(alias: str, v2_id, v3_id) -> None:
+    """Record a V2→V3 mapping. Written to disk in batches, not per insert:
+    rewriting the whole (8+ MB) id map after every record cost ~230 ms CPU +
+    8.5 MB of disk writes per insert — with a few tables in parallel that
+    saturated the server within seconds. It's flushed every
+    RECORD_FLUSH_EVERY mappings, before every progress flush, and at exit."""
+    global _id_map_dirty
     with _id_map_lock:
         _id_map.setdefault(alias, {})[v2_id] = v3_id
-        _write_id_map()
+        _id_map_dirty += 1
+        if _id_map_dirty >= RECORD_FLUSH_EVERY:
+            _write_id_map()
+            _id_map_dirty = 0
+
+
+def _flush_id_map() -> None:
+    """Write any buffered mappings now (end of a table, before a progress
+    flush, at exit)."""
+    global _id_map_dirty
+    with _id_map_lock:
+        if _id_map_dirty:
+            _write_id_map()
+            _id_map_dirty = 0
+
+
+def _flush_state_at_exit() -> None:
+    """Only if this process has unwritten state — processes that never
+    inserted anything (plan, dry runs) must not rewrite the big files."""
+    try:
+        if _record_progress_unflushed:
+            with _record_progress_lock:
+                _flush_record_progress()   # writes the id map first
+        else:
+            _flush_id_map()
+    except Exception as e:
+        log.warning("State flush at exit failed: %s", e)
+
+
+atexit.register(_flush_state_at_exit)
 
 
 def _store_id_mappings(alias: str, pairs: list[tuple]) -> None:
@@ -3190,7 +3273,7 @@ def sync_id_map(alias: str, v2_namespace: str, facility: str, match_field: str =
     other way.
     Returns the number of mappings added.
     """
-    org_cfg = FACILITY_V3_CONFIG.get(facility, {})
+    org_cfg = facility_v3_config(facility)
 
     v3_records = _fetch_v3_records(alias, org_cfg)
     if not v3_records:
@@ -3514,7 +3597,7 @@ def run_job(job: dict, run_id: str, batch_size: int, dry_run: bool) -> bool:
         log.warning("No NAMESPACE_MAP entry for %s — skipping", namespace)
         return True
 
-    org_cfg = FACILITY_V3_CONFIG.get(facility, {})
+    org_cfg = facility_v3_config(facility)
     if org_cfg.get("organization_id") is None or org_cfg.get("facility_id") is None:
         log.error(
             "FACILITY_V3_CONFIG for %s has organization_id/facility_id = None. "

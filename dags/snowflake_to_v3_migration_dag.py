@@ -7,7 +7,7 @@ ONE TASK INSTANCE PER TABLE, ALL AT ONCE. `plan` lists the requested
 tables; with order=all_at_once (the default) the `migrate` task maps over
 all of them and they start together, each in its own process, labelled
 "<facility> · <table>". At most V3_MIGRATION_PARALLEL_TABLES (env, default
-16, read at parse time) run at the same moment — the rest queue and start as
+4, read at parse time) run at the same moment — the rest queue and start as
 others finish. Airflow's own limits also apply: [core] parallelism and the
 Celery worker_concurrency must be at least that high.
 
@@ -78,7 +78,10 @@ DAG_ID = "snowflake_to_v3_migration"
 FACILITIES = facility_keys()
 # v2_to_v3_api_migration._namespace_tier: 1 + len(_TIER_BOUNDARIES)
 TIERS = range(1, 7)
-PARALLEL_TABLES = int_env("V3_MIGRATION_PARALLEL_TABLES", 16)
+# Conservative default: each table task holds ~300 MB of shared state plus
+# its table (investigations ~650 MB, visit destinations ~1.7 GB) — raise it
+# only once the server has the RAM/CPU for it.
+PARALLEL_TABLES = int_env("V3_MIGRATION_PARALLEL_TABLES", 4)
 
 
 def _setup_modules(p: dict, facility: str):
@@ -110,7 +113,7 @@ def _setup_modules(p: dict, facility: str):
         "exclude_tables": Param([], type="array", items={"type": "string"}, title="Exclude tables",
                                 description="Skip these source tables (one per line), e.g. ones already migrated."),
         "mode": Param("migrate", type="string", enum=["migrate", "dry_run", "list_tables"], title="Mode"),
-        "record_workers": Param(8, type="integer", minimum=1, maximum=32,
+        "record_workers": Param(4, type="integer", minimum=1, maximum=32,
                                 title="Parallel POSTs per table",
                                 description="Lower it if V3 starts returning 504s. Tables in parallel = "
                                             f"V3_MIGRATION_PARALLEL_TABLES (currently {PARALLEL_TABLES})."),

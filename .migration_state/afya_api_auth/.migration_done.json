@@ -1,0 +1,26 @@
+{
+  "done": [
+    "afya_api_auth|Ignite\\Evaluation\\Entities\\DiagnosisCodes",
+    "afya_api_auth|Ignite\\Evaluation\\Entities\\EyeExams",
+    "afya_api_auth|Ignite\\Evaluation\\Entities\\Icd10Types",
+    "afya_api_auth|Ignite\\Evaluation\\Entities\\InvestigationResults",
+    "afya_api_auth|Ignite\\Evaluation\\Entities\\LabTestAdditives",
+    "afya_api_auth|Ignite\\Evaluation\\Entities\\LabTestCategories",
+    "afya_api_auth|Ignite\\Evaluation\\Entities\\ProcedureCategoryTemplates",
+    "afya_api_auth|Ignite\\Evaluation\\Entities\\ProcedureTemplates",
+    "afya_api_auth|Ignite\\Evaluation\\Entities\\SampleCollectionMethods",
+    "afya_api_auth|Ignite\\Evaluation\\Entities\\SampleTypes",
+    "afya_api_auth|Ignite\\Inpatient\\Entities\\Wards",
+    "afya_api_auth|Ignite\\Inventory\\Entities\\BatchPurchases",
+    "afya_api_auth|Ignite\\Inventory\\Entities\\Suppliers",
+    "afya_api_auth|Ignite\\Reception\\Entities\\Appointments",
+    "afya_api_auth|sf:banks",
+    "afya_api_auth|sf:evaluation_critical_values",
+    "afya_api_auth|sf:evaluation_icd10_categories",
+    "afya_api_auth|sf:evaluation_prescriptions",
+    "afya_api_auth|sf:evaluation_procedure_categories",
+    "afya_api_auth|sf:evaluation_sample_collection_methods",
+    "afya_api_auth|sf:evaluation_sample_types",
+    "afya_api_auth|sf:invoices"
+  ]
+}

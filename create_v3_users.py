@@ -95,6 +95,7 @@ def main() -> None:
     ap.add_argument("--limit", type=int, default=0, help="Create at most N users (0 = all)")
     args = ap.parse_args()
 
+    s2v3.use_state_dir(args.facility)
     v2v3.set_v3_target_facility(args.facility)
     org_cfg = v2v3.v3_login_org_cfg()
     v2v3._load_id_map()

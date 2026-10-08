@@ -1,0 +1,7 @@
+{
+  "done": [
+    "kisumu_v3|sf:inpatient_admission_types",
+    "kisumu_v3|sf:inpatient_discharge_types",
+    "kisumu_v3|sf:settings_clinics"
+  ]
+}

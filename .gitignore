@@ -78,6 +78,12 @@ failed_mapped_logs/*
 !.migration_done.json
 # sidecar lock files for the state files above (v2_to_v3_api_migration._file_lock)
 .migration_*.lock
+# per-facility migration state (v2_to_v3_api_migration.use_state_dir):
+# .migration_state/<facility>/.migration_*.json — committed like the files above
+!.migration_state/
+!.migration_state/*/
+!.migration_state/*/.migration_*.json
+.migration_state/**/*.tmp
 *.csv
 rsa_key*
 *.pdf

@@ -145,6 +145,15 @@ RECORD_LOG_EVERY   = int(os.getenv("RECORD_LOG_EVERY", "100"))
 # migrating a child table can still resolve the parent correctly.
 ID_TO_UUID_FILE = Path(__file__).resolve().parent / ".migration_id_to_uuid.json"
 
+
+def use_state_dir(facility: str) -> Path:
+    """This facility's own state directory (v2v3.use_state_dir) — every
+    entry point calls it before loading state."""
+    global ID_TO_UUID_FILE
+    d = v2v3.use_state_dir(facility)
+    ID_TO_UUID_FILE = d / ".migration_id_to_uuid.json"
+    return d
+
 # NOTE on shared state: v2v3.ID_MAP_FILE / DONE_FILE / RECORD_PROGRESS_FILE /
 # DEAD_LETTER_FILE / VISIT_PATIENT_FILE / VISIT_ADMISSION_FILE are reused
 # on purpose — both migration paths write to the same V3 destination, so
@@ -353,7 +362,7 @@ def _register_table(alias: str, table: str, records: list[dict]) -> None:
     id_uuid = {r["id"]: r["uuid"] for r in records if r.get("id") is not None and r.get("uuid")}
     with _alias_to_table_lock, _id_to_uuid_lock, v2v3._file_lock(ID_TO_UUID_FILE):
         _alias_to_table.setdefault(alias, table)
-        _id_to_uuid[table] = id_uuid
+        _id_to_uuid.setdefault(table, {}).update(id_uuid)   # page by page
         try:
             on_disk = json.loads(ID_TO_UUID_FILE.read_text()) if ID_TO_UUID_FILE.exists() else {}
         except Exception:
@@ -466,6 +475,9 @@ _FETCH_SQL: dict[str, str] = {
 # Canary runs: post at most this many not-yet-migrated records per table and
 # leave the job open (not marked done), so the next run carries on. 0 = no limit.
 RECORD_LIMIT = int(os.getenv("RECORD_LIMIT", "0"))
+
+# records sent so far in this table under a RECORD_LIMIT canary (reset per table)
+_canary_sent = 0
 
 # job_key -> records held back (parent not in V3 yet) by the last post of that job
 _held_back: dict[str, int] = {}
@@ -644,9 +656,14 @@ def post_table_to_v3(v3_namespace: str, org_cfg: dict, records: list[dict],
     skipped = len(records) - len(pending)
     if skipped:
         log.info("  Skipping %d already-migrated records, posting %d", skipped, len(pending))
-    if RECORD_LIMIT and len(pending) > RECORD_LIMIT:
-        log.info("  Canary — posting the first %d of %d pending records", RECORD_LIMIT, len(pending))
-        pending = pending[:RECORD_LIMIT]
+    global _canary_sent
+    if RECORD_LIMIT:
+        room = max(RECORD_LIMIT - _canary_sent, 0)
+        if len(pending) > room:
+            log.info("  Canary — posting %d of %d pending records (limit %d per table)",
+                     room, len(pending), RECORD_LIMIT)
+            pending = pending[:room]
+        _canary_sent += len(pending)
 
     done_count = 0
     dead_letter_count = 0
@@ -697,10 +714,13 @@ def post_table_to_v3(v3_namespace: str, org_cfg: dict, records: list[dict],
             with progress_lock:
                 dead_letter_count += 1
         else:
-            if rec_key is not None:
-                v2v3._mark_record_inserted(job_key, rec_key)
+            # mapping first: a progress flush always writes the id map before
+            # the inserted-ids, so no record is ever saved as inserted while
+            # its V3 id is only in memory (see v2v3._flush_record_progress)
             if v3_id is not None and rec_key is not None:
                 _store_uuid_mapping(alias, rec_key, v3_id)
+            if rec_key is not None:
+                v2v3._mark_record_inserted(job_key, rec_key)
         with progress_lock:
             done_count += 1
             n = done_count
@@ -848,9 +868,50 @@ def ensure_departments_from_destinations(facility: str) -> None:
     log.info("Departments: created %d%s", created, f", failed {failed}" if failed else "")
 
 
+CHUNK_ROWS = int(os.getenv("CHUNK_ROWS", "5000"))
+
+
+def iter_clean_chunks(facility: str, table: str, chunk_rows: int = CHUNK_ROWS):
+    """Yield a table's CLEAN rows in pages of `chunk_rows`, so a task's memory
+    stays flat however big the table is (loading evaluation_visit_destinations
+    whole took ~2.7 GB and took the server down). Each page is its own query —
+    keyset on ID (`ID > last ORDER BY ID LIMIT n`), never a result set held
+    open for hours. Duplicate snapshots (the views DISTINCT on the whole
+    payload, see dedupe_by_uuid) are removed in Snowflake: newest row per
+    uuid, or per id for rows without one."""
+    clean_schema = sf_schema(facility, "CLEAN")
+    sql = _FETCH_SQL.get(table)
+    base = sql.format(clean=clean_schema) if sql else f"SELECT * FROM {clean_schema}.{table}"
+    with _snowflake_connect() as conn:
+        cur = conn.cursor()
+        cur.execute(f"SELECT * FROM ({base}) LIMIT 0")
+        cols = {d[0].upper() for d in cur.description}
+        key = ("COALESCE(TO_VARCHAR(\"UUID\"), 'id:' || TO_VARCHAR(\"ID\"))" if "UUID" in cols
+               else "TO_VARCHAR(\"ID\")")
+        newest = next((f'"{c}"' for c in ("UPDATED_AT", "CREATED_AT") if c in cols), '"ID"')
+        deduped = (f"SELECT * FROM ({base}) QUALIFY ROW_NUMBER() OVER "
+                   f"(PARTITION BY {key} ORDER BY {newest} DESC NULLS LAST) = 1")
+        last_id = None
+        while True:
+            if last_id is None:
+                cur.execute(f'SELECT * FROM ({deduped}) ORDER BY "ID" LIMIT {int(chunk_rows)}')
+            else:
+                cur.execute(f'SELECT * FROM ({deduped}) WHERE "ID" > %s ORDER BY "ID" LIMIT {int(chunk_rows)}',
+                            (last_id,))
+            columns = [d[0] for d in cur.description]
+            rows = [_row_to_record(r, columns) for r in cur.fetchall()]
+            if not rows:
+                return
+            last_id = rows[-1].get("id")
+            yield rows
+            if len(rows) < chunk_rows or last_id is None:
+                return
+
+
 def run_table_job(entry: dict, facility: str, org_cfg: dict, dry_run: bool) -> bool:
-    """Fetch one table's CLEAN view, dedupe by uuid, transform, and migrate.
-    Returns True on success (including "nothing to do"), False on failure."""
+    """Migrate one table: read its CLEAN view page by page (iter_clean_chunks),
+    transform and post each page, and decide done / waiting / failed from the
+    totals. Returns True on success (including "nothing to do")."""
     table, v3_namespace, transform_key = entry["table"], entry["v3"], entry["transform"]
     alias = _ALIAS_OVERRIDE.get(transform_key) or v2v3._v3_alias(v3_namespace)
     job_key = f"{facility}|sf:{table}"
@@ -862,121 +923,98 @@ def run_table_job(entry: dict, facility: str, org_cfg: dict, dry_run: bool) -> b
         log.info("⊘ %s — already migrated in a previous run", label)
         return True
 
+    global _canary_sent
+    _canary_sent = 0
+    vitals = transform_key == "inpatient_vital"
+    # once per table, not per page
+    parent_sets = []
     try:
-        with _snowflake_connect() as conn:
-            cur = conn.cursor()
-            rows = fetch_clean_rows(cur, facility, table)
-            cur.close()
+        for field, parent_table, parent_col in _SKIP_IF_PARENT_NOT_IN_FACILITY.get(transform_key, []):
+            with _snowflake_connect() as conn:
+                ids = {str(r[0]) for r in conn.cursor().execute(
+                    f"SELECT DISTINCT {parent_col} FROM {sf_schema(facility, 'CLEAN')}.{parent_table.upper()}"
+                ).fetchall()}
+            parent_sets.append((field, parent_table, parent_col, ids))
     except Exception as e:
         log.error("✗ Snowflake fetch FAILED %s: %s", label, e)
         return False
-
-    if not rows:
-        log.info("⊘ %s — 0 rows in Snowflake", label)
-        v2v3._mark_done(_run_id, job_key)
-        return True
-
-    rows = dedupe_by_uuid(rows, table)
-    _register_table(alias, table, rows)
-
-    if transform_key == "inpatient_vital":
-        try:
-            failed, held = _run_vitals_split(entry, facility, rows, org_cfg, job_key, label, dry_run)
-        except Exception as e:
-            log.error("✗ V3 POST FAILED %s: %s", label, e)
-            return False
-        if failed:
-            log.warning("◐ %s — %d record(s) dead-lettered%s (job NOT marked done — re-run will retry)",
-                        label, failed, f", {held} held back" if held else "")
-            return False
-        if held:
-            _waiting[table] = f"{held} record(s) waiting on parents/users not in V3 yet"
-            log.warning("⏸ %s — %d record(s) held back until their admission/patient/user exists in V3 "
-                        "(job NOT marked done — re-run will retry them)", label, held)
-            return False
-        if not dry_run and not RECORD_LIMIT:
-            v2v3._mark_done(_run_id, job_key)
-        return True
-
-    if transform_key == "evaluation_visit_destination" and not dry_run:
-        # Sequencing: the departments these records point at must exist in V3
-        # before they're transformed (department_id is looked up by name).
-        ensure_departments_from_destinations(facility)
-    pairs = [(r, v2v3.transform_record(r, transform_key, org_cfg, facility)) for r in rows]
-    for field, parent_table, parent_col in _SKIP_IF_PARENT_NOT_IN_FACILITY.get(transform_key, []):
-        # Decided per source row, before the required-field check: a skipped
-        # row is permanently out of scope, not "held back", and must not keep
-        # the job open.
-        with _snowflake_connect() as conn:
-            parent_ids = {str(r[0]) for r in conn.cursor().execute(
-                f"SELECT DISTINCT {parent_col} FROM {sf_schema(facility, 'CLEAN')}.{parent_table.upper()}"
-            ).fetchall()}
-        before = len(pairs)
-        # transformed value first; else the source row, under the field's
-        # own name or V2's bare FK name (visit for visit_id) — the keep-list
-        # may drop a field the target model has no column for
-        bare = field[:-3] if field.endswith("_id") else field
-        pairs = [(r, t) for r, t in pairs
-                 if str((t or {}).get(field) or r.get(field) or r.get(bare)) in parent_ids]
-        if before - len(pairs):
-            log.info("  %s — skipped %d record(s) whose %s isn't in this facility's %s.%s (never extracted)",
-                     label, before - len(pairs), field, parent_table, parent_col)
-    transformed = [t for _, t in pairs if t is not None]
-    n_dropped = len(pairs) - len(transformed)
-    if n_dropped:
-        log.warning("  %s — %d/%d records held back by the required-field check",
-                    label, n_dropped, len(pairs))
-
-    if not transformed:
-        if n_dropped:
-            # Held back (e.g. no V3 user yet for the admitting doctor) — not
-            # done: the next run retries them once the missing data exists.
-            _waiting[table] = f"{n_dropped} record(s) missing required V3 data"
-            log.warning("⏸ %s — all %d record(s) held back by the required-field check "
-                        "(job NOT marked done — re-run will retry them)", label, n_dropped)
-            return False
-        log.info("⊘ %s — nothing to post", label)
-        if not dry_run:
-            v2v3._mark_done(_run_id, job_key)
-        return True
-
-    if not dry_run:
+    if not vitals and not dry_run:
+        if transform_key == "evaluation_visit_destination":
+            # Sequencing: the departments these records point at must exist in
+            # V3 before they're transformed (department_id is looked up by name).
+            ensure_departments_from_destinations(facility)
         v2v3._ensure_id_maps(transform_key, facility)
 
+    total = skipped = n_dropped = posted = failed = held = 0
+    pages = 0
     try:
-        dead_letters = post_table_to_v3(v3_namespace, org_cfg, transformed,
-                          transform_key=transform_key, alias=alias,
-                          job_key=job_key, dry_run=dry_run)
+        for rows in iter_clean_chunks(facility, table):
+            pages += 1
+            total += len(rows)
+            _register_table(alias, table, rows)
+
+            if vitals:
+                f, h = _run_vitals_split(entry, facility, rows, org_cfg, job_key, label, dry_run)
+                failed += f
+                held += h
+                posted += len(rows) - f - h
+            else:
+                pairs = [(r, v2v3.transform_record(r, transform_key, org_cfg, facility)) for r in rows]
+                for field, parent_table, parent_col, ids in parent_sets:
+                    # transformed value first; else the source row, under the
+                    # field's own name or V2's bare FK name (visit for visit_id)
+                    # — the keep-list may drop a field the target has no column for
+                    bare = field[:-3] if field.endswith("_id") else field
+                    before = len(pairs)
+                    pairs = [(r, t) for r, t in pairs
+                             if str((t or {}).get(field) or r.get(field) or r.get(bare)) in ids]
+                    skipped += before - len(pairs)
+                transformed = [t for _, t in pairs if t is not None]
+                n_dropped += len(pairs) - len(transformed)
+                if transformed:
+                    problems = post_table_to_v3(v3_namespace, org_cfg, transformed,
+                                                transform_key=transform_key, alias=alias,
+                                                job_key=job_key, dry_run=dry_run)
+                    page_held = _held_back.pop(job_key, 0)
+                    held += page_held
+                    failed += problems - page_held
+                    posted += len(transformed) - problems
+            log.info("  %s — page %d: %d rows read so far (%d posted, %d skipped, %d held, %d failed)",
+                     label, pages, total, posted, skipped, held + n_dropped, failed)
+            if RECORD_LIMIT and _canary_sent >= RECORD_LIMIT:
+                break
     except v2v3.GatewayModelNotRegistered as e:
         log.warning("⊘ %s — model not registered in gateway: %s", label, e)
         return True
     except Exception as e:
-        log.error("✗ V3 POST FAILED %s: %s", label, e)
+        log.error("✗ %s FAILED on page %d: %s", label, pages + 1, e)
         return False
 
     elapsed = time.perf_counter() - t0
-    held_back = _held_back.pop(job_key, 0)
-    failed = dead_letters - held_back
+    if skipped:
+        log.info("  %s — skipped %d record(s) whose parent was never extracted for this facility",
+                 label, skipped)
+    if total == 0:
+        log.info("⊘ %s — 0 rows in Snowflake", label)
+        if not dry_run:
+            v2v3._mark_done(_run_id, job_key)
+        return True
+    waiting = held + n_dropped
     if failed:
-        log.warning("◐ %s — %d/%d migrated in %.2fs, %d dead-lettered%s "
-                    "(job NOT marked done — re-run will retry)",
-                    label, len(transformed) - dead_letters, len(transformed), elapsed, failed,
-                    f", {held_back + n_dropped} held back" if held_back + n_dropped else "")
+        log.warning("◐ %s — %d of %d rows: %d migrated, %d dead-lettered%s in %.0fs "
+                    "(job NOT marked done — re-run will retry)", label, total - skipped, total, posted,
+                    failed, f", {waiting} held back" if waiting else "", elapsed)
         return False
-    if held_back or n_dropped:
-        # Nothing actually failed — the rest waits on parents / users that
-        # aren't in V3 yet. Not done, so a later run picks them up.
-        _waiting[table] = f"{held_back + n_dropped} record(s) waiting on parents/users not in V3 yet"
-        log.warning("⏸ %s — %d/%d migrated in %.2fs, %d held back until their parent/user exists in V3 "
-                    "(job NOT marked done — re-run will retry them)",
-                    label, len(transformed) - held_back, len(transformed) + n_dropped, elapsed,
-                    held_back + n_dropped)
+    if waiting:
+        _waiting[table] = f"{waiting} record(s) waiting on parents/users not in V3 yet"
+        log.warning("⏸ %s — %d migrated, %d held back until their parent/user exists in V3, in %.0fs "
+                    "(job NOT marked done — re-run will retry them)", label, posted, waiting, elapsed)
         return False
     if RECORD_LIMIT:
-        log.info("✓ %s — canary batch posted cleanly in %.2fs (job left open; run without "
+        log.info("✓ %s — canary batch posted cleanly in %.0fs (job left open; run without "
                  "a record limit to post the rest)", label, elapsed)
         return True
-    log.info("✓ %s — %d records migrated in %.2fs", label, len(transformed), elapsed)
+    log.info("✓ %s — %d records migrated in %.0fs (%d page(s))", label, posted, elapsed, pages)
     if not dry_run:
         v2v3._mark_done(_run_id, job_key)
     return True
@@ -999,6 +1037,7 @@ def _start(facility: str) -> tuple[dict, set]:
     global _run_id
     _run_id = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
     _waiting.clear()
+    log.info("State directory: %s", use_state_dir(facility))
 
     v2v3._load_id_map()
     _load_id_to_uuid()
@@ -1125,8 +1164,11 @@ def run_one_table(facility: str, table: str, *, dry_run: bool) -> dict:
         log.exception("Unhandled error [%s]", table)
         return {"table": table, "status": "error", "detail": str(e)[:500]}
     finally:
-        with v2v3._record_progress_lock:
-            v2v3._flush_record_progress()
+        if v2v3._record_progress_unflushed:
+            with v2v3._record_progress_lock:
+                v2v3._flush_record_progress()   # writes buffered id-map entries first
+        else:
+            v2v3._flush_id_map()
     if ok:
         return {"table": table, "status": "ok", "detail": ""}
     if table in _waiting:
