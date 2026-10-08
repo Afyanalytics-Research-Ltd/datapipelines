@@ -3,13 +3,19 @@
 Snowflake {FACILITY}_CLEAN.<table> → V3 gateway
 (Airflow driver for snowflake_to_v3_migration.py)
 
-ONE TASK INSTANCE PER TABLE. `plan` lists the tables to migrate and their
-dependency tier; tier_1 … tier_6 are mapped tasks, one instance per table
-(labelled "<facility> · <table>"), and each tier starts once the previous
-tier has finished, so parents (patients, visits, admissions …) land before
-the records that point at them. Within a tier, up to
-V3_MIGRATION_PARALLEL_TABLES tables (env, default 8, read at parse time)
-run at once, each in its own process.
+ONE TASK INSTANCE PER TABLE, ALL AT ONCE. `plan` lists the requested
+tables; with order=all_at_once (the default) the `migrate` task maps over
+all of them and they start together, each in its own process, labelled
+"<facility> · <table>". At most V3_MIGRATION_PARALLEL_TABLES (env, default
+16, read at parse time) run at the same moment — the rest queue and start as
+others finish. Airflow's own limits also apply: [core] parallelism and the
+Celery worker_concurrency must be at least that high.
+
+Running parents and children together is fine: a child record whose parent
+(patient, visit, admission …) isn't in V3 yet is held back, not posted —
+the table shows WAITING; re-run it once the parent table has finished.
+order=by_tier instead runs tier_1 … tier_6 one after another (parents
+first), each tier's tables in parallel.
 
 Running tables in parallel processes is safe: every shared state file
 (.migration_record_progress.json, .migration_id_map.json, the done list, the
@@ -72,7 +78,7 @@ DAG_ID = "snowflake_to_v3_migration"
 FACILITIES = facility_keys()
 # v2_to_v3_api_migration._namespace_tier: 1 + len(_TIER_BOUNDARIES)
 TIERS = range(1, 7)
-PARALLEL_TABLES = int_env("V3_MIGRATION_PARALLEL_TABLES", 8)
+PARALLEL_TABLES = int_env("V3_MIGRATION_PARALLEL_TABLES", 16)
 
 
 def _setup_modules(p: dict, facility: str):
@@ -112,6 +118,11 @@ def _setup_modules(p: dict, facility: str):
                               description="Post at most this many new records per table and leave the "
                                           "job open, to check a table before the full load. 0 = no limit."),
         "allow_history_tables": Param(False, type="boolean", title="Allow old-system-history tables"),
+        "order": Param("all_at_once", type="string", enum=["all_at_once", "by_tier"], title="Order",
+                       description="all_at_once: every requested table starts together (up to "
+                                   f"{PARALLEL_TABLES} at a time) — child records whose parent isn't in V3 "
+                                   "yet are held back (WAITING); re-run the table afterwards. by_tier: "
+                                   "parents first (patients → visits → …), each tier in parallel."),
         "fail_on_waiting": Param(False, type="boolean", title="Fail on waiting tables",
                                  description="Mark tables whose records are only held back (parents/users "
                                              "not yet in V3) as failed instead of skipped."),
@@ -166,9 +177,14 @@ def snowflake_to_v3_migration():
         tier with no tables (skipped) must not skip every later tier, which
         is what the *_min_one_success rules do. A failed plan leaves no XCom:
         skip then (the run still fails — `done` depends on plan)."""
-        jobs = get_current_context()["ti"].xcom_pull(task_ids="plan")
+        ctx = get_current_context()
+        jobs = ctx["ti"].xcom_pull(task_ids="plan")
         if jobs is None:
             raise AirflowSkipException("plan didn't produce a table list")
+        if tier == 0:   # the all_at_once path: every table in one mapped task
+            return jobs if ctx["params"]["order"] == "all_at_once" else []
+        if ctx["params"]["order"] != "by_tier":
+            return []
         return [j for j in jobs if j["tier"] == tier]
 
     @task(
@@ -208,6 +224,14 @@ def snowflake_to_v3_migration():
         log.info("No table failed.")
 
     planned = plan()
+
+    # order=all_at_once (default): one mapped task over every table, all
+    # started together (max_active_tis_per_dagrun caps how many at a time).
+    all_selected = tables_in_tier.override(task_id="all_tables")(0)
+    planned >> all_selected
+    all_at_once = migrate_table.override(task_id="migrate").expand(job=all_selected)
+
+    # order=by_tier: tier_1 … tier_6, each starting when the previous ends.
     previous = planned
     tier_tasks = []
     for n in TIERS:
@@ -216,7 +240,7 @@ def snowflake_to_v3_migration():
         ran = migrate_table.override(task_id=f"tier_{n}").expand(job=selected)
         tier_tasks.append(ran)
         previous = ran
-    [planned, *tier_tasks] >> done()
+    [planned, all_at_once, *tier_tasks] >> done()
 
 
 snowflake_to_v3_migration()
