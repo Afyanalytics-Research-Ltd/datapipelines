@@ -1859,7 +1859,10 @@ def _generate_v3_token() -> tuple[str, dict]:
             f"{expected['organization_id']}. Set AFYA_{_v3_target_facility.upper()}_USERNAME/"
             f"_PASSWORD to an account in that organization."
         )
-    return token, {"organization_id": org_id, "facility_id": fac_id, "application_id": 1}
+    # user_id: the migrating account itself — v3_passthrough uses it for
+    # NOT NULL creator columns whose original user isn't in V3.
+    return token, {"organization_id": org_id, "facility_id": fac_id, "application_id": 1,
+                   "user_id": user_obj.get("id")}
 
 
 def _v3_token() -> str:

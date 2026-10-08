@@ -77,6 +77,14 @@ LINKS: dict[str, str] = {
 LINK_OVERRIDES: dict[tuple[str, str], str] = {("core_departments", "parent_id"): "core_departments"}
 HOLD_IF_MISSING = {"patients"}            # parent absent → hold the record, never post it unlinked
 DROP_FIELDS = {"organization_id", "deleted_at", "source_schema"}
+# NOT NULL user columns: when the original user isn't in V3 (users aren't
+# migrated), record the migrating V3 account instead of posting NULL.
+USER_FALLBACK_FIELDS = {"created_by"}
+# NOT NULL columns V3 can't derive: a record without them is held back (not
+# posted, so no 500) until the mappings supply them.
+REQUIRED: dict[str, set[str]] = {"credit_notes": {"total_amount"},
+                                "prescriptions": {"visit"}}   # the tool currently sends the row id as visit
+_held_missing: dict[str, int] = defaultdict(int)
 
 _lock = threading.Lock()
 _catalog: dict[tuple[str, str], tuple[str, str]] | None = None   # (service, table) → (alias, class)
@@ -217,12 +225,24 @@ def transform(record: dict, transform_key: str, org_cfg: dict) -> dict | None:
     emptied — or the record is dropped (held) when that parent is the patient."""
     spec = _tables[transform_key]
     out = {k: v for k, v in record.items() if k not in DROP_FIELDS}
+    missing = [f for f in REQUIRED.get(spec["table"], ()) if out.get(f) in (None, "")]
+    if missing:
+        with _lock:
+            _held_missing[spec["table"]] += 1
+            first = _held_missing[spec["table"]] == 1
+        if first:
+            log.warning("%s: no %s in the mappings/source — records held back until it is mapped",
+                        spec["table"], ", ".join(missing))
+        return None
     for field, parent in spec["links"].items():
         if field in spec["resolvable"] or out.get(field) in (None, ""):
             continue
         if parent in HOLD_IF_MISSING:
             return None          # counted as held back by the migration
-        out[field] = None
+        out[field] = org_cfg.get("user_id") if field in USER_FALLBACK_FIELDS and parent == USERS else None
+    for field in USER_FALLBACK_FIELDS:      # mapped but empty in the source
+        if field in out and out[field] in (None, "") and spec["links"].get(field) == USERS:
+            out[field] = org_cfg.get("user_id")
     for field in _unknown_links.get(spec["table"], ()):
         out[field] = None
     if "facility_id" in out:
