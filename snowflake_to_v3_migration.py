@@ -439,6 +439,16 @@ _FETCH_SQL: dict[str, str] = {
         FROM {clean}.DISCHARGES d
         LEFT JOIN {clean}.INPATIENT_DISCHARGE_REQUESTS r ON r.id = d.discharge_request_id
     """,
+    # V2 next of kin store the relationship only as relationship_id → a
+    # SettingsOption row (option = 'relationship': Spouse, Mother, …); their
+    # own relationship text is empty. Send that option's name as relationship.
+    "reception_patients_nok": """
+        SELECT n.* EXCLUDE (relationship),
+               COALESCE(o.item_name, NULLIF(TRIM(n.relationship::STRING), '')) AS relationship
+        FROM {clean}.RECEPTION_PATIENTS_NOK n
+        LEFT JOIN {clean}.SETTINGS_OPTIONS o
+               ON o.id = n.relationship_id AND o.option = 'relationship'
+    """,
     # V2 dispensing rows carry no store — the store is on their prescription
     "inventory_evaluation_dispensing": """
         SELECT d.*, NULLIF(p.store_id, 0) AS store_id
