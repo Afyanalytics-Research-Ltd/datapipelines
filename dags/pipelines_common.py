@@ -156,6 +156,13 @@ def load_airflow_config(facilities=()) -> None:
                 conn = conn or _connection(f"afya_v3_{facility}")
                 extra = (conn.extra_dejson or {}) if conn is not None else {}
                 _set_if_missing(f"AFYA_{up}_{key}", extra.get(key.lower()), f"conn afya_v3_{facility}", filled)
+        # V3 URLs: Extra "url_template" ("https://{service}.afyaanalytics.ai/api/")
+        # and/or "urls" {"core": "https://…/api/", …} — see v2v3._apply_v3_urls
+        conn = conn or _connection(f"afya_v3_{facility}")
+        extra = (conn.extra_dejson or {}) if conn is not None else {}
+        _set_if_missing(f"AFYA_{up}_URL_TEMPLATE", extra.get("url_template"), f"conn afya_v3_{facility}", filled)
+        for svc, url in (extra.get("urls") or {}).items():
+            _set_if_missing(f"AFYA_{up}_{str(svc).upper()}_URL", url, f"conn afya_v3_{facility}", filled)
 
     if filled:
         import logging

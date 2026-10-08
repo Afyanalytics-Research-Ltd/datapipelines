@@ -200,6 +200,23 @@ V3_SERVICES: dict[str, str] = {
     "inpatient":  "https://inpatientmigrate.afyaanalytics.ai/api/",
     "dialysis":   "https://dialysismigrate.afyaanalytics.ai/api/",
 }
+_DEFAULT_V3_SERVICES = dict(V3_SERVICES)
+
+
+def _apply_v3_urls(facility: str | None) -> None:
+    """Per-facility V3 URLs (they differ: coremigrate.… vs core.…). For each
+    service: AFYA_<FACILITY>_<SERVICE>_URL, else AFYA_<FACILITY>_URL_TEMPLATE
+    (or V3_URL_TEMPLATE) with {service} filled in, else the default above.
+    The DAGs fill these from the Connection afya_v3_<facility>'s Extra
+    ("url_template" / "urls"). Updates V3_SERVICES in place."""
+    up = (facility or "").upper()
+    tmpl = (os.getenv(f"AFYA_{up}_URL_TEMPLATE") or os.getenv("V3_URL_TEMPLATE") or "").strip()
+    for svc, default in _DEFAULT_V3_SERVICES.items():
+        url = (os.getenv(f"AFYA_{up}_{svc.upper()}_URL") or "").strip()
+        V3_SERVICES[svc] = url or (tmpl.format(service=svc) if tmpl else default)
+    if V3_SERVICES != _DEFAULT_V3_SERVICES:
+        log.info("V3 URLs for %s: %s", facility,
+                 ", ".join(f"{k}={v}" for k, v in V3_SERVICES.items() if v != _DEFAULT_V3_SERVICES[k]))
 
 # Auth differs by service (per the live ModelGateway Postman collection):
 #   core                 HMAC signing (X-App-Id/X-Timestamp/X-Signature) when
@@ -1114,6 +1131,47 @@ def reset_v3_department_cache() -> None:
         _v3_departments_by_name = None
 
 
+# Migrated V2 staff are stored in V3 with email "<original>.v2-<V2 user id>.invalid"
+# (the convention the backend used for the first batch, kept by
+# migrate_facility.sync_users). The embedded V2 id is the join key — exact,
+# and scoped to the destination org, so V2 ids repeating across facilities
+# can't collide (which is why users are NOT kept in the shared id map).
+V2_USER_EMAIL_RE = re.compile(r"\.v2-(\d+)\.invalid$")
+_v3_users_by_v2_id: dict[int, int] | None = None
+
+
+def v2_user_email(email, username, v2_id) -> str:
+    base = str(email).strip() if email and "@" in str(email) else f"{str(username or 'user').strip()}@migrated.v2"
+    return f"{base}.v2-{int(v2_id)}.invalid"
+
+
+def reset_v3_user_cache() -> None:
+    global _v3_users_by_v2_id, _v3_users_by_email
+    with _v3_users_lock:
+        _v3_users_by_v2_id = None
+        _v3_users_by_email = None
+
+
+def _v3_user_id_for_v2(v2_user_id, email=None) -> int | None:
+    """V3 user for a V2 user: by the V2 id embedded in the migrated email,
+    else by plain email (accounts created some other way)."""
+    global _v3_users_by_v2_id
+    if v2_user_id not in (None, "") and str(v2_user_id).isdigit():
+        with _v3_users_lock:
+            if _v3_users_by_v2_id is None:
+                users = _fetch_v3_records(_v3_alias(r"App\Models\User"), v3_login_org_cfg(), service_name="core")
+                _v3_users_by_v2_id = {}
+                for u in users:
+                    m = V2_USER_EMAIL_RE.search(str(u.get("email") or ""))
+                    if m:
+                        _v3_users_by_v2_id[int(m.group(1))] = u["id"]
+                log.info("Loaded %d migrated V3 users (by V2 id)", len(_v3_users_by_v2_id))
+        hit = _v3_users_by_v2_id.get(int(v2_user_id))
+        if hit is not None:
+            return hit
+    return _v3_user_id_by_email(email)
+
+
 def _v3_user_id_by_email(email) -> int | None:
     """V3 user id for an email (case-insensitive), from the destination org's
     users — read once per process. V3 users can't be inserted through the
@@ -1314,7 +1372,7 @@ _PER_KEY_INJECT: dict[str, dict[str, Any]] = {
         # V2 doctor (embedded, flattened as doctor_email) -> V3 user by email.
         # None until the backend has created the doctor as a V3 user; the
         # required-field check then holds the admission back for a later run.
-        "admitting_doctor_id": lambda r: _v3_user_id_by_email(r.get("doctor_email")),
+        "admitting_doctor_id": lambda r: _v3_user_id_for_v2(r.get("doctor_id"), r.get("doctor_email")),
         # V3 inp_admissions requires a unique admission_number; V2 had none.
         "admission_number": lambda r: f"ADM-{r.get('id', 'unknown')}",
         # Fall back to created_at if V2 didn't carry an explicit admission_date.
@@ -1683,6 +1741,7 @@ def set_v3_target_facility(facility: str | None) -> None:
     whichever facility the account happens to list first. Drops any cached
     token so the next call logs in for the new target."""
     global _v3_target_facility, _v3_token_cache, _v3_org_cfg_cache
+    _apply_v3_urls(facility)
     with _v3_token_lock:
         _v3_target_facility = facility
         _v3_token_cache = None

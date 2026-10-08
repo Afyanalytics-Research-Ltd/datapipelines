@@ -450,6 +450,11 @@ OLD_SYSTEM_HISTORY_TABLES: dict[str, tuple[str, str]] = {
     "settings_options":                  ("Settings",   "Ignite\\Settings\\Entities\\SettingsOption"),
     # parent of dispensing → V3 sales (inv_sales.store_id is a required FK)
     "inventory_stores":                  ("Inventory",  "Ignite\\Inventory\\Entities\\Store"),
+    # parent of procedures (category)
+    "evaluation_procedure_categories":   ("Evaluation", "Ignite\\Evaluation\\Entities\\ProcedureCategories"),
+    # V2 staff accounts — every doctor/approver/analyst a record points at.
+    # Secrets are stripped before anything is written (see _strip_secrets).
+    "users":                             ("Users",      "Ignite\\Users\\Entities\\User"),
 }
 
 # History inputs that the sheet run already loads from the same V2 endpoints
@@ -805,7 +810,25 @@ MAX_PAGES      = 10000
 # times out on the V2 server (investigations didn't answer page 1 in 120s);
 # keyset answers in ~1s. after_id is exclusive, so a fresh run starts at 0.
 # The API ignores updated_since in this mode, so every run is a full extract.
-KEYSET_TABLES  = {t.strip() for t in os.getenv("KEYSET_TABLES", "evaluation_investigations").split(",") if t.strip()}
+KEYSET_TABLES  = {t.strip() for t in os.getenv("KEYSET_TABLES", "evaluation_investigations,users").split(",") if t.strip()}
+
+# Never written to spool, S3 or Snowflake — at any depth (admissions embed
+# their doctor's whole user record, e.g. doctor_email_token).
+_SECRET_FIELDS = ("password", "remember_token", "email_token", "session_id", "two_factor_code",
+                  "two_factor_secret", "api_token", "signature")
+
+
+def _is_secret(key) -> bool:
+    k = str(key).lower()
+    return any(k == f or k.endswith("_" + f) for f in _SECRET_FIELDS)
+
+
+def _strip_secrets(value):
+    if isinstance(value, dict):
+        return {k: _strip_secrets(v) for k, v in value.items() if not _is_secret(k)}
+    if isinstance(value, list):
+        return [_strip_secrets(v) for v in value]
+    return value
 KEYSET_PER_PAGE = 100
 
 
@@ -849,7 +872,7 @@ def _spool_write(spool: Path, page: int, rows: list) -> None:
     tmp = spool / f"page_{page:05d}.jsonl.gz.tmp"
     with gzip.open(tmp, "wb") as gz:
         for row in rows:
-            gz.write(_dumps_bytes(row) + b"\n")
+            gz.write(_dumps_bytes(_strip_secrets(row)) + b"\n")
     tmp.replace(spool / f"page_{page:05d}.jsonl.gz")
 
 
