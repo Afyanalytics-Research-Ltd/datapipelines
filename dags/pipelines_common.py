@@ -29,7 +29,8 @@ PIPELINES_DIR = Path(os.getenv("PIPELINES_DIR", "/opt/airflow/pipelines"))
 LOADER_SCRIPT = PIPELINES_DIR / "facility_to_snowflake_fast_resume.py"
 PIPELINE_MODULES = ("facility_to_snowflake_fast_resume", "flatten_jsons_schemas",
                     "snowflake_to_v3_migration", "v2_to_v3_api_migration",
-                    "migrate_facility", "reingest")
+                    "migrate_facility", "reingest", "from_json_mappings_to_snowflake",
+                    "repair_v3_links")
 
 # Used only if the scripts aren't mounted, so the DAGs still parse and the
 # import error surfaces when a task runs, not as a broken DAG.
@@ -86,6 +87,7 @@ _VARIABLE_KEYS = (
     "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_REGION",
     "AFYA_USERNAME", "AFYA_PASSWORD", "CORE_APP_ID", "CORE_APP_SECRET",
     "MODEL_GATEWAY_MIGRATION_KEY",
+    "AFYA_EXTRACTION_BASE_URL", "AFYA_EXTRACTION_USERNAME", "AFYA_EXTRACTION_PASSWORD",
 )
 _PATH_KEYS = ("SNOWFLAKE_PRIVATE_KEY_PATH", "GOOGLE_SA_JSON_PATH")
 
@@ -128,6 +130,15 @@ def load_airflow_config(facilities=()) -> None:
             _set_if_missing("AWS_SECRET_ACCESS_KEY", aws.password, "conn aws_default", filled)
             region = (aws.extra_dejson or {}).get("region_name")
             _set_if_missing("AWS_REGION", region, "conn aws_default", filled)
+
+    # Afya Extraction tool: Variables above, else Connection afya_extraction
+    # (host = API base URL, login/password)
+    if not os.environ.get("AFYA_EXTRACTION_USERNAME"):
+        ext = _connection("afya_extraction")
+        if ext is not None:
+            _set_if_missing("AFYA_EXTRACTION_BASE_URL", ext.host, "conn afya_extraction", filled)
+            _set_if_missing("AFYA_EXTRACTION_USERNAME", ext.login, "conn afya_extraction", filled)
+            _set_if_missing("AFYA_EXTRACTION_PASSWORD", ext.password, "conn afya_extraction", filled)
 
     for facility in facilities:
         up = facility.upper()

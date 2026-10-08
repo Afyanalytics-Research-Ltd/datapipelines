@@ -77,7 +77,11 @@ x-airflow-common:
     _PIP_ADDITIONAL_REQUIREMENTS: ${_PIP_ADDITIONAL_REQUIREMENTS:-}
     # The following line can be used to set a custom config file, stored in the local config folder
     AIRFLOW_CONFIG: '/opt/airflow/config/airflow.cfg'
+    # Repo root, where the migration DAGs import the pipeline scripts from
+    # (and where their state files live — shared with CLI runs).
+    PIPELINES_DIR: /opt/airflow/pipelines
   volumes:
+    - ${AIRFLOW_PROJ_DIR:-.}:/opt/airflow/pipelines
     - ${AIRFLOW_PROJ_DIR:-.}/dags:/opt/airflow/dags
     - ${AIRFLOW_PROJ_DIR:-.}/logs:/opt/airflow/logs
     - ${AIRFLOW_PROJ_DIR:-.}/config:/opt/airflow/config

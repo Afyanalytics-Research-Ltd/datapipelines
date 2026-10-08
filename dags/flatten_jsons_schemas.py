@@ -8,7 +8,8 @@ facility_api_snowflake_multiple_schemas.py) into typed CLEAN-schema views,
 one per distinct `source_table` value found in each RAW schema's
 EVENTS_RAW table.
 
-For every (raw_schema, clean_schema) pair in SCHEMA_PAIRS:
+For every (raw_schema, clean_schema) pair from schema_pairs() — trigger
+param , else Variable FLATTEN_FACILITIES, else DEFAULT_FACILITIES:
   1. Discover every `source_table` present in {raw_schema}.EVENTS_RAW.
   2. For each table, inspect the JSON payload to discover top-level field
      names/types (LATERAL FLATTEN + TYPEOF), resolving conflicting types
@@ -52,22 +53,53 @@ from dotenv import load_dotenv
 from airflow import DAG
 from airflow.operators.python import PythonOperator
 from airflow.utils.trigger_rule import TriggerRule
+from airflow.sdk import Param
 
 load_dotenv(Path(__file__).parent.parent.parent.parent / ".env")
 log = logging.getLogger(__name__)
 
 DAG_ID = "flatten_jsons_schemas"
 
-# Same RAW → CLEAN schema pairs as the standalone script. Only the active
-# (uncommented) pairs are processed; the rest are kept here, commented out,
-# exactly as in the original so re-enabling a facility is a one-line change.
-SCHEMA_PAIRS = [
-    # ("KISUMU_RAW", "KISUMU_CLEAN"),
-    # ("KAKAMEGA_RAW", "KAKAMEGA_CLEAN"),
-    # ("LODWAR_RAW", "LODWAR_CLEAN"),
-    # ("XANALIFE_RAW", "XANALIFE_CLEAN"),
-    ("AFYA_API_AUTH_RAW", "AFYA_API_AUTH_CLEAN"),
-]
+# RAW → CLEAN schema pairs are resolved per run (schema_pairs()), first match wins:
+#   1. trigger param  facilities  ["silverwood", "kisumu_v3"]  → SILVERWOOD_RAW → SILVERWOOD_CLEAN …
+#   2. Airflow Variable FLATTEN_FACILITIES  "silverwood,kisumu_v3"  (what the @daily run uses)
+#   3. DEFAULT_FACILITIES below
+# "*" (in the param or the Variable) = every <NAME>_RAW schema that has an EVENTS_RAW table.
+DEFAULT_FACILITIES = ["afya_api_auth"]
+
+
+def _facility_list(value) -> list[str]:
+    if isinstance(value, str):
+        value = value.replace("\n", ",").split(",")
+    return [str(v).strip() for v in (value or []) if str(v).strip()]
+
+
+def _all_raw_schemas(sf: "SnowflakeClient") -> list[str]:
+    rows = sf.fetchall("""SELECT TABLE_SCHEMA FROM INFORMATION_SCHEMA.TABLES
+                          WHERE TABLE_NAME = 'EVENTS_RAW' AND TABLE_SCHEMA LIKE '%\\_RAW' ESCAPE '\\\\'""")
+    return sorted(r[0][: -len("_RAW")] for r in rows)
+
+
+def schema_pairs(context: dict, sf: "SnowflakeClient | None" = None) -> list[tuple[str, str]]:
+    """(RAW, CLEAN) pairs for this run — see the comment above."""
+    names = _facility_list((context.get("params") or {}).get("facilities"))
+    if not names:
+        try:
+            from airflow.models import Variable
+            names = _facility_list(Variable.get("FLATTEN_FACILITIES", default_var=""))
+        except Exception:
+            names = []
+    names = names or DEFAULT_FACILITIES
+    if "*" in names:
+        if sf is None:
+            with SnowflakeClient() as own:
+                return schema_pairs({"params": {"facilities": _all_raw_schemas(own)}})
+        names = _all_raw_schemas(sf)
+    upper = [n.upper() for n in names]
+    pairs = [(f"{n}_RAW", f"{n}_CLEAN") for n in upper if not n.endswith("_RAW")] \
+          + [(n, n[: -len("_RAW")] + "_CLEAN") for n in upper if n.endswith("_RAW")]
+    log.info("Schema pairs: %s", ", ".join(f"{r} → {c}" for r, c in pairs))
+    return pairs
 
 
 # ── Snowflake client (key-pair auth) ─────────────────────────────────────
@@ -318,22 +350,24 @@ def build_flatten_sql(raw_schema: str, clean_schema: str, table: str, expanded_f
 def ensure_clean_schemas(**context):
     """Create each target CLEAN schema if it doesn't already exist."""
     with SnowflakeClient() as sf:
-        for _raw_schema, clean_schema in SCHEMA_PAIRS:
+        pairs = schema_pairs(context, sf)
+        for _raw_schema, clean_schema in pairs:
             sf.execute(f"CREATE SCHEMA IF NOT EXISTS {clean_schema}", label=f"schema:{clean_schema}")
-    log.info("Ensured %d CLEAN schema(s)", len(SCHEMA_PAIRS))
+    log.info("Ensured %d CLEAN schema(s)", len(pairs))
 
 
 def discover_flatten_jobs(**context) -> list[dict]:
     """
     Build one flatten job per (raw_schema, clean_schema, table) across all
-    SCHEMA_PAIRS. Returns a list of {"job": {...}} dicts for dynamic task
+    schema_pairs(). Returns a list of {"job": {...}} dicts for dynamic task
     mapping, mirroring get_source_tables() + the outer loop in the root
     script's flatten_all().
     """
     jobs = []
+    only = {t.strip().lower() for t in _facility_list((context.get("params") or {}).get("tables"))}
     with SnowflakeClient() as sf:
-        for raw_schema, clean_schema in SCHEMA_PAIRS:
-            tables = get_source_tables(sf, raw_schema)
+        for raw_schema, clean_schema in schema_pairs(context, sf):
+            tables = [t for t in get_source_tables(sf, raw_schema) if not only or t.lower() in only]
             log.info("%s → %s: found %d tables to process", raw_schema, clean_schema, len(tables))
             for table in tables:
                 jobs.append({
@@ -373,6 +407,14 @@ with DAG(
     default_args={"retries": 3, "retry_delay": timedelta(minutes=2)},
     max_active_tasks=8,
     tags=["snowflake", "transform", "clean"],
+    params={
+        "facilities": Param([], type="array", items={"type": "string"}, title="Facilities",
+                            description="One per line, e.g. silverwood (→ SILVERWOOD_RAW → SILVERWOOD_CLEAN). "
+                                        "* = every *_RAW schema. Empty = Variable FLATTEN_FACILITIES, "
+                                        f"else {', '.join(DEFAULT_FACILITIES)}."),
+        "tables": Param([], type="array", items={"type": "string"}, title="Tables",
+                        description="Only these source tables (one per line). Empty = all."),
+    },
 ) as dag:
 
     t_ensure = PythonOperator(

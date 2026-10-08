@@ -93,10 +93,13 @@ import json
 import re
 import logging
 import os
+import socket
 import sys
 import threading
 import time
+import uuid as uuid_lib
 from collections import defaultdict
+from contextlib import contextmanager
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
@@ -404,6 +407,7 @@ _CRITICAL_FK_FIELDS: dict[str, list] = {
     # going out with the V2 investigation id
     "evaluation_inv_result":  ["investigation_id", "visit_id"],
     "evaluation_investigation": ["visit_id"],
+    "evaluation_prescription":  ["visit_id"],
     # an unresolved patient went out as the raw V2 id → FK 500 on every record
     "reception_patient_nok":      ["patient_id"],
     "reception_patient_document": ["patient_id"],
@@ -516,6 +520,129 @@ _SERVICE_OVERRIDE: dict[str, str] = {"reception_visit": "evaluation", "settings_
 # uuid; patient_no ("kisumu_v3-org4-<no>-<v2 id>") is unique per patient and
 # enabled as a match_on column for `patient`, so a re-post updates in place.
 _MATCH_ON_OVERRIDE: dict[str, str] = {"reception_patient": "patient_no"}
+
+# Final V3 column names, applied to the payload right before posting (AFTER
+# _remap_fks_via_uuid, which works on the transform's renamed names like
+# visit_id / patient_id). transform_record's global FK renames (patient ->
+# patient_id, visit -> visit_id) don't match several evaluation-service
+# tables, which kept V2's own column names — V3 silently drops the unknown
+# field, so these links were 0% filled on kisumu_v3 (org 4). Measured live:
+# visits has `patient`, prescriptions / investigations have `visit`;
+# doctor_notes and evaluation `vitals` have both visit_id and visit.
+# transform key -> {payload field: V3 column}; "move" renames the field,
+# "copy" also keeps the original.
+_V3_COLUMN_RENAMES: dict[str, dict[str, dict[str, str]]] = {
+    "reception_visit":          {"move": {"patient_id": "patient"}},
+    "evaluation_prescription":  {"move": {"visit_id": "visit"}},
+    "evaluation_investigation": {"move": {"visit_id": "visit"}},   # patient_id is a real column there
+    "evaluation_doctor_note":   {"copy": {"visit_id": "visit"}},
+    "outpatient_vital":         {"copy": {"visit_id": "visit"}},
+}
+
+
+def _apply_v3_column_names(payload: dict, transform_key: str) -> dict:
+    """The payload under V3's real column names (see _V3_COLUMN_RENAMES).
+    Only the posted payload changes — progress / id-map keys and the
+    critical-FK check keep using the transform's field names."""
+    rules = _V3_COLUMN_RENAMES.get(transform_key)
+    if not rules:
+        return payload
+    out = dict(payload)
+    for src, dst in rules.get("move", {}).items():
+        if src in out:
+            out[dst] = out.pop(src)
+    for src, dst in rules.get("copy", {}).items():
+        if src in out:
+            out[dst] = out[src]
+    return out
+
+
+# ─── STABLE UUIDS (no duplicate inserts) ─────────────────────────────────────
+# A V2 record without a uuid has no match_on, so every re-post (lost progress,
+# two runs at once) INSERTS a second V3 row — kisumu_v3 got ~16k duplicate
+# investigations that way. Such records now always carry a uuid, and posts
+# match on it, so a re-post updates in place:
+#   1. the V3 row's own uuid when repair_v3_links.py has matched that V2 id
+#      to an existing V3 row (.migration_v3_uuid.json in the state dir), else
+#   2. a deterministic uuid5(facility, alias, V2 id) — the same on every run.
+# Only for gateway models whose rows have a uuid column (checked once per
+# alias with a 1-row read); any other model posts exactly as before.
+_STABLE_UUID_NS = uuid_lib.UUID("8d3f0f5e-2a51-4c3e-9b0e-6a1f3c2d7e41")
+_V3_UUID_FILE = "migration_v3_uuid.json"
+_known_v3_uuids: dict[str, dict[str, str]] | None = None
+_alias_has_uuid: dict[str, bool] = {}
+_uuid_lock = threading.Lock()
+
+
+def _v3_uuid_for(alias: str, v2_id) -> str | None:
+    """The V3 uuid already matched to this V2 id (see repair_v3_links.py)."""
+    global _known_v3_uuids
+    with _uuid_lock:
+        if _known_v3_uuids is None:
+            path = v2v3.ID_MAP_FILE.with_name("." + _V3_UUID_FILE)
+            _known_v3_uuids = json.loads(path.read_text()) if path.exists() else {}
+        return (_known_v3_uuids.get(alias) or {}).get(str(v2_id))
+
+
+def _model_has_uuid(alias: str, service: str | None) -> bool:
+    with _uuid_lock:
+        if alias in _alias_has_uuid:
+            return _alias_has_uuid[alias]
+    has = False
+    try:
+        svc = service or v2v3._alias_to_service.get(alias, "core")
+        org = v2v3.v3_login_org_cfg().get("organization_id")
+        r = v2v3._gateway_post(svc, {"action": "read", "model": alias, "source_tenant_id": org, "per_page": 1},
+                               timeout=60)
+        rows = r.json().get("data") or [] if r.ok else []
+        has = bool(rows) and "uuid" in rows[0]
+    except Exception as e:
+        log.warning("  couldn't check %s for a uuid column (%s) — posting without one", alias, e)
+    with _uuid_lock:
+        _alias_has_uuid[alias] = has
+    log.info("  %s: %s", alias, "uuid column — uuid-less records get a stable uuid" if has
+             else "no uuid column seen — records post without one")
+    return has
+
+
+def _with_stable_uuid(payload: dict, *, facility: str, alias: str, rec_key, transform_key: str) -> dict:
+    if payload.get("uuid") or rec_key is None or transform_key in _MATCH_ON_OVERRIDE:
+        return payload
+    if not _model_has_uuid(alias, _SERVICE_OVERRIDE.get(transform_key)):
+        return payload
+    value = _v3_uuid_for(alias, rec_key) or str(uuid_lib.uuid5(_STABLE_UUID_NS, f"{facility}/{alias}/{rec_key}"))
+    return {**payload, "uuid": value}
+
+
+# ─── ONE WRITER PER TABLE ────────────────────────────────────────────────────
+# Two processes posting the same table at once both see a record as not yet
+# inserted and both post it. Each table job (and repair_v3_links.py) holds an
+# exclusive non-blocking lock on .run_<table>.lock in the facility's state dir.
+
+class TableBusy(RuntimeError):
+    pass
+
+
+@contextmanager
+def table_lock(table: str):
+    if v2v3.fcntl is None:
+        yield
+        return
+    path = v2v3.ID_MAP_FILE.with_name(f".run_{table}.lock")
+    with open(path, "a+") as fh:
+        try:
+            v2v3.fcntl.flock(fh, v2v3.fcntl.LOCK_EX | v2v3.fcntl.LOCK_NB)
+        except BlockingIOError:
+            fh.seek(0)
+            raise TableBusy(f"{table} is being written by another process ({fh.read().strip() or 'unknown'}) "
+                            f"— wait for it to finish") from None
+        fh.seek(0); fh.truncate(); fh.write(f"pid {os.getpid()} on {socket.gethostname()} since "
+                                            f"{time.strftime('%Y-%m-%d %H:%M:%S')}"); fh.flush()
+        try:
+            yield
+        finally:
+            v2v3.fcntl.flock(fh, v2v3.fcntl.LOCK_UN)
+
 
 # Jobs (facility|sf:table) whose records are re-posted even if already
 # recorded as inserted — set by --reprocess. Only safe for tables with a
@@ -699,6 +826,9 @@ def post_table_to_v3(v3_namespace: str, org_cfg: dict, records: list[dict],
         # id-map key via rec_key.
         payload = ({k: val for k, val in remapped.items() if k != "id"}
                    if alias in _NO_V2_ID_ON_POST else remapped)
+        payload = _apply_v3_column_names(payload, transform_key)
+        payload = _with_stable_uuid(payload, facility=job_key.split("|")[0], alias=alias,
+                                    rec_key=rec_key, transform_key=transform_key)
         garbled = payload.get(v2v3.GARBLED_KEY) or {}
         post_kwargs = dict(alias_override=_ALIAS_OVERRIDE.get(transform_key),
                            service_override=_SERVICE_OVERRIDE.get(transform_key),
@@ -912,6 +1042,18 @@ def iter_clean_chunks(facility: str, table: str, chunk_rows: int = CHUNK_ROWS):
 
 
 def run_table_job(entry: dict, facility: str, org_cfg: dict, dry_run: bool) -> bool:
+    """_run_table_job under the table's one-writer lock (see table_lock)."""
+    if dry_run:
+        return _run_table_job(entry, facility, org_cfg, dry_run)
+    try:
+        with table_lock(entry["table"]):
+            return _run_table_job(entry, facility, org_cfg, dry_run)
+    except TableBusy as e:
+        log.error("✗ [%s] %s", facility, e)
+        return False
+
+
+def _run_table_job(entry: dict, facility: str, org_cfg: dict, dry_run: bool) -> bool:
     """Migrate one table: read its CLEAN view page by page (iter_clean_chunks),
     transform and post each page, and decide done / waiting / failed from the
     totals. Returns True on success (including "nothing to do")."""

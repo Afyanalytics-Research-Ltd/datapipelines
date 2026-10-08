@@ -56,7 +56,8 @@ FACILITIES = facility_keys()
     default_args={"owner": "data-eng", "retries": 1, "retry_delay": timedelta(minutes=1)},
     params={
         "facilities": Param(["kisumu_v3"], type="array",
-                            items={"type": "string", "enum": FACILITIES}, title="Facilities"),
+                            items={"type": "string"}, title="Facilities",
+                            description="Facility keys, one per line — any {NAME}_RAW schema, e.g. silverwood."),
         "tables": Param([], type="array", items={"type": "string"}, title="Tables",
                         description="Only these source tables (one per line). Empty = all in EVENTS_RAW."),
         "trigger_v3": Param(False, type="boolean", title="Trigger V3 migration after flatten",

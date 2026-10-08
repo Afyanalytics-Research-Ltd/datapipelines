@@ -3070,8 +3070,12 @@ _FK_REMAP: dict[str, dict[str, str]] = {
     # not "visit_id" (confirmed against the live V3 field mapping, 2026-09;
     # this FK was previously never remapped at all since _NS_FK_REMAP's
     # Prescription entry looked for the nonexistent "visit_id" key).
+    # Keyed visit_id though: transform_record's global rename (visit ->
+    # visit_id) runs before the remap, so a "visit" key never matched and
+    # every prescription went out with its raw V2 visit id. The post step
+    # (snowflake_to_v3_migration._V3_COLUMN_RENAMES) moves it back to `visit`.
     "evaluation_prescription": {
-        "visit": "visit",
+        "visit_id": "visit",
     },
     # invoices.patient_id → patients.id  |  invoices.visit → visits.id — this
     # transform key had NO FK-remap entry at all before (confirmed against
