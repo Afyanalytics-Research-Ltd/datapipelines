@@ -120,9 +120,10 @@ class V3Model:
             target, column = f["field"], f["column"]
             if target == "id":
                 continue                      # the source id stays the record's id
-            value = row.get(column)
-            if value is None:
-                value = row.get(target)
+            # the source column, else a name the extraction tool already
+            # renamed it to: the V3 field itself, or any listed under "also"
+            value = next((row.get(k) for k in (column, target, *f.get("also", ()))
+                          if row.get(k) is not None), None)
             # several columns mapped to one field (e.g. visit_id → visit AND
             # id → visit): the first one, in mapping order, with a value wins
             if out.get(target) is None:
