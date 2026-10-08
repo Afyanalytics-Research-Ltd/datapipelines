@@ -351,7 +351,7 @@ def _register_table(alias: str, table: str, records: list[dict]) -> None:
     other, which is exactly what happened before this fix existed.
     """
     id_uuid = {r["id"]: r["uuid"] for r in records if r.get("id") is not None and r.get("uuid")}
-    with _alias_to_table_lock, _id_to_uuid_lock:
+    with _alias_to_table_lock, _id_to_uuid_lock, v2v3._file_lock(ID_TO_UUID_FILE):
         _alias_to_table.setdefault(alias, table)
         _id_to_uuid[table] = id_uuid
         try:
@@ -360,7 +360,7 @@ def _register_table(alias: str, table: str, records: list[dict]) -> None:
             on_disk = {}
         merged_id_to_uuid = {**on_disk.get("id_to_uuid", {}), **_id_to_uuid}
         merged_alias_to_table = {**on_disk.get("alias_to_table", {}), **_alias_to_table}
-        ID_TO_UUID_FILE.write_text(json.dumps(
+        v2v3._atomic_write(ID_TO_UUID_FILE, json.dumps(
             {"id_to_uuid": merged_id_to_uuid, "alias_to_table": merged_alias_to_table}, indent=2,
         ))
 
@@ -388,6 +388,10 @@ _CRITICAL_FK_FIELDS: dict[str, list] = {
     "evaluation_doctor_note": ["visit_id"],
     "evaluation_visit_destination": ["visit_id"],
     "evaluation_sample":      ["patient_id", "visit_id"],
+    # results whose investigation isn't in V3 yet wait for it instead of
+    # going out with the V2 investigation id
+    "evaluation_inv_result":  ["investigation_id", "visit_id"],
+    "evaluation_investigation": ["visit_id"],
     # an unresolved patient went out as the raw V2 id → FK 500 on every record
     "reception_patient_nok":      ["patient_id"],
     "reception_patient_document": ["patient_id"],
@@ -396,6 +400,8 @@ _CRITICAL_FK_FIELDS: dict[str, list] = {
     "inpatient_discharge_request": ["admission_id", "discharge_type_id"],
     "inpatient_discharge":    ["admission_id", "discharge_type_id", "discharge_request_id"],
     "inventory_dispensing":   ["store_id", "patient_id"],
+    "inpatient_vital":        ["admission_id"],
+    "outpatient_vital":       ["visit_id", "patient_id"],
 }
 
 # Optional FKs: when the parent isn't in V3, send null rather than the raw
@@ -481,10 +487,16 @@ _held_back: dict[str, int] = {}
 # eval_procedure: V2 procedures are the procedure *catalog* -> evaluation-service
 # `procedures`. The bare alias `procedure` resolves to inpatient-service's
 # inp_procedures (procedures done during an admission, needs admission_id).
+# outpatient_vital: both V3 vitals models are App\Models\Vital, so the alias
+# derived from the class is inpatient-service's `vital` (inp_vitals, needs
+# admission_id → every outpatient vital 500'd). Outpatient vitals belong in
+# evaluation-service's `vitals`.
 _ALIAS_OVERRIDE: dict[str, str] = {"reception_visit": "visits", "settings_clinic": "facilities",
-                                   "eval_procedure": "procedures"}
+                                   "eval_procedure": "procedures", "outpatient_vital": "vitals",
+                                   "inpatient_vital": "vital"}
 _SERVICE_OVERRIDE: dict[str, str] = {"reception_visit": "evaluation", "settings_clinic": "core",
-                                     "eval_procedure": "evaluation"}
+                                     "eval_procedure": "evaluation", "outpatient_vital": "evaluation",
+                                     "inpatient_vital": "inpatient"}
 # Upsert column per transform when it isn't uuid. kisumu patients have no
 # uuid; patient_no ("kisumu_v3-org4-<no>-<v2 id>") is unique per patient and
 # enabled as a match_on column for `patient`, so a re-post updates in place.
@@ -738,7 +750,14 @@ def _run_vitals_split(entry: dict, facility: str, rows: list[dict], org_cfg: dic
     means the caller must not mark this job done."""
     admitted, outpatient, orphans = [], [], []
     for r in rows:
-        visit_id = r.get("visit_id")
+        # V2 vitals call the column `visit` (visit_id only after the
+        # transform's global rename), and Snowflake hands ids back as
+        # strings while both maps are int-keyed — normalise before routing.
+        raw = r.get("visit_id") if r.get("visit_id") is not None else r.get("visit")
+        try:
+            visit_id = int(raw)
+        except (TypeError, ValueError):
+            visit_id = None
         if visit_id in v2v3._visit_admission_map:
             admitted.append(r)
         elif visit_id in v2v3._visit_patient_map:
@@ -746,20 +765,27 @@ def _run_vitals_split(entry: dict, facility: str, rows: list[dict], org_cfg: dic
         else:
             orphans.append(r)
 
-    log.info("  %s — split %d rows: %d admitted, %d outpatient, %d unroutable (visit not migrated)",
+    # A visit in neither map was never extracted for this facility (the
+    # visit→patient map covers every extracted visit), so its vitals can
+    # never be routed: skip and log them, like _SKIP_IF_PARENT_NOT_IN_FACILITY,
+    # instead of dead-lettering them on every run and keeping the job open.
+    log.info("  %s — split %d rows: %d admitted, %d outpatient, %d skipped (visit never extracted)",
               label, len(rows), len(admitted), len(outpatient), len(orphans))
+    orphans = []
 
-    if orphans and not dry_run:
-        for r in orphans:
-            v2v3._write_dead_letter(
-                "App\\Models\\Vital[unrouted]", r,
-                {"reason": f"visit_id={r.get('visit_id')} not found in visit->admission or "
-                           f"visit->patient map — Visits/Admissions not migrated for this facility"},
-            )
+    held = 0
 
     def _prep(partition: list[dict], tk: str) -> list[dict]:
+        nonlocal held
         raw = [v2v3.transform_record(r, tk, org_cfg) for r in partition]
-        return [r for r in raw if r is not None]
+        out = [r for r in raw if r is not None]
+        if len(raw) - len(out):
+            # e.g. inpatient vitals whose nurse isn't a V3 user (recorded_by
+            # is NOT NULL) — held back, not dropped: the job stays open
+            held += len(raw) - len(out)
+            log.warning("  %s — %d/%d %s record(s) held back by the required-field check",
+                        label, len(raw) - len(out), len(raw), tk)
+        return out
 
     admitted_t   = _prep(admitted, "inpatient_vital")
     outpatient_t = _prep(outpatient, v2v3.OUTPATIENT_VITAL_TRANSFORM)
@@ -768,18 +794,58 @@ def _run_vitals_split(entry: dict, facility: str, rows: list[dict], org_cfg: dic
         v2v3._ensure_id_maps("inpatient_vital", facility)
         v2v3._ensure_id_maps(v2v3.OUTPATIENT_VITAL_TRANSFORM, facility)
 
-    dead_letters = len(orphans)
-    if admitted_t:
-        dead_letters += post_table_to_v3(r"App\Models\Vital", org_cfg, admitted_t,
-                          transform_key="inpatient_vital",
-                          alias=v2v3._v3_alias(r"App\Models\Vital"),
-                          job_key=f"{job_key}::inpatient", dry_run=dry_run)
-    if outpatient_t:
-        dead_letters += post_table_to_v3(v2v3.OUTPATIENT_VITAL_V3_NAMESPACE, org_cfg, outpatient_t,
-                          transform_key=v2v3.OUTPATIENT_VITAL_TRANSFORM,
-                          alias=v2v3._v3_alias(v2v3.OUTPATIENT_VITAL_V3_NAMESPACE),
-                          job_key=f"{job_key}::outpatient", dry_run=dry_run)
-    return dead_letters
+    failed = 0
+    for part, ns, tk, sub in ((admitted_t, r"App\Models\Vital", "inpatient_vital", "inpatient"),
+                              (outpatient_t, v2v3.OUTPATIENT_VITAL_V3_NAMESPACE,
+                               v2v3.OUTPATIENT_VITAL_TRANSFORM, "outpatient")):
+        if not part:
+            continue
+        # post_table_to_v3 returns dead-lettered + held back (parent not in V3)
+        problems = post_table_to_v3(ns, org_cfg, part, transform_key=tk,
+                                    alias=_ALIAS_OVERRIDE.get(tk) or v2v3._v3_alias(ns),
+                                    job_key=f"{job_key}::{sub}", dry_run=dry_run)
+        post_held = _held_back.pop(f"{job_key}::{sub}", 0)
+        failed += problems - post_held
+        held += post_held
+    return failed, held   # held = waiting on a parent / user that isn't in V3 yet
+
+
+def _department_code(name: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "_", name.lower()).strip("_")[:50] or "department"
+
+
+def ensure_departments_from_destinations(facility: str) -> None:
+    """V2 has no departments table; V3 visit destinations need a
+    department_id. One V3 department per distinct V2 destination name
+    (Triage, Pharmacy, ENT, Gynaecology Dr Mitei …) is created in core-service
+    if it doesn't exist yet (matched by name, so re-runs create nothing)."""
+    view = f"{sf_schema(facility, 'CLEAN')}.EVALUATION_VISIT_DESTINATIONS"
+    with _snowflake_connect() as conn:
+        names = sorted({" ".join(str(r[0]).split()) for r in conn.cursor().execute(
+            f"SELECT DISTINCT destination_name FROM {view} WHERE NULLIF(TRIM(destination_name), '') IS NOT NULL"
+        ).fetchall()})
+    v2v3.reset_v3_department_cache()
+    missing = [n for n in names if v2v3._v3_department_id_by_name(n) is None]
+    log.info("Departments: %d destination names, %d already in V3, %d to create",
+             len(names), len(names) - len(missing), len(missing))
+    org_id = v2v3.v3_login_org_cfg()["organization_id"]
+    created, failed = 0, []
+    for name in missing:
+        base = {"name": name, "code": _department_code(name), "status": "active",
+                "description": "Migrated from V2 visit destination"}
+        # V3's allowed `type` values aren't published: try clinical, then the
+        # model default, then the one value seen on an existing row.
+        for dept_type in ("clinical", None, "administrative"):
+            data = {**base, **({"type": dept_type} if dept_type else {})}
+            r = v2v3._gateway_post("core", {"action": "insert", "model": "departments",
+                                            "destination_tenant_id": org_id, "data": data}, timeout=60)
+            if r.ok:
+                created += 1
+                break
+        else:
+            failed.append((name, r.status_code, r.text[:160]))
+    v2v3.reset_v3_department_cache()
+    log.info("Departments: created %d%s", created, f", failed {failed}" if failed else "")
 
 
 def run_table_job(entry: dict, facility: str, org_cfg: dict, dry_run: bool) -> bool:
@@ -815,18 +881,27 @@ def run_table_job(entry: dict, facility: str, org_cfg: dict, dry_run: bool) -> b
 
     if transform_key == "inpatient_vital":
         try:
-            dead_letters = _run_vitals_split(entry, facility, rows, org_cfg, job_key, label, dry_run)
+            failed, held = _run_vitals_split(entry, facility, rows, org_cfg, job_key, label, dry_run)
         except Exception as e:
             log.error("✗ V3 POST FAILED %s: %s", label, e)
             return False
-        if dead_letters:
-            log.warning("◐ %s — %d problem record(s) (job NOT marked done — re-run will retry)",
-                        label, dead_letters)
+        if failed:
+            log.warning("◐ %s — %d record(s) dead-lettered%s (job NOT marked done — re-run will retry)",
+                        label, failed, f", {held} held back" if held else "")
+            return False
+        if held:
+            _waiting[table] = f"{held} record(s) waiting on parents/users not in V3 yet"
+            log.warning("⏸ %s — %d record(s) held back until their admission/patient/user exists in V3 "
+                        "(job NOT marked done — re-run will retry them)", label, held)
             return False
         if not dry_run and not RECORD_LIMIT:
             v2v3._mark_done(_run_id, job_key)
         return True
 
+    if transform_key == "evaluation_visit_destination" and not dry_run:
+        # Sequencing: the departments these records point at must exist in V3
+        # before they're transformed (department_id is looked up by name).
+        ensure_departments_from_destinations(facility)
     pairs = [(r, v2v3.transform_record(r, transform_key, org_cfg, facility)) for r in rows]
     for field, parent_table, parent_col in _SKIP_IF_PARENT_NOT_IN_FACILITY.get(transform_key, []):
         # Decided per source row, before the required-field check: a skipped
@@ -917,11 +992,10 @@ _run_id: str = ""
 _waiting: dict[str, str] = {}
 
 
-def run_migration(facility: str, only_tables: list[str] | None,
-                  *, workers: int, dry_run: bool,
-                  exclude_tables: list[str] | None = None) -> list[str]:
-    """Returns the tables that FAILED (dead-lettered records, fetch/post
-    errors). Tables that are only waiting on parents are in _waiting."""
+def _start(facility: str) -> tuple[dict, set]:
+    """Per-process setup shared by every entry point: load the shared state
+    files, log in to V3 as this facility's tenant, discover gateway models.
+    Returns (org_cfg, insertable gateway aliases); exits on a setup error."""
     global _run_id
     _run_id = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
     _waiting.clear()
@@ -960,8 +1034,13 @@ def run_migration(facility: str, only_tables: list[str] | None,
               org_cfg.get("organization_id"), org_cfg.get("facility_id"))
 
     log.info("Discovering gateway models …")
-    available_models = v2v3._fetch_available_models()
+    return org_cfg, v2v3._fetch_available_models()
 
+
+def _select_entries(facility: str, only_tables: list[str] | None, exclude_tables: list[str] | None,
+                    available_models: set) -> tuple[list[dict], list[dict], list[dict]]:
+    """Discover this facility's Snowflake tables and pick the ones to run.
+    Returns (runnable, unmapped, not insertable in the gateway)."""
     with _snowflake_connect() as conn:
         cur = conn.cursor()
         entries = discover_tables(cur, facility)
@@ -1009,6 +1088,61 @@ def run_migration(facility: str, only_tables: list[str] | None,
     if no_insert:
         log.warning("SKIPPED — mapped but not insertable per gateway (%d): %s",
                     len(no_insert), ", ".join(sorted(e["table"] for e in no_insert)))
+    return runnable, unmapped, no_insert
+
+
+def plan_table_jobs(facility: str, only_tables: list[str] | None = None,
+                    exclude_tables: list[str] | None = None) -> dict:
+    """What a run would migrate, one entry per table with its dependency
+    tier — for drivers (the Airflow DAG) that run each table in its own
+    process. Nothing is posted."""
+    _, available_models = _start(facility)
+    runnable, unmapped, no_insert = _select_entries(facility, only_tables, exclude_tables, available_models)
+    return {
+        "jobs": [{"facility": facility, "table": e["table"], "tier": v2v3._namespace_tier(e["namespace"])}
+                 for e in sorted(runnable, key=lambda e: (v2v3._namespace_tier(e["namespace"]), e["table"]))],
+        "unmapped": sorted(e["table"] for e in unmapped),
+        "not_insertable": sorted(e["table"] for e in no_insert),
+    }
+
+
+def run_one_table(facility: str, table: str, *, dry_run: bool) -> dict:
+    """Migrate ONE table in this process (its own login, state load and
+    gateway discovery). Safe to run several at once in separate processes:
+    the shared state files are merged on write, never overwritten.
+    Returns {"table", "status": ok | waiting | failed | error | skipped, "detail"}
+    — "error" is a crash (worth a retry), "failed" means records were
+    dead-lettered (a retry would only repeat them)."""
+    org_cfg, available_models = _start(facility)
+    runnable, unmapped, no_insert = _select_entries(facility, [table], None, available_models)
+    if not runnable:
+        why = ("no NAMESPACE_MAP entry" if unmapped else
+               "not insertable in the gateway" if no_insert else f"not in {facility} RAW")
+        return {"table": table, "status": "skipped", "detail": why}
+    try:
+        ok = run_table_job(runnable[0], facility, org_cfg, dry_run)
+    except Exception as e:
+        log.exception("Unhandled error [%s]", table)
+        return {"table": table, "status": "error", "detail": str(e)[:500]}
+    finally:
+        with v2v3._record_progress_lock:
+            v2v3._flush_record_progress()
+    if ok:
+        return {"table": table, "status": "ok", "detail": ""}
+    if table in _waiting:
+        return {"table": table, "status": "waiting", "detail": _waiting[table]}
+    return {"table": table, "status": "failed", "detail": "dead-lettered records — see the task log"}
+
+
+def run_migration(facility: str, only_tables: list[str] | None,
+                  *, workers: int, dry_run: bool,
+                  exclude_tables: list[str] | None = None) -> list[str]:
+    """All selected tables in one process, tier by tier (`workers` tables in
+    parallel per tier). Returns the tables that FAILED (dead-lettered
+    records, fetch/post errors); tables only waiting on parents are in
+    _waiting."""
+    org_cfg, available_models = _start(facility)
+    runnable, unmapped, no_insert = _select_entries(facility, only_tables, exclude_tables, available_models)
 
     tier_groups: dict[int, list] = defaultdict(list)
     for e in runnable:

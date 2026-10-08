@@ -3,53 +3,49 @@
 Snowflake {FACILITY}_CLEAN.<table> → V3 gateway
 (Airflow driver for snowflake_to_v3_migration.py)
 
-One mapped task per facility. Facilities run one at a time — on purpose:
-every run reads and rewrites the same state files (.migration_record_progress.json,
-.migration_id_map.json, ...), and two processes writing them at once lose
-each other's updates (or truncate the file). Speed comes from inside the
-task instead: `workers` tables in parallel per dependency tier, and
-`record_workers` parallel POSTs per table.
+ONE TASK INSTANCE PER TABLE. `plan` lists the tables to migrate and their
+dependency tier; tier_1 … tier_6 are mapped tasks, one instance per table
+(labelled "<facility> · <table>"), and each tier starts once the previous
+tier has finished, so parents (patients, visits, admissions …) land before
+the records that point at them. Within a tier, up to
+V3_MIGRATION_PARALLEL_TABLES tables (env, default 8, read at parse time)
+run at once, each in its own process.
 
-Don't run the CLI against the same repo while this DAG is running, for
-the same reason.
+Running tables in parallel processes is safe: every shared state file
+(.migration_record_progress.json, .migration_id_map.json, the done list, the
+visit maps …) is merged with what's on disk and replaced atomically on each
+write, never overwritten with one process's view.
+
+Grid colours per table:
+  green    migrated
+  skipped  WAITING — records held back until their parent / V3 user exists
+           (re-run later; with fail_on_waiting ticked it's red instead)
+  red      failed — dead-lettered records (error_ids in the task log), or a
+           crash (retried once automatically)
+Clear a single table's task to re-run just that table; records already
+in V3 are skipped, never posted twice.
 
 Trigger form options:
   facilities      one or more facility keys.
-  tables          only these Snowflake source tables (one per line), e.g.
-                  patients / visits. Empty = every mapped, insertable table,
-                  in tier order (patients before visits, ...).
+  tables          only these Snowflake source tables (one per line).
+                  Empty = every mapped, insertable table except the
+                  old-system-history set.
   exclude_tables  skip these source tables (e.g. ones already migrated).
   mode            migrate     — POST to V3
                   dry_run     — fetch + transform only, nothing posted
                   list_tables — log each table's tier and V3 target, then stop
-  workers         tables in parallel within a tier.
   record_workers  parallel POSTs within one table (RECORD_WORKERS).
   record_limit    canary: post at most N not-yet-migrated records per table
-                  and leave each job open. Run once with e.g. 5, check V3,
-                  then run again with 0 (= no limit) to post the rest —
-                  records already posted are skipped, never sent twice.
+                  and leave each job open; run again with 0 for the rest.
   allow_history_tables
                   old-system-history tables (reception_patients,
-                  evaluation_prescriptions, ...) are refused unless this is
-                  ticked: they're archive copies for old_system_history, and
-                  loading them table-by-table would e.g. insert every
-                  patient a second time.
-  fail_on_waiting by default a table whose only problem is records held
-                  back until their parent exists in V3 (e.g. discharges
-                  before admissions/users are in V3) is reported as WAITING
-                  and the run still succeeds; tick to fail the task instead.
-
-Every table in the old-system-history set must be named in `tables` and
-needs allow_history_tables ticked, e.g. for the discharge/sample set:
-  tables: evaluation_samples, reception_patients_nok,
-          reception_patient_documents, inpatient_discharge_types,
-          inpatient_discharge_requests, discharges,
-          inventory_stores, inventory_evaluation_dispensing
-They run in dependency order (tiers) whatever order they're listed in.
+                  evaluation_prescriptions, ...) are refused unless ticked:
+                  they're archive copies for old_system_history.
+  fail_on_waiting mark WAITING tables as failed instead of skipped.
 
 The destination org/facility come from FACILITY_V3_CONFIG and the V3
 account in AFYA_<FACILITY>_USERNAME/PASSWORD (falls back to AFYA_USERNAME);
-the run stops before posting anything if they disagree.
+a table stops before posting anything if they disagree.
 """
 from __future__ import annotations
 
@@ -59,22 +55,41 @@ import sys
 from pathlib import Path
 from datetime import datetime, timedelta
 
-from airflow.exceptions import AirflowFailException
+try:
+    from airflow.sdk.exceptions import AirflowFailException, AirflowSkipException
+except ImportError:   # older Airflow 3.0.x
+    from airflow.exceptions import AirflowFailException, AirflowSkipException
 from airflow.sdk import Param, dag, get_current_context, task
+from airflow.task.trigger_rule import TriggerRule
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))  # for pipelines_common
-from pipelines_common import (clean_list, facility_keys, old_system_history_tables,
+from pipelines_common import (clean_list, facility_keys, int_env, old_system_history_tables,
                               use_pipelines_dir)
 
 log = logging.getLogger(__name__)
 
 DAG_ID = "snowflake_to_v3_migration"
 FACILITIES = facility_keys()
+# v2_to_v3_api_migration._namespace_tier: 1 + len(_TIER_BOUNDARIES)
+TIERS = range(1, 7)
+PARALLEL_TABLES = int_env("V3_MIGRATION_PARALLEL_TABLES", 8)
+
+
+def _setup_modules(p: dict, facility: str):
+    os.environ["RECORD_WORKERS"] = str(int(p["record_workers"]))
+    use_pipelines_dir([facility])
+    import snowflake_to_v3_migration as s2v3
+    import v2_to_v3_api_migration as v2v3
+    # Read at import time by both modules — set them in case either was
+    # already imported in this process.
+    s2v3.RECORD_WORKERS = v2v3.RECORD_WORKERS = int(p["record_workers"])
+    s2v3.RECORD_LIMIT = int(p["record_limit"])
+    return s2v3
 
 
 @dag(
     dag_id=DAG_ID,
-    description="Snowflake CLEAN views → V3 gateway, one facility at a time",
+    description="Snowflake CLEAN views → V3 gateway, one task instance per table, tier by tier",
     schedule=None,
     start_date=datetime(2026, 1, 1),
     catchup=False,
@@ -89,83 +104,119 @@ FACILITIES = facility_keys()
         "exclude_tables": Param([], type="array", items={"type": "string"}, title="Exclude tables",
                                 description="Skip these source tables (one per line), e.g. ones already migrated."),
         "mode": Param("migrate", type="string", enum=["migrate", "dry_run", "list_tables"], title="Mode"),
-        "workers": Param(8, type="integer", minimum=1, maximum=32, title="Tables in parallel per tier"),
         "record_workers": Param(8, type="integer", minimum=1, maximum=32,
                                 title="Parallel POSTs per table",
-                                description="Lower it if V3 starts returning 504s."),
+                                description="Lower it if V3 starts returning 504s. Tables in parallel = "
+                                            f"V3_MIGRATION_PARALLEL_TABLES (currently {PARALLEL_TABLES})."),
         "record_limit": Param(0, type="integer", minimum=0, title="Record limit (canary)",
                               description="Post at most this many new records per table and leave the "
                                           "job open, to check a table before the full load. 0 = no limit."),
         "allow_history_tables": Param(False, type="boolean", title="Allow old-system-history tables"),
         "fail_on_waiting": Param(False, type="boolean", title="Fail on waiting tables",
-                                 description="Fail the task when records are only held back waiting on "
-                                             "parents/users not yet in V3 (default: report and succeed)."),
+                                 description="Mark tables whose records are only held back (parents/users "
+                                             "not yet in V3) as failed instead of skipped."),
     },
 )
 def snowflake_to_v3_migration():
 
     @task
-    def plan() -> list[str]:
+    def plan() -> list[dict]:
         p = get_current_context()["params"]
         facilities = clean_list(p["facilities"])
-        tables = set(clean_list(p["tables"]))
+        tables = clean_list(p["tables"])
         if not facilities:
             raise AirflowFailException("Pick at least one facility.")
         unknown = [f for f in facilities if f not in FACILITIES]
         if unknown:
             raise AirflowFailException(f"Unknown facilities {unknown}; known: {FACILITIES}")
-        history = sorted(tables & set(old_system_history_tables()))
+        history = sorted(set(tables) & set(old_system_history_tables()))
         if history and not p["allow_history_tables"]:
             raise AirflowFailException(
                 f"{history} are old-system-history tables; tick allow_history_tables to load "
                 f"them table-by-table anyway.")
-        return facilities
+
+        jobs: list[dict] = []
+        for facility in facilities:
+            s2v3 = _setup_modules(p, facility)
+            if p["mode"] == "list_tables":
+                s2v3.list_tables(facility)
+                continue
+            try:
+                planned = s2v3.plan_table_jobs(facility, tables or None, clean_list(p["exclude_tables"]))
+            except SystemExit as e:
+                raise AirflowFailException(f"[{facility}] setup failed (exit {e.code}); see log.")
+            for j in planned["jobs"]:
+                j["tier"] = min(max(int(j["tier"]), TIERS[0]), TIERS[-1])
+            jobs.extend(planned["jobs"])
+            for t in planned["unmapped"]:
+                log.warning("[%s] SKIPPED %s — no NAMESPACE_MAP entry", facility, t)
+            for t in planned["not_insertable"]:
+                log.warning("[%s] SKIPPED %s — not insertable in the gateway", facility, t)
+        for n in TIERS:
+            names = [f"{j['facility']}·{j['table']}" for j in jobs if j["tier"] == n]
+            if names:
+                log.info("tier %d — %d table(s): %s", n, len(names), ", ".join(names))
+        return jobs
+
+    @task(trigger_rule=TriggerRule.ALL_DONE)
+    def tables_in_tier(tier: int) -> list[dict]:
+        """This tier's tables. ALL_DONE: runs once plan and the previous tier
+        are finished whatever their state — a failed table in an earlier tier
+        must not stop the next one (its children are just held back), and a
+        tier with no tables (skipped) must not skip every later tier, which
+        is what the *_min_one_success rules do. A failed plan leaves no XCom:
+        skip then (the run still fails — `done` depends on plan)."""
+        jobs = get_current_context()["ti"].xcom_pull(task_ids="plan")
+        if jobs is None:
+            raise AirflowSkipException("plan didn't produce a table list")
+        return [j for j in jobs if j["tier"] == tier]
 
     @task(
         map_index_template="{{ map_label }}",
-        max_active_tis_per_dag=1,
+        max_active_tis_per_dagrun=PARALLEL_TABLES,
         execution_timeout=timedelta(hours=24),
+        retries=1,
+        retry_delay=timedelta(minutes=3),
     )
-    def migrate(facility: str) -> dict:
+    def migrate_table(job: dict) -> dict:
         ctx = get_current_context()
-        ctx["map_label"] = facility
+        ctx["map_label"] = f"{job['facility']} · {job['table']}"
         p = ctx["params"]
-        record_workers = str(int(p["record_workers"]))
-        os.environ["RECORD_WORKERS"] = record_workers
-        use_pipelines_dir([facility])
-        import snowflake_to_v3_migration as s2v3
-        import v2_to_v3_api_migration as v2v3
-
-        # Read at import time by both modules — set them in case either was
-        # already imported in this process.
-        s2v3.RECORD_WORKERS = v2v3.RECORD_WORKERS = int(record_workers)
-        s2v3.RECORD_LIMIT = int(p["record_limit"])
-
-        if p["mode"] == "list_tables":
-            s2v3.list_tables(facility)
-            return {"facility": facility, "failed": [], "waiting": {}}
-
-        tables = clean_list(p["tables"]) or None
+        s2v3 = _setup_modules(p, job["facility"])
         try:
-            failed = s2v3.run_migration(facility, tables, workers=int(p["workers"]),
-                                        dry_run=p["mode"] == "dry_run",
-                                        exclude_tables=clean_list(p["exclude_tables"]))
+            result = s2v3.run_one_table(job["facility"], job["table"], dry_run=p["mode"] == "dry_run")
         except SystemExit as e:
-            # run_migration exits on a setup error (V3 login/org mismatch, no
-            # Snowflake tables) after logging the reason above.
-            raise AirflowFailException(f"[{facility}] migration stopped during setup (exit {e.code}); see log.")
-        waiting = dict(s2v3._waiting)
-        if failed:
-            raise AirflowFailException(f"[{facility}] {len(failed)} table(s) failed: {failed}"
-                                       + (f"; waiting: {sorted(waiting)}" if waiting else ""))
-        if waiting:
-            for table, why in sorted(waiting.items()):
-                log.warning("[%s] WAITING %s — %s; re-run once that data is in V3", facility, table, why)
+            raise RuntimeError(f"setup failed (exit {e.code}); see log")   # retried once
+        status, detail = result["status"], result["detail"]
+        log.info("[%s] %s → %s %s", job["facility"], job["table"], status.upper(), detail)
+        if status == "error":
+            raise RuntimeError(detail)                                     # crash: retried once
+        if status == "failed":
+            raise AirflowFailException(detail)                             # dead letters: no retry
+        if status == "waiting":
             if p["fail_on_waiting"]:
-                raise AirflowFailException(f"[{facility}] {len(waiting)} table(s) waiting: {sorted(waiting)}")
-        return {"facility": facility, "failed": [], "waiting": waiting}
+                raise AirflowFailException(f"WAITING — {detail}")
+            raise AirflowSkipException(f"WAITING — {detail}")
+        if status == "skipped":
+            raise AirflowSkipException(detail)
+        return {**job, **result}
 
-    migrate.expand(facility=plan())
+    @task(trigger_rule=TriggerRule.NONE_FAILED)
+    def done() -> None:
+        """Runs only if no table failed — so the DAG run's own state says
+        whether everything went in (skipped = waiting tables)."""
+        log.info("No table failed.")
+
+    planned = plan()
+    previous = planned
+    tier_tasks = []
+    for n in TIERS:
+        selected = tables_in_tier.override(task_id=f"tier_{n}_tables")(n)
+        [planned, previous] >> selected
+        ran = migrate_table.override(task_id=f"tier_{n}").expand(job=selected)
+        tier_tasks.append(ran)
+        previous = ran
+    [planned, *tier_tasks] >> done()
 
 
 snowflake_to_v3_migration()

@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import contextlib
 import hashlib
 import hmac
 import json
@@ -57,6 +58,11 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+try:
+    import fcntl   # state-file locking (see _file_lock); absent on Windows
+except ImportError:
+    fcntl = None
 
 import requests
 import requests.adapters
@@ -518,8 +524,8 @@ NAMESPACE_MAP: dict[str, dict] = {
     r"Ignite\Evaluation\Entities\EyeExams":                  {"v3": r"App\Models\EyeExam",                     "transform": "evaluation_eye_exam"},
     r"Ignite\Evaluation\Entities\EyeExam":                   {"v3": r"App\Models\EyeExam",                     "transform": "evaluation_eye_exam"},
     # Investigations before results (result.investigation_id → investigations.id)
-    r"Ignite\Evaluation\Entities\Investigations":            {"v3": r"App\Models\Investigation",               "transform": "generic"},
-    r"Ignite\Evaluation\Entities\Investigation":             {"v3": r"App\Models\Investigation",               "transform": "generic"},
+    r"Ignite\Evaluation\Entities\Investigations":            {"v3": r"App\Models\Investigation",               "transform": "evaluation_investigation"},
+    r"Ignite\Evaluation\Entities\Investigation":             {"v3": r"App\Models\Investigation",               "transform": "evaluation_investigation"},
     r"Ignite\Evaluation\Entities\InvestigationResults":      {"v3": r"App\Models\InvestigationResult",         "transform": "evaluation_inv_result"},
     r"Ignite\Evaluation\Entities\InvestigationResult":       {"v3": r"App\Models\InvestigationResult",         "transform": "evaluation_inv_result"},
     # evaluation-service `samples` (lab samples: patient_id, visit_id, type …)
@@ -625,6 +631,7 @@ _GLOBAL_FK_RENAMES: dict[str, str] = {
 
 # Layer 2: per-transform-key table-specific renames
 _PER_KEY_RENAMES: dict[str, dict[str, str]] = {
+    "evaluation_investigation": {},
     "evaluation_visit_destination": {
         # V2's department is empty on every migrated row; the destination's
         # name ("Pharmacy", "Laboratory" …) is what's filled
@@ -687,7 +694,10 @@ _PER_KEY_RENAMES: dict[str, dict[str, str]] = {
         "treatment":   "plan",
     },
     "evaluation_inv_result": {
-        "approved": "is_approved",
+        "approved":      "is_approved",
+        # V2 names the parent link `investigation`; the required-field check
+        # and the FK remap both expect investigation_id
+        "investigation": "investigation_id",
     },
     "evaluation_eye_exam": {
         "visit":    "visit_id",
@@ -748,8 +758,23 @@ _PER_KEY_RENAMES: dict[str, dict[str, str]] = {
                        "departmentcode": "departmentCode"},
     "eval_sample_type": {},
     "settings_rebate": {},
-    "inpatient_vital": {},               # admission_id FK remapped via _FK_REMAP
-    "outpatient_vital": {},              # visit_id remapped via _FK_REMAP; patient_id injected below
+    # V2 vitals → inpatient-service inp_vitals (admitted visits). admission_id
+    # is injected from the visit (V2 vitals carry only `visit`) and remapped
+    # via _FK_REMAP. user → user_id (global) → recorded_by.
+    "inpatient_vital": {
+        "pulse":        "pulse_rate",
+        "respiration":  "respiratory_rate",
+        "bp_systolic":  "systolic_bp",
+        "bp_diastolic": "diastolic_bp",
+        "oxygen":       "oxygen_saturation",
+        "nurse_notes":  "notes",
+        "user_id":      "recorded_by",
+    },
+    # V2 vitals → evaluation-service vitals (outpatient visits): its columns
+    # mostly carry V2's own names already (2026-02-03 models.md migration).
+    "outpatient_vital": {
+        "user_id": "recorded_by",
+    },
     "inpatient_bed": {},                 # ward_id / bed_type_id FK remapped via _FK_REMAP
     "inpatient_admission": {},           # admission_type_id FK remapped via _FK_REMAP
     "inpatient_admission_type": {},
@@ -844,7 +869,8 @@ _PER_KEY_KEEP_ONLY: dict[str, set[str]] = {
     # out: destination_id/department_id (V2 ids, their lookups aren't
     # migrated), status (V3's allowed values unknown), created_by (V2 users
     # don't exist in V3).
-    "evaluation_visit_destination": {"visit_id", "department_name", "arrived_at", "completed_at", "notes"},
+    "evaluation_visit_destination": {"visit_id", "department_id", "department_name", "arrived_at",
+                                     "completed_at", "notes"},
     # columns of inpatient-service's inp_admission_types (gateway describe)
     "inpatient_admission_type": {"code", "name", "description", "deposit", "associated_procedure"},
     # columns of evaluation-service's `procedures` table (gateway describe)
@@ -865,6 +891,22 @@ _PER_KEY_KEEP_ONLY: dict[str, set[str]] = {
                                     "reason", "discharge_notes", "requested_by", "requested_at", "status",
                                     "discharge_summary", "follow_up_instructions", "medications_prescribed",
                                     "reviewed_by", "reviewed_at", "created_at", "updated_at"},
+    # inpatient-service inp_vitals (create migration); V2 readings with no
+    # column of their own go into additional_vitals (JSON)
+    "inpatient_vital": {"admission_id", "recorded_at", "temperature", "pulse_rate", "respiratory_rate",
+                        "blood_pressure", "systolic_bp", "diastolic_bp", "oxygen_saturation", "weight",
+                        "height", "bmi", "additional_vitals", "notes", "recorded_by", "created_at", "updated_at"},
+    # evaluation-service vitals (create + 2025-11-19 + 2026-02-03 migrations).
+    # Left out: temperature_location(_id) — V3 enum / V2 option id don't line up.
+    "outpatient_vital": {"visit_id", "patient_id", "recorded_at", "recorded_by", "temperature", "pulse",
+                         "weight", "height", "bmi", "head_circumference", "muac", "random_blood_sugar",
+                         "fasting_blood_sugar", "nurse_notes", "systolic_bp", "diastolic_bp", "bp_systolic",
+                         "bp_diastolic", "blood_pressure", "respiratory_rate", "respiration",
+                         "oxygen_saturation", "oxygen", "waist", "hip", "blood_sugar", "blood_sugar_units",
+                         "symptoms", "allergies", "chronic_illnesses", "body_fat", "muscle_mass", "bone_mass",
+                         "metabolic_age", "body_water", "visceral_fat", "current_medication",
+                         "length_percentile", "weight_percentile", "bmi_percentile", "intracular_pressure",
+                         "lmp", "uncorrected_near_vision", "corrected_near_vision", "created_at", "updated_at"},
     # inventory-service App\Models\Store::$fillable (minus organization_id /
     # facility_id, set by the gateway; department_id: V2 departments aren't
     # migrated)
@@ -904,16 +946,22 @@ _ZERO_IS_NOT_NULL: set[str] = {"walkin_sale_id"}
 # Fields that must be non-null for a record to be sent; records missing them are skipped
 _PER_KEY_REQUIRED_FIELDS: dict[str, list] = {
     "inpatient_admission":     ["admitting_doctor_id"],
+    # derived through the visit; held back (not posted without one) if unresolved
+    "evaluation_investigation": ["patient_id"],
+    # required by V3; held back (not defaulted) if the department isn't there
+    "evaluation_visit_destination": ["department_id"],
     "settings_insurance":      ["name"],
     "eval_procedure_category": ["name"],
     "settings_user":           ["email"],
-    "evaluation_inv_result":   ["investigation_id"],
+    "evaluation_inv_result":   ["investigation_id", "patient_id"],
     "outpatient_vital":        ["patient_id"],
     # NOT NULL in V3. The *_by columns are V3 user ids: like admissions'
     # admitting doctor, they resolve only once the backend has created the
     # V2 staff as V3 users (and the users id map knows them).
     "inpatient_discharge_request": ["admission_id", "discharge_type_id", "requested_by"],
     "inpatient_discharge":         ["admission_id", "discharge_type_id", "discharged_by"],
+    # inp_vitals: both NOT NULL (recorded_by = V3 user, usually a nurse)
+    "inpatient_vital":             ["admission_id", "recorded_by"],
 }
 
 # Default values to inject when V3 returns a NOT NULL constraint violation for a column
@@ -1001,6 +1049,32 @@ def _load_v3_users() -> None:
     log.info("Loaded %d V3 users for doctor/staff lookups (%d migrated V2 staff)", len(by_email), len(by_v2))
 
 
+_v3_departments_by_name: dict[str, int] | None = None
+_v3_departments_lock = threading.Lock()
+
+
+def _v3_department_id_by_name(name) -> int | None:
+    """V3 department id for a name (case/space-insensitive) in the
+    destination org — read once per process; reset_v3_department_cache()
+    after creating departments."""
+    global _v3_departments_by_name
+    if not name or not str(name).strip():
+        return None
+    with _v3_departments_lock:
+        if _v3_departments_by_name is None:
+            recs = _fetch_v3_records("departments", v3_login_org_cfg(), service_name="core")
+            _v3_departments_by_name = {" ".join(str(r["name"]).split()).lower(): r["id"]
+                                       for r in recs if r.get("name")}
+            log.info("Loaded %d V3 departments for department lookups", len(_v3_departments_by_name))
+    return _v3_departments_by_name.get(" ".join(str(name).split()).lower())
+
+
+def reset_v3_department_cache() -> None:
+    global _v3_departments_by_name
+    with _v3_departments_lock:
+        _v3_departments_by_name = None
+
+
 def _v3_user_id_by_email(email) -> int | None:
     """V3 user id for an email (case-insensitive), from the destination org's
     users — read once per process. V3 users can't be inserted through the
@@ -1068,6 +1142,33 @@ def _store_type(r: dict) -> str:
     return "department"
 
 
+def _blank_to_none(v):
+    """V2 leaves unrecorded readings as '' — V3's numeric columns need null."""
+    return None if v is None or (isinstance(v, str) and not v.strip()) else v
+
+
+def _blood_pressure(r: dict) -> str | None:
+    s = _blank_to_none(r.get("systolic_bp") or r.get("bp_systolic"))
+    d = _blank_to_none(r.get("diastolic_bp") or r.get("bp_diastolic"))
+    return f"{s}/{d}" if s is not None and d is not None else None
+
+
+# V2 vital readings inp_vitals has no column for — kept, as JSON, in
+# additional_vitals rather than dropped.
+_EXTRA_VITALS = ("blood_sugar", "blood_sugar_units", "random_blood_sugar", "fasting_blood_sugar", "muac",
+                 "head_circumference", "waist", "hip", "symptoms", "allergies", "chronic_illnesses",
+                 "current_medication", "body_fat", "muscle_mass", "bone_mass", "metabolic_age", "body_water",
+                 "visceral_fat", "length_percentile", "weight_percentile", "bmi_percentile", "lmp",
+                 "intracular_pressure", "uncorrected_near_vision", "corrected_near_vision", "visual_acuity",
+                 "visual_acuity_aided", "visual_acuity_unaided")
+
+
+def _additional_vitals(r: dict) -> dict | None:
+    extra = {k: (str(r[k]) if not isinstance(r[k], (int, float, str)) else r[k])
+             for k in _EXTRA_VITALS if _blank_to_none(r.get(k)) is not None}
+    return extra or None
+
+
 def _dispensing_notes(r: dict) -> str:
     return (f"Migrated V2 dispensing #{r.get('id')} of {r.get('created_at')}: "
             f"prescription #{r.get('prescription')}, visit #{r.get('visit_id')}")
@@ -1079,7 +1180,23 @@ def _discharge_request_notes(r: dict) -> str | None:
     return "\n\n".join(parts) or None
 
 
+def _v3_patient_for_v2_visit(v2_visit_id) -> int | None:
+    """V2 visit -> V2 patient (persisted visit/patient map) -> V3 patient.
+    Investigations and results carry no patient column in V2; their visit
+    does. Runs before FK remap, so the V2 visit id is still on the record."""
+    if v2_visit_id is None:
+        return None
+    v2_visit_id = int(v2_visit_id) if str(v2_visit_id).isdigit() else v2_visit_id
+    return _id_map.get("patient", {}).get(_visit_patient_map.get(v2_visit_id))
+
+
 _PER_KEY_INJECT: dict[str, dict[str, Any]] = {
+    "evaluation_investigation": {
+        "patient_id": lambda r: _v3_patient_for_v2_visit(r.get("visit_id")),
+    },
+    "evaluation_inv_result": {
+        "patient_id": lambda r: _v3_patient_for_v2_visit(r.get("visit_id")),
+    },
     "inventory_store": {
         "type":          _store_type,
         "is_main_store": lambda r: str(r.get("name") or "").strip().lower() == "main store",
@@ -1127,6 +1244,9 @@ _PER_KEY_INJECT: dict[str, dict[str, Any]] = {
     },
     "evaluation_visit_destination": {
         "arrived_at": lambda r: r.get("begin_at") or r.get("created_at"),
+        # V2 has no departments; one V3 department per V2 destination is
+        # created before this job runs (ensure_departments_from_destinations)
+        "department_id": lambda r: _v3_department_id_by_name(r.get("department_name")),
     },
     "reception_patient_document": {
         # V2 stores the literal string "null" (or "2") as document_type and
@@ -1169,12 +1289,23 @@ _PER_KEY_INJECT: dict[str, dict[str, Any]] = {
         ),
     },
     "outpatient_vital": {
-        # Same visit → patient chain as doctor_note — outpatient vitals need
-        # patient_id explicitly; V3 derives it from the visit for other tables
-        # but this table's schema requires it directly.
-        "patient_id": lambda r: _id_map.get("patient", {}).get(
-            _visit_patient_map.get(r.get("visit_id"))
-        ),
+        # V2 vitals have no patient — it's the visit's. V2 patient id here
+        # (int-keyed lookup: Snowflake ids arrive as strings); remapped to
+        # the V3 patient via _FK_REMAP.
+        "patient_id":     lambda r: _v2_patient_for_visit(r.get("visit_id")),
+        "recorded_at":    lambda r: r.get("created_at"),
+        "systolic_bp":    lambda r: _blank_to_none(r.get("bp_systolic")),
+        "diastolic_bp":   lambda r: _blank_to_none(r.get("bp_diastolic")),
+        "respiratory_rate":  lambda r: _blank_to_none(r.get("respiration")),
+        "oxygen_saturation": lambda r: _blank_to_none(r.get("oxygen")),
+        "blood_pressure": _blood_pressure,
+    },
+    "inpatient_vital": {
+        # V2 admission id via the visit; remapped to the V3 admission via _FK_REMAP
+        "admission_id":      lambda r: _v2_admission_for_visit(r.get("visit_id")),
+        "recorded_at":       lambda r: r.get("created_at"),
+        "blood_pressure":    _blood_pressure,
+        "additional_vitals": _additional_vitals,
     },
     "evaluation_prescription": {
         # V2 sends the prescriber as a free-text name in "prescribed_by"
@@ -1213,6 +1344,20 @@ _PER_KEY_COERCIONS: dict[str, dict[str, Any]] = {
     "inpatient_discharge": {
         "discharged_by": _v3_user_for_v2_id,
         "approved_by":   _v3_user_for_v2_id,
+    },
+    "inpatient_vital": {
+        "recorded_by": _v3_user_for_v2_id,
+        **{f: _blank_to_none for f in ("temperature", "pulse_rate", "respiratory_rate", "systolic_bp",
+                                       "diastolic_bp", "oxygen_saturation", "weight", "height", "bmi")},
+    },
+    "outpatient_vital": {
+        "recorded_by": _v3_user_for_v2_id,
+        **{f: _blank_to_none for f in ("temperature", "pulse", "weight", "height", "bmi", "head_circumference",
+                                       "muac", "random_blood_sugar", "fasting_blood_sugar", "bp_systolic",
+                                       "bp_diastolic", "respiration", "oxygen", "waist", "hip", "blood_sugar",
+                                       "body_fat", "muscle_mass", "bone_mass", "metabolic_age", "body_water",
+                                       "visceral_fat", "length_percentile", "weight_percentile",
+                                       "bmi_percentile", "intracular_pressure", "lmp")},
     },
     "inventory_dispensing": {
         "served_by":      _v3_user_for_v2_id,
@@ -2471,7 +2616,7 @@ def _load_progress(run_id: str) -> set[str]:
 def _mark_done(run_id: str, job_key: str) -> None:
     with _progress_lock:
         _completed_jobs.add(job_key)
-        PROGRESS_FILE.write_text(json.dumps(
+        _atomic_write(PROGRESS_FILE, json.dumps(
             {"run_id": run_id, "completed": sorted(_completed_jobs)},
             indent=2,
         ))
@@ -2503,11 +2648,14 @@ def _load_permanently_done() -> None:
 
 
 def _mark_permanently_done(job_key: str) -> None:
-    with _done_lock:
+    with _done_lock, _file_lock(DONE_FILE):
         _permanently_done.add(job_key)
-        DONE_FILE.write_text(json.dumps(
-            {"done": sorted(_permanently_done)}, indent=2,
-        ))
+        # union with what other processes (parallel Airflow tasks) marked done
+        try:
+            _permanently_done.update(json.loads(DONE_FILE.read_text()).get("done", []))
+        except (OSError, ValueError):
+            pass
+        _atomic_write(DONE_FILE, json.dumps({"done": sorted(_permanently_done)}, indent=2))
 
 
 def _job_key(facility: str, namespace: str) -> str:
@@ -2531,8 +2679,8 @@ def _read_state_json(path: Path, attempts: int = 10, wait: float = 2.0) -> tuple
     that are already in V3."""
     for attempt in range(1, attempts + 1):
         try:
-            mtime = path.stat().st_mtime_ns
-            return json.loads(path.read_text()), mtime
+            sig = _file_sig(path)
+            return json.loads(path.read_text()), sig
         except (OSError, ValueError) as e:
             if attempt == attempts:
                 raise RuntimeError(
@@ -2565,22 +2713,48 @@ def _record_inserted(job_key: str, record_id) -> bool:
 _record_flush_counter = 0
 
 
-_record_progress_mtime: int | None = None
+_record_progress_mtime: tuple | None = None   # _file_sig of the version we last read/wrote
 
 
-def _atomic_write(path: Path, text: str) -> int:
+@contextlib.contextmanager
+def _file_lock(path: Path):
+    """Inter-process lock for a state file's read-merge-write (several
+    processes — parallel Airflow table tasks, CLI runs — update the same
+    files). Without it two processes can read the same version and the later
+    write drops the other's newest entries. flock on a sidecar file; a no-op
+    where fcntl doesn't exist (Windows)."""
+    if fcntl is None:
+        yield
+        return
+    with open(path.with_name(path.name + ".lock"), "a") as fh:
+        fcntl.flock(fh, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(fh, fcntl.LOCK_UN)
+
+
+def _file_sig(path: Path) -> tuple:
+    """Identity of a state file's current version. The inode is in it
+    because every _atomic_write creates a new one: mtimes tick only every
+    few ms, so two processes writing within one tick leave equal mtimes."""
+    st = path.stat()
+    return (st.st_ino, st.st_mtime_ns, st.st_size)
+
+
+def _atomic_write(path: Path, text: str) -> tuple:
     """Write via a temp file + rename, so a run killed mid-write can't leave
     a truncated file (which the loaders would treat as empty). Returns the
-    new mtime_ns."""
+    new version's _file_sig."""
     tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
     tmp.write_text(text)
     os.replace(tmp, path)
-    return path.stat().st_mtime_ns
+    return _file_sig(path)
 
 
-def _changed_on_disk(path: Path, last_mtime: int | None) -> bool:
+def _changed_on_disk(path: Path, last_sig: tuple | None) -> bool:
     try:
-        return path.stat().st_mtime_ns != last_mtime
+        return _file_sig(path) != last_sig
     except FileNotFoundError:
         return False
 
@@ -2592,16 +2766,17 @@ def _flush_record_progress() -> None:
     theirs, and for records without a uuid an erased id means a duplicate
     insert on the next run."""
     global _record_progress_mtime
-    if _changed_on_disk(RECORD_PROGRESS_FILE, _record_progress_mtime):
-        try:
-            for k, ids in json.loads(RECORD_PROGRESS_FILE.read_text()).items():
-                _inserted_ids.setdefault(k, set()).update(ids)
-        except (OSError, ValueError) as e:
-            log.warning("Could not merge %s before writing: %s", RECORD_PROGRESS_FILE.name, e)
-    _record_progress_mtime = _atomic_write(RECORD_PROGRESS_FILE, json.dumps(
-        {k: sorted(v, key=str) for k, v in _inserted_ids.items()},
-        indent=2,
-    ))
+    with _file_lock(RECORD_PROGRESS_FILE):
+        if _changed_on_disk(RECORD_PROGRESS_FILE, _record_progress_mtime):
+            try:
+                for k, ids in json.loads(RECORD_PROGRESS_FILE.read_text()).items():
+                    _inserted_ids.setdefault(k, set()).update(ids)
+            except (OSError, ValueError) as e:
+                log.warning("Could not merge %s before writing: %s", RECORD_PROGRESS_FILE.name, e)
+        _record_progress_mtime = _atomic_write(RECORD_PROGRESS_FILE, json.dumps(
+            {k: sorted(v, key=str) for k, v in _inserted_ids.items()},
+            indent=2,
+        ))
 
 
 def _mark_record_inserted(job_key: str, record_id) -> None:
@@ -2648,7 +2823,7 @@ def _record_visit_patient(v2_visit_id: int, v2_patient_id: int) -> None:
     _visit_patient_map[v2_visit_id] = v2_patient_id
     _visit_patient_dirty += 1
     if _visit_patient_dirty % 500 == 0:
-        VISIT_PATIENT_FILE.write_text(json.dumps(_visit_patient_map))
+        _write_int_map(VISIT_PATIENT_FILE, _visit_patient_map)
 
 
 # Secondary lookup: V2 visit_id → V2 admission_id.
@@ -2679,7 +2854,20 @@ def _record_visit_admission(v2_visit_id: int, v2_admission_id: int) -> None:
     _visit_admission_map[v2_visit_id] = v2_admission_id
     _visit_admission_dirty += 1
     if _visit_admission_dirty % 500 == 0:
-        VISIT_ADMISSION_FILE.write_text(json.dumps(_visit_admission_map))
+        _write_int_map(VISIT_ADMISSION_FILE, _visit_admission_map)
+
+
+def _write_int_map(path: Path, mapping: dict) -> None:
+    """Merge-then-atomic write for the int→int visit maps: entries another
+    process added are kept (ours win), and a kill mid-write can't truncate."""
+    with _file_lock(path):
+        try:
+            for k, v in json.loads(path.read_text()).items():
+                if v is not None:
+                    mapping.setdefault(int(k), int(v))
+        except (OSError, ValueError):
+            pass
+        _atomic_write(path, json.dumps(mapping))
 
 
 # Which FK fields to remap, and which model alias holds their ID map.
@@ -2744,7 +2932,11 @@ _FK_REMAP: dict[str, dict[str, str]] = {
 
     # ── Evaluation FK chain ───────────────────────────────────────────────────
     # investigation_results.investigation_id → investigations.id
+    "evaluation_investigation": {
+        "visit_id": "visit",
+    },
     "evaluation_inv_result": {
+        "visit_id":         "visit",
         "investigation_id": "investigation",
     },
     # doctor_notes.visit_id → visits.id  (patient_id is injected via _PER_KEY_INJECT)
@@ -2753,7 +2945,8 @@ _FK_REMAP: dict[str, dict[str, str]] = {
     },
     # patient-evaluation vitals.visit_id → visits.id  (patient_id is injected via _PER_KEY_INJECT)
     "outpatient_vital": {
-        "visit_id": "visit",
+        "visit_id":   "visit",
+        "patient_id": "patient",
     },
     # prescriptions.visit → visits.id — V2's own field is literally "visit",
     # not "visit_id" (confirmed against the live V3 field mapping, 2026-09;
@@ -2885,7 +3078,7 @@ def _load_id_map() -> None:
         _id_map = {}
 
 
-_id_map_mtime: int | None = None
+_id_map_mtime: tuple | None = None   # _file_sig of the version we last read/wrote
 
 
 def _write_id_map() -> None:
@@ -2893,15 +3086,16 @@ def _write_id_map() -> None:
     _flush_record_progress: entries another process added since our last
     write are kept (ours win on conflict), instead of being overwritten."""
     global _id_map_mtime
-    if _changed_on_disk(ID_MAP_FILE, _id_map_mtime):
-        try:
-            for alias, mapping in json.loads(ID_MAP_FILE.read_text()).items():
-                mine = _id_map.setdefault(alias, {})
-                for k, v in mapping.items():
-                    mine.setdefault(int(k) if k.isdigit() else k, v)
-        except (OSError, ValueError) as e:
-            log.warning("Could not merge %s before writing: %s", ID_MAP_FILE.name, e)
-    _id_map_mtime = _atomic_write(ID_MAP_FILE, json.dumps(_id_map, indent=2))
+    with _file_lock(ID_MAP_FILE):
+        if _changed_on_disk(ID_MAP_FILE, _id_map_mtime):
+            try:
+                for alias, mapping in json.loads(ID_MAP_FILE.read_text()).items():
+                    mine = _id_map.setdefault(alias, {})
+                    for k, v in mapping.items():
+                        mine.setdefault(int(k) if k.isdigit() else k, v)
+            except (OSError, ValueError) as e:
+                log.warning("Could not merge %s before writing: %s", ID_MAP_FILE.name, e)
+        _id_map_mtime = _atomic_write(ID_MAP_FILE, json.dumps(_id_map, indent=2))
 
 
 def _store_id_mapping(alias: str, v2_id, v3_id) -> None:

@@ -76,6 +76,8 @@ failed_mapped_logs/*
 !.migration_visit_admission.json
 !.migration_record_progress.json
 !.migration_done.json
+# sidecar lock files for the state files above (v2_to_v3_api_migration._file_lock)
+.migration_*.lock
 *.csv
 rsa_key*
 *.pdf
