@@ -2,7 +2,7 @@
   "connection": {
     "id": 35,
     "name": "silverwood",
-    "exported_at": "2026-10-08T13:57:46+00:00"
+    "exported_at": "2026-10-09T05:55:51+00:00"
   },
   "tables": [
     {
@@ -90,7 +90,7 @@
       "v3 model": "App\\Models\\Visit",
       "v3 table": "visits",
       "v3 service": "patient-evaluation-service",
-      "v3 table found by": "pipeline fix — evaluation visits, not reception",
+      "v3 table found by": "pipeline review 2026-10-09: evaluation visits — reception's visits table is not read by the app",
       "source table": "patient_visit",
       "rows": 0,
       "status": "done"
@@ -318,7 +318,15 @@
       "v3 table found by": "model",
       "source table": "product_services",
       "rows": 0,
-      "status": "done"
+      "status": "done",
+      "where": {
+        "column": "category",
+        "in": [
+          "Drug",
+          "Consumable",
+          "Vaccine"
+        ]
+      }
     },
     {
       "v3 model": "App\\Models\\Inventory\\Store",
@@ -429,29 +437,11 @@
       "status": "done"
     },
     {
-      "v3 model": "App\\Models\\Core\\UserProfile",
-      "v3 table": "user_profiles",
-      "v3 service": "core-service",
-      "v3 table found by": "model",
-      "source table": "facility_employee",
-      "rows": 0,
-      "status": "done"
-    },
-    {
       "v3 model": "App\\Models\\Finance\\GlAccount",
       "v3 table": "gl_accounts",
       "v3 service": "finance-service",
       "v3 table found by": "laravel default name",
       "source table": "acc_accounts",
-      "rows": 0,
-      "status": "done"
-    },
-    {
-      "v3 model": "App\\Models\\Finance\\PettyCash",
-      "v3 table": "petty_cash",
-      "v3 service": "finance-service",
-      "v3 table found by": "model",
-      "source table": "acc_financial_activity",
       "rows": 0,
       "status": "done"
     },
@@ -501,29 +491,11 @@
       "status": "done"
     },
     {
-      "v3 model": "App\\Models\\Oncology\\OncologyObservation",
-      "v3 table": "oncology_observations",
-      "v3 service": "oncology-service",
-      "v3 table found by": "model",
-      "source table": "lab_results_history",
-      "rows": 0,
-      "status": "done"
-    },
-    {
       "v3 model": "App\\Models\\PatientEvaluation\\InvestigationApproval",
       "v3 table": "evaluation_investigation_approvals",
       "v3 service": "patient-evaluation-service",
       "v3 table found by": "model",
       "source table": "lab_result_approval",
-      "rows": 0,
-      "status": "done"
-    },
-    {
-      "v3 model": "App\\Models\\PatientEvaluation\\DoctorNotesViewLog",
-      "v3 table": "doctor_notes_view_logs",
-      "v3 service": "patient-evaluation-service",
-      "v3 table found by": "model",
-      "source table": "medical_reports",
       "rows": 0,
       "status": "done"
     },
@@ -555,29 +527,11 @@
       "status": "done"
     },
     {
-      "v3 model": "App\\Models\\Reception\\PatientDependant",
-      "v3 table": "patient_dependants",
-      "v3 service": "reception-service",
-      "v3 table found by": "laravel default name",
-      "source table": "person_contacts",
-      "rows": 0,
-      "status": "done"
-    },
-    {
       "v3 model": "App\\Models\\Finance\\PettyCashTransaction",
       "v3 table": "petty_cash_transactions",
       "v3 service": "finance-service",
       "v3 table found by": "laravel default name",
       "source table": "petty_cash_deposit",
-      "rows": 0,
-      "status": "done"
-    },
-    {
-      "v3 model": "App\\Models\\Finance\\CreditNote",
-      "v3 table": "credit_notes",
-      "v3 service": "finance-service",
-      "v3 table found by": "laravel default name",
-      "source table": "sale_transactions",
       "rows": 0,
       "status": "done"
     },
@@ -594,8 +548,80 @@
       "v3 model": "App\\Models\\Reception\\Patient",
       "v3 table": "patients",
       "v3 service": "reception-service",
-      "v3 table found by": "pipeline fix",
+      "v3 table found by": "laravel default name",
       "source table": "person",
+      "rows": 0,
+      "status": "done"
+    },
+    {
+      "v3 model": "App\\Models\\Inventory\\Unit",
+      "v3 table": "inv_units",
+      "v3 service": "inventory-service",
+      "v3 table found by": "model",
+      "source table": "stock_uom",
+      "rows": 0,
+      "status": "done"
+    },
+    {
+      "v3 model": "App\\Models\\Inventory\\ProductCategory",
+      "v3 table": "inv_product_categories",
+      "v3 service": "inventory-service",
+      "v3 table found by": "model",
+      "source table": "item_classification",
+      "rows": 0,
+      "status": "done"
+    },
+    {
+      "v3 model": "App\\Models\\PatientEvaluation\\DiagnosisList",
+      "v3 table": "evaluation_diagnosis_lists",
+      "v3 service": "patient-evaluation-service",
+      "v3 table found by": "model",
+      "source table": "moh",
+      "rows": 0,
+      "status": "done"
+    },
+    {
+      "v3 model": "App\\Models\\Core\\ServiceDestination",
+      "v3 table": "core_service_destinations",
+      "v3 service": "core-service",
+      "v3 table found by": "model",
+      "source table": "service_points",
+      "rows": 0,
+      "status": "done"
+    },
+    {
+      "v3 model": "App\\Models\\Inventory\\PaymentTerm",
+      "v3 table": "inv_payment_terms",
+      "v3 service": "inventory-service",
+      "v3 table found by": "model",
+      "source table": "ref_payment_terms",
+      "rows": 0,
+      "status": "done"
+    },
+    {
+      "v3 model": "App\\Models\\Core\\CoreSetting",
+      "v3 table": "core_settings",
+      "v3 service": "core-service",
+      "v3 table found by": "model",
+      "source table": "app_configuration",
+      "rows": 0,
+      "status": "done"
+    },
+    {
+      "v3 model": "App\\Models\\Finance\\PettyCash",
+      "v3 table": "petty_cash",
+      "v3 service": "finance-service",
+      "v3 table found by": "model",
+      "source table": "petty_cash_custodian",
+      "rows": 0,
+      "status": "done"
+    },
+    {
+      "v3 model": "App\\Models\\Core\\UserProfile",
+      "v3 table": "user_profiles",
+      "v3 service": "core-service",
+      "v3 table found by": "pipeline review 2026-10-09: profiles from auth_user — facility_employee has no names, V3 requires them",
+      "source table": "auth_user",
       "rows": 0,
       "status": "done"
     }
@@ -676,7 +702,10 @@
       "kind": "copied",
       "rule": "",
       "transform": "",
-      "why": ""
+      "why": "",
+      "also": [
+        "diagnosis_type"
+      ]
     },
     {
       "model": "App\\Models\\Diagnosis",
@@ -855,11 +884,209 @@
       "why": ""
     },
     {
+      "model": "App\\Models\\SaleItem",
+      "v3_table": "inv_sale_items",
+      "table": "sale_item",
+      "column": "price",
+      "field": "price",
+      "kind": "copied",
+      "rule": "",
+      "transform": "",
+      "why": ""
+    },
+    {
+      "model": "App\\Models\\SaleItem",
+      "v3_table": "inv_sale_items",
+      "table": "sale_item",
+      "column": "sale_date",
+      "field": "date",
+      "kind": "copied",
+      "rule": "",
+      "transform": "",
+      "why": ""
+    },
+    {
+      "model": "App\\Models\\PurchaseOrder",
+      "v3_table": "inv_purchase_orders",
+      "table": "purchase_order",
+      "column": "order_number",
+      "field": "code",
+      "kind": "copied",
+      "rule": "",
+      "transform": "",
+      "why": ""
+    },
+    {
+      "model": "App\\Models\\PurchaseOrder",
+      "v3_table": "inv_purchase_orders",
+      "table": "purchase_order",
+      "column": "notes",
+      "field": "details",
+      "kind": "copied",
+      "rule": "",
+      "transform": "",
+      "why": ""
+    },
+    {
+      "model": "App\\Models\\PurchaseOrder",
+      "v3_table": "inv_purchase_orders",
+      "table": "purchase_order",
+      "column": "created_by",
+      "field": "generatedBy",
+      "kind": "copied",
+      "rule": "",
+      "transform": "",
+      "why": ""
+    },
+    {
+      "model": "App\\Models\\PurchaseOrder",
+      "v3_table": "inv_purchase_orders",
+      "table": "purchase_order",
+      "column": "approval_date",
+      "field": "poDate",
+      "kind": "copied",
+      "rule": "",
+      "transform": "",
+      "why": ""
+    },
+    {
+      "model": "App\\Models\\Supplier",
+      "v3_table": "inv_suppliers",
+      "table": "supplier",
+      "column": "supplier_name",
+      "field": "name",
+      "kind": "copied",
+      "rule": "",
+      "transform": "",
+      "why": ""
+    },
+    {
+      "model": "App\\Models\\PatientInvoice",
+      "v3_table": null,
+      "table": "patient_invoice",
+      "column": "number",
+      "field": "invoiceNo",
+      "kind": "copied",
+      "rule": "",
+      "transform": "",
+      "why": ""
+    },
+    {
+      "model": "App\\Models\\PatientInvoice",
+      "v3_table": null,
+      "table": "patient_invoice",
+      "column": "version",
+      "field": "log",
+      "kind": "copied",
+      "rule": "",
+      "transform": "",
+      "why": ""
+    },
+    {
+      "model": "App\\Models\\PatientInvoice",
+      "v3_table": null,
+      "table": "patient_invoice",
+      "column": "status",
+      "field": "status",
+      "kind": "copied",
+      "rule": "",
+      "transform": "",
+      "why": ""
+    },
+    {
+      "model": "App\\Models\\PatientInvoice",
+      "v3_table": null,
+      "table": "patient_invoice",
+      "column": "created_by",
+      "field": "generatedBy",
+      "kind": "copied",
+      "rule": "",
+      "transform": "",
+      "why": ""
+    },
+    {
+      "model": "App\\Models\\PatientInvoice",
+      "v3_table": null,
+      "table": "patient_invoice",
+      "column": "last_modified_on",
+      "field": "date",
+      "kind": "copied",
+      "rule": "",
+      "transform": "",
+      "why": ""
+    },
+    {
+      "model": "App\\Models\\PatientInvoice",
+      "v3_table": null,
+      "table": "patient_invoice",
+      "column": "version",
+      "field": "__v",
+      "kind": "copied",
+      "rule": "",
+      "transform": "",
+      "why": ""
+    },
+    {
       "model": "App\\Models\\Core\\CoreSetting",
       "v3_table": "core_settings",
       "table": "app_configuration",
       "column": "facility_id",
       "field": "facility_id",
+      "kind": "copied",
+      "rule": "",
+      "transform": "",
+      "why": ""
+    },
+    {
+      "model": "App\\Models\\Core\\CoreSetting",
+      "v3_table": "core_settings",
+      "table": "app_configuration",
+      "column": "config_name",
+      "field": "key",
+      "kind": "copied",
+      "rule": "",
+      "transform": "",
+      "why": ""
+    },
+    {
+      "model": "App\\Models\\Core\\CoreSetting",
+      "v3_table": "core_settings",
+      "table": "app_configuration",
+      "column": "config_group",
+      "field": "category",
+      "kind": "copied",
+      "rule": "",
+      "transform": "",
+      "why": ""
+    },
+    {
+      "model": "App\\Models\\Core\\CoreSetting",
+      "v3_table": "core_settings",
+      "table": "app_configuration",
+      "column": "config_value",
+      "field": "value",
+      "kind": "copied",
+      "rule": "",
+      "transform": "",
+      "why": ""
+    },
+    {
+      "model": "App\\Models\\Core\\CoreSetting",
+      "v3_table": "core_settings",
+      "table": "app_configuration",
+      "column": "field_type",
+      "field": "type",
+      "kind": "copied",
+      "rule": "",
+      "transform": "",
+      "why": ""
+    },
+    {
+      "model": "App\\Models\\Core\\CoreSetting",
+      "v3_table": "core_settings",
+      "table": "app_configuration",
+      "column": "description",
+      "field": "description",
       "kind": "copied",
       "rule": "",
       "transform": "",
@@ -926,17 +1153,6 @@
       "table": "facility_department",
       "column": "department_email",
       "field": "email",
-      "kind": "copied",
-      "rule": "",
-      "transform": "",
-      "why": ""
-    },
-    {
-      "model": "App\\Models\\Core\\Facility",
-      "v3_table": "core_facilities",
-      "table": "facility",
-      "column": "id",
-      "field": "uuid",
       "kind": "copied",
       "rule": "",
       "transform": "",
@@ -1157,17 +1373,6 @@
       "table": "org_organization",
       "column": "website",
       "field": "website",
-      "kind": "copied",
-      "rule": "",
-      "transform": "",
-      "why": ""
-    },
-    {
-      "model": "App\\Models\\Core\\Organization",
-      "v3_table": "core_organizations",
-      "table": "org_organization",
-      "column": "id",
-      "field": "uuid",
       "kind": "copied",
       "rule": "",
       "transform": "",
@@ -1520,6 +1725,17 @@
       "table": "auth_role",
       "column": "is_disabled",
       "field": "active",
+      "kind": "codes converted",
+      "rule": "{\"map\":{\"0\":1,\"1\":0,\"true\":0,\"false\":1},\"column\":\"is_disabled\"}",
+      "transform": "",
+      "why": "A disabled role is not active: the value is flipped"
+    },
+    {
+      "model": "App\\Models\\Core\\ServiceDestination",
+      "v3_table": "core_service_destinations",
+      "table": "service_points",
+      "column": "facility_id",
+      "field": "facility_id",
       "kind": "copied",
       "rule": "",
       "transform": "",
@@ -1529,8 +1745,52 @@
       "model": "App\\Models\\Core\\ServiceDestination",
       "v3_table": "core_service_destinations",
       "table": "service_points",
-      "column": "facility_id",
-      "field": "facility_id",
+      "column": "name",
+      "field": "name",
+      "kind": "copied",
+      "rule": "",
+      "transform": "",
+      "why": ""
+    },
+    {
+      "model": "App\\Models\\Core\\ServiceDestination",
+      "v3_table": "core_service_destinations",
+      "table": "service_points",
+      "column": "point_type",
+      "field": "destination_type",
+      "kind": "copied",
+      "rule": "",
+      "transform": "",
+      "why": ""
+    },
+    {
+      "model": "App\\Models\\Core\\ServiceDestination",
+      "v3_table": "core_service_destinations",
+      "table": "service_points",
+      "column": "description",
+      "field": "description",
+      "kind": "copied",
+      "rule": "",
+      "transform": "",
+      "why": ""
+    },
+    {
+      "model": "App\\Models\\Core\\ServiceDestination",
+      "v3_table": "core_service_destinations",
+      "table": "service_points",
+      "column": "pharmacy_type",
+      "field": "is_pharmacy",
+      "kind": "copied",
+      "rule": "",
+      "transform": "",
+      "why": ""
+    },
+    {
+      "model": "App\\Models\\Core\\ServiceDestination",
+      "v3_table": "core_service_destinations",
+      "table": "service_points",
+      "column": "store_id",
+      "field": "store_id_connected_to",
       "kind": "copied",
       "rule": "",
       "transform": "",
@@ -1567,7 +1827,10 @@
       "kind": "copied",
       "rule": "",
       "transform": "",
-      "why": ""
+      "why": "",
+      "also": [
+        "active"
+      ]
     },
     {
       "model": "App\\Models\\Core\\User",
@@ -1575,72 +1838,6 @@
       "table": "auth_user",
       "column": "last_login",
       "field": "last_login",
-      "kind": "copied",
-      "rule": "",
-      "transform": "",
-      "why": ""
-    },
-    {
-      "model": "App\\Models\\Core\\User",
-      "v3_table": "users",
-      "table": "auth_user",
-      "column": "password",
-      "field": "password",
-      "kind": "copied",
-      "rule": "",
-      "transform": "",
-      "why": ""
-    },
-    {
-      "model": "App\\Models\\Core\\UserProfile",
-      "v3_table": "user_profiles",
-      "table": "facility_employee",
-      "column": "staff_number",
-      "field": "staff_number",
-      "kind": "copied",
-      "rule": "",
-      "transform": "",
-      "why": ""
-    },
-    {
-      "model": "App\\Models\\Core\\UserProfile",
-      "v3_table": "user_profiles",
-      "table": "facility_employee",
-      "column": "license_no",
-      "field": "license_number",
-      "kind": "copied",
-      "rule": "",
-      "transform": "",
-      "why": ""
-    },
-    {
-      "model": "App\\Models\\Core\\UserProfile",
-      "v3_table": "user_profiles",
-      "table": "facility_employee",
-      "column": "login_account",
-      "field": "user_id",
-      "kind": "copied",
-      "rule": "",
-      "transform": "",
-      "why": ""
-    },
-    {
-      "model": "App\\Models\\Core\\UserProfile",
-      "v3_table": "user_profiles",
-      "table": "facility_employee",
-      "column": "notes_are_confidential",
-      "field": "notes",
-      "kind": "copied",
-      "rule": "",
-      "transform": "",
-      "why": ""
-    },
-    {
-      "model": "App\\Models\\Core\\UserProfile",
-      "v3_table": "user_profiles",
-      "table": "facility_employee",
-      "column": "department_id",
-      "field": "department_id",
       "kind": "copied",
       "rule": "",
       "transform": "",
@@ -1768,28 +1965,6 @@
       "why": ""
     },
     {
-      "model": "App\\Models\\Finance\\CreditNote",
-      "v3_table": "credit_notes",
-      "table": "sale_transactions",
-      "column": "id",
-      "field": "credit_note_no",
-      "kind": "copied",
-      "rule": "",
-      "transform": "",
-      "why": ""
-    },
-    {
-      "model": "App\\Models\\Finance\\CreditNote",
-      "v3_table": "credit_notes",
-      "table": "sale_transactions",
-      "column": "receipt_id",
-      "field": "receipt_id",
-      "kind": "copied",
-      "rule": "",
-      "transform": "",
-      "why": ""
-    },
-    {
       "model": "App\\Models\\Finance\\GlAccount",
       "v3_table": "gl_accounts",
       "table": "acc_accounts",
@@ -1865,6 +2040,17 @@
       "rule": "",
       "transform": "",
       "why": ""
+    },
+    {
+      "model": "App\\Models\\Finance\\GlAccount",
+      "v3_table": "gl_accounts",
+      "table": "acc_accounts",
+      "column": "a_type",
+      "field": "normal_balance",
+      "kind": "codes converted",
+      "rule": "{\"map\":{\"ASSET\":\"debit\",\"EXPENSE\":\"debit\",\"REVENUE\":\"credit\",\"LIABILITY\":\"credit\"},\"column\":\"a_type\"}",
+      "transform": "",
+      "why": "Debit for assets and expenses, credit for liabilities and revenue (worked out from the account type)"
     },
     {
       "model": "App\\Models\\Finance\\GlTransaction",
@@ -2054,6 +2240,50 @@
       "why": ""
     },
     {
+      "model": "App\\Models\\Finance\\Invoice",
+      "v3_table": "invoices",
+      "table": "acc_misc_invoices",
+      "column": "facility_id",
+      "field": "facility_id",
+      "kind": "copied",
+      "rule": "",
+      "transform": "",
+      "why": ""
+    },
+    {
+      "model": "App\\Models\\Finance\\Invoice",
+      "v3_table": "invoices",
+      "table": "acc_misc_invoices",
+      "column": "invoice_number",
+      "field": "invoice_number",
+      "kind": "copied",
+      "rule": "",
+      "transform": "",
+      "why": ""
+    },
+    {
+      "model": "App\\Models\\Finance\\Invoice",
+      "v3_table": "invoices",
+      "table": "acc_misc_invoices",
+      "column": "invoice_date",
+      "field": "due_date",
+      "kind": "copied",
+      "rule": "",
+      "transform": "",
+      "why": ""
+    },
+    {
+      "model": "App\\Models\\Finance\\Invoice",
+      "v3_table": "invoices",
+      "table": "acc_misc_invoices",
+      "column": "created_by",
+      "field": "created_by",
+      "kind": "copied",
+      "rule": "",
+      "transform": "",
+      "why": ""
+    },
+    {
       "model": "App\\Models\\Finance\\InvoiceItem",
       "v3_table": "invoice_items",
       "table": "patient_billing_item",
@@ -2210,6 +2440,138 @@
     {
       "model": "App\\Models\\Finance\\Payment",
       "v3_table": "payments",
+      "table": "acc_payments",
+      "column": "id",
+      "field": "uuid",
+      "kind": "copied",
+      "rule": "",
+      "transform": "",
+      "why": ""
+    },
+    {
+      "model": "App\\Models\\Finance\\Payment",
+      "v3_table": "payments",
+      "table": "acc_payments",
+      "column": "payment_method",
+      "field": "payment_type",
+      "kind": "copied",
+      "rule": "",
+      "transform": "",
+      "why": ""
+    },
+    {
+      "model": "App\\Models\\Finance\\Payment",
+      "v3_table": "payments",
+      "table": "acc_payments",
+      "column": "payee_id",
+      "field": "patient_id",
+      "kind": "copied",
+      "rule": "",
+      "transform": "",
+      "why": ""
+    },
+    {
+      "model": "App\\Models\\Finance\\Payment",
+      "v3_table": "payments",
+      "table": "acc_payments",
+      "column": "amount",
+      "field": "amount",
+      "kind": "copied",
+      "rule": "",
+      "transform": "",
+      "why": ""
+    },
+    {
+      "model": "App\\Models\\Finance\\Payment",
+      "v3_table": "payments",
+      "table": "acc_payments",
+      "column": "payment_date",
+      "field": "payment_date",
+      "kind": "copied",
+      "rule": "",
+      "transform": "",
+      "why": ""
+    },
+    {
+      "model": "App\\Models\\Finance\\Payment",
+      "v3_table": "payments",
+      "table": "acc_payments",
+      "column": "reference_number",
+      "field": "reference_no",
+      "kind": "copied",
+      "rule": "",
+      "transform": "",
+      "why": ""
+    },
+    {
+      "model": "App\\Models\\Finance\\Payment",
+      "v3_table": "payments",
+      "table": "acc_payments",
+      "column": "payment_method",
+      "field": "payment_method",
+      "kind": "copied",
+      "rule": "",
+      "transform": "",
+      "why": ""
+    },
+    {
+      "model": "App\\Models\\Finance\\Payment",
+      "v3_table": "payments",
+      "table": "acc_payments",
+      "column": "voucher_no",
+      "field": "batch_id",
+      "kind": "copied",
+      "rule": "",
+      "transform": "",
+      "why": ""
+    },
+    {
+      "model": "App\\Models\\Finance\\Payment",
+      "v3_table": "payments",
+      "table": "acc_payments",
+      "column": "last_modified_by",
+      "field": "approved_by",
+      "kind": "copied",
+      "rule": "",
+      "transform": "",
+      "why": ""
+    },
+    {
+      "model": "App\\Models\\Finance\\Payment",
+      "v3_table": "payments",
+      "table": "acc_payments",
+      "column": "created_by",
+      "field": "created_by",
+      "kind": "copied",
+      "rule": "",
+      "transform": "",
+      "why": ""
+    },
+    {
+      "model": "App\\Models\\Finance\\Payment",
+      "v3_table": "payments",
+      "table": "acc_payments",
+      "column": "last_modified_by",
+      "field": "updated_by",
+      "kind": "copied",
+      "rule": "",
+      "transform": "",
+      "why": ""
+    },
+    {
+      "model": "App\\Models\\Finance\\Payment",
+      "v3_table": "payments",
+      "table": "acc_payments",
+      "column": "facility_id",
+      "field": "facility_id",
+      "kind": "copied",
+      "rule": "",
+      "transform": "",
+      "why": ""
+    },
+    {
+      "model": "App\\Models\\Finance\\Payment",
+      "v3_table": "payments",
       "table": "acc_receipts",
       "column": "receipt_no",
       "field": "receipt_no",
@@ -2268,17 +2630,6 @@
       "table": "acc_receipts",
       "column": "comments",
       "field": "notes",
-      "kind": "copied",
-      "rule": "",
-      "transform": "",
-      "why": ""
-    },
-    {
-      "model": "App\\Models\\Finance\\Payment",
-      "v3_table": "payments",
-      "table": "acc_receipts",
-      "column": "id",
-      "field": "source_id",
       "kind": "copied",
       "rule": "",
       "transform": "",
@@ -2386,8 +2737,30 @@
     {
       "model": "App\\Models\\Finance\\PettyCash",
       "v3_table": "petty_cash",
-      "table": "acc_financial_activity",
-      "column": "account_id",
+      "table": "petty_cash_custodian",
+      "column": "facility_id",
+      "field": "facility_id",
+      "kind": "copied",
+      "rule": "",
+      "transform": "",
+      "why": ""
+    },
+    {
+      "model": "App\\Models\\Finance\\PettyCash",
+      "v3_table": "petty_cash",
+      "table": "petty_cash_custodian",
+      "column": "petty_casher_employee_id",
+      "field": "custodian_id",
+      "kind": "copied",
+      "rule": "",
+      "transform": "",
+      "why": ""
+    },
+    {
+      "model": "App\\Models\\Finance\\PettyCash",
+      "v3_table": "petty_cash",
+      "table": "petty_cash_custodian",
+      "column": "petty_cash_custodian_account_id",
       "field": "gl_account_id",
       "kind": "copied",
       "rule": "",
@@ -2398,12 +2771,12 @@
       "model": "App\\Models\\Finance\\PettyCash",
       "v3_table": "petty_cash",
       "table": "petty_cash_custodian",
-      "column": "facility_id",
-      "field": "facility_id",
-      "kind": "copied",
-      "rule": "",
-      "transform": "",
-      "why": ""
+      "column": "status",
+      "field": "status",
+      "kind": "worked out",
+      "rule": "{\"steps\":[{\"op\":\"lowercase\"}],\"column\":\"status\"}",
+      "transform": "lowercase",
+      "why": "v3 status values are lower case"
     },
     {
       "model": "App\\Models\\Finance\\PettyCashTransaction",
@@ -2420,7 +2793,7 @@
       "model": "App\\Models\\Finance\\PettyCashTransaction",
       "v3_table": "petty_cash_transactions",
       "table": "petty_cash_deposit",
-      "column": "facility_id",
+      "column": "source_account_id",
       "field": "petty_cash_id",
       "kind": "copied",
       "rule": "",
@@ -2472,10 +2845,54 @@
       "why": ""
     },
     {
-      "model": "App\\Models\\Finance\\ReceiptItems",
-      "v3_table": "receipt_items",
-      "table": "acc_receipt_items",
-      "column": "discount_notes",
+      "model": "App\\Models\\Finance\\Receipt",
+      "v3_table": "receipts",
+      "table": "acc_receipts",
+      "column": "facility_id",
+      "field": "facility_id",
+      "kind": "copied",
+      "rule": "",
+      "transform": "",
+      "why": ""
+    },
+    {
+      "model": "App\\Models\\Finance\\Receipt",
+      "v3_table": "receipts",
+      "table": "acc_receipts",
+      "column": "receipt_no",
+      "field": "receipt_number",
+      "kind": "copied",
+      "rule": "",
+      "transform": "",
+      "why": ""
+    },
+    {
+      "model": "App\\Models\\Finance\\Receipt",
+      "v3_table": "receipts",
+      "table": "acc_receipts",
+      "column": "amount",
+      "field": "amount_paid",
+      "kind": "copied",
+      "rule": "",
+      "transform": "",
+      "why": ""
+    },
+    {
+      "model": "App\\Models\\Finance\\Receipt",
+      "v3_table": "receipts",
+      "table": "acc_receipts",
+      "column": "payment_method",
+      "field": "payment_method",
+      "kind": "copied",
+      "rule": "",
+      "transform": "",
+      "why": ""
+    },
+    {
+      "model": "App\\Models\\Finance\\Receipt",
+      "v3_table": "receipts",
+      "table": "acc_receipts",
+      "column": "comments",
       "field": "notes",
       "kind": "copied",
       "rule": "",
@@ -2488,17 +2905,6 @@
       "table": "acc_receipt_items",
       "column": "receipt_id",
       "field": "evaluation_payment_id",
-      "kind": "copied",
-      "rule": "",
-      "transform": "",
-      "why": ""
-    },
-    {
-      "model": "App\\Models\\Finance\\ReceiptItems",
-      "v3_table": "receipt_items",
-      "table": "acc_receipt_items",
-      "column": "facility_id",
-      "field": "facility_id",
       "kind": "copied",
       "rule": "",
       "transform": "",
@@ -2554,6 +2960,28 @@
       "table": "acc_receipt_items",
       "column": "taxes",
       "field": "tax_amount",
+      "kind": "copied",
+      "rule": "",
+      "transform": "",
+      "why": ""
+    },
+    {
+      "model": "App\\Models\\Finance\\ReceiptItems",
+      "v3_table": "receipt_items",
+      "table": "acc_receipt_items",
+      "column": "discount_notes",
+      "field": "notes",
+      "kind": "copied",
+      "rule": "",
+      "transform": "",
+      "why": ""
+    },
+    {
+      "model": "App\\Models\\Finance\\ReceiptItems",
+      "v3_table": "receipt_items",
+      "table": "acc_receipt_items",
+      "column": "facility_id",
+      "field": "facility_id",
       "kind": "copied",
       "rule": "",
       "transform": "",
@@ -3451,6 +3879,50 @@
       "why": ""
     },
     {
+      "model": "App\\Models\\Inventory\\PaymentTerm",
+      "v3_table": "inv_payment_terms",
+      "table": "ref_payment_terms",
+      "column": "terms_name",
+      "field": "name",
+      "kind": "copied",
+      "rule": "",
+      "transform": "",
+      "why": ""
+    },
+    {
+      "model": "App\\Models\\Inventory\\PaymentTerm",
+      "v3_table": "inv_payment_terms",
+      "table": "ref_payment_terms",
+      "column": "description",
+      "field": "description",
+      "kind": "copied",
+      "rule": "",
+      "transform": "",
+      "why": ""
+    },
+    {
+      "model": "App\\Models\\Inventory\\PaymentTerm",
+      "v3_table": "inv_payment_terms",
+      "table": "ref_payment_terms",
+      "column": "credit_days",
+      "field": "days",
+      "kind": "copied",
+      "rule": "",
+      "transform": "",
+      "why": ""
+    },
+    {
+      "model": "App\\Models\\Inventory\\PaymentTerm",
+      "v3_table": "inv_payment_terms",
+      "table": "ref_payment_terms",
+      "column": "active",
+      "field": "is_active",
+      "kind": "copied",
+      "rule": "",
+      "transform": "",
+      "why": ""
+    },
+    {
       "model": "App\\Models\\Inventory\\Product",
       "v3_table": "inv_products",
       "table": "product_services",
@@ -3577,6 +4049,457 @@
       "table": "item_classification",
       "column": "facility_id",
       "field": "facility_id",
+      "kind": "copied",
+      "rule": "",
+      "transform": "",
+      "why": ""
+    },
+    {
+      "model": "App\\Models\\Inventory\\ProductCategory",
+      "v3_table": "inv_product_categories",
+      "table": "item_classification",
+      "column": "name",
+      "field": "name",
+      "kind": "copied",
+      "rule": "",
+      "transform": "",
+      "why": ""
+    },
+    {
+      "model": "App\\Models\\Inventory\\ProductCategory",
+      "v3_table": "inv_product_categories",
+      "table": "item_classification",
+      "column": "description",
+      "field": "description",
+      "kind": "copied",
+      "rule": "",
+      "transform": "",
+      "why": ""
+    },
+    {
+      "model": "App\\Models\\Inventory\\PurchaseOrder",
+      "v3_table": "inv_purchase_orders",
+      "table": "purchase_order",
+      "column": "id",
+      "field": "uuid",
+      "kind": "copied",
+      "rule": "",
+      "transform": "",
+      "why": ""
+    },
+    {
+      "model": "App\\Models\\Inventory\\PurchaseOrder",
+      "v3_table": "inv_purchase_orders",
+      "table": "purchase_order",
+      "column": "order_number",
+      "field": "po_number",
+      "kind": "copied",
+      "rule": "",
+      "transform": "",
+      "why": ""
+    },
+    {
+      "model": "App\\Models\\Inventory\\PurchaseOrder",
+      "v3_table": "inv_purchase_orders",
+      "table": "purchase_order",
+      "column": "supplier_id",
+      "field": "supplier_id",
+      "kind": "copied",
+      "rule": "",
+      "transform": "",
+      "why": ""
+    },
+    {
+      "model": "App\\Models\\Inventory\\PurchaseOrder",
+      "v3_table": "inv_purchase_orders",
+      "table": "purchase_order",
+      "column": "store_id",
+      "field": "store_id",
+      "kind": "copied",
+      "rule": "",
+      "transform": "",
+      "why": ""
+    },
+    {
+      "model": "App\\Models\\Inventory\\PurchaseOrder",
+      "v3_table": "inv_purchase_orders",
+      "table": "purchase_order",
+      "column": "required_date",
+      "field": "order_date",
+      "kind": "copied",
+      "rule": "",
+      "transform": "",
+      "why": ""
+    },
+    {
+      "model": "App\\Models\\Inventory\\PurchaseOrder",
+      "v3_table": "inv_purchase_orders",
+      "table": "purchase_order",
+      "column": "status",
+      "field": "status",
+      "kind": "copied",
+      "rule": "",
+      "transform": "",
+      "why": ""
+    },
+    {
+      "model": "App\\Models\\Inventory\\PurchaseOrder",
+      "v3_table": "inv_purchase_orders",
+      "table": "purchase_order",
+      "column": "billed",
+      "field": "total_amount",
+      "kind": "copied",
+      "rule": "",
+      "transform": "",
+      "why": ""
+    },
+    {
+      "model": "App\\Models\\Inventory\\PurchaseOrder",
+      "v3_table": "inv_purchase_orders",
+      "table": "purchase_order",
+      "column": "status",
+      "field": "payment_status",
+      "kind": "copied",
+      "rule": "",
+      "transform": "",
+      "why": ""
+    },
+    {
+      "model": "App\\Models\\Inventory\\PurchaseOrder",
+      "v3_table": "inv_purchase_orders",
+      "table": "purchase_order",
+      "column": "supplier_invoice_id",
+      "field": "payment_term_id",
+      "kind": "copied",
+      "rule": "",
+      "transform": "",
+      "why": ""
+    },
+    {
+      "model": "App\\Models\\Inventory\\PurchaseOrder",
+      "v3_table": "inv_purchase_orders",
+      "table": "purchase_order",
+      "column": "created_by",
+      "field": "created_by",
+      "kind": "copied",
+      "rule": "",
+      "transform": "",
+      "why": ""
+    },
+    {
+      "model": "App\\Models\\Inventory\\PurchaseOrder",
+      "v3_table": "inv_purchase_orders",
+      "table": "purchase_order",
+      "column": "approved_by",
+      "field": "approved_by",
+      "kind": "copied",
+      "rule": "",
+      "transform": "",
+      "why": ""
+    },
+    {
+      "model": "App\\Models\\Inventory\\PurchaseOrder",
+      "v3_table": "inv_purchase_orders",
+      "table": "purchase_order",
+      "column": "approved",
+      "field": "approved_at",
+      "kind": "copied",
+      "rule": "",
+      "transform": "",
+      "why": ""
+    },
+    {
+      "model": "App\\Models\\Inventory\\PurchaseOrder",
+      "v3_table": "inv_purchase_orders",
+      "table": "purchase_order",
+      "column": "created_by",
+      "field": "sent_by",
+      "kind": "copied",
+      "rule": "",
+      "transform": "",
+      "why": ""
+    },
+    {
+      "model": "App\\Models\\Inventory\\PurchaseOrder",
+      "v3_table": "inv_purchase_orders",
+      "table": "purchase_order",
+      "column": "created_on",
+      "field": "sent_at",
+      "kind": "copied",
+      "rule": "",
+      "transform": "",
+      "why": ""
+    },
+    {
+      "model": "App\\Models\\Inventory\\PurchaseOrder",
+      "v3_table": "inv_purchase_orders",
+      "table": "purchase_order",
+      "column": "submitted_by",
+      "field": "supplier_accepted_by",
+      "kind": "copied",
+      "rule": "",
+      "transform": "",
+      "why": ""
+    },
+    {
+      "model": "App\\Models\\Inventory\\PurchaseOrder",
+      "v3_table": "inv_purchase_orders",
+      "table": "purchase_order",
+      "column": "received",
+      "field": "supplier_accepted_at",
+      "kind": "copied",
+      "rule": "",
+      "transform": "",
+      "why": ""
+    },
+    {
+      "model": "App\\Models\\Inventory\\PurchaseOrder",
+      "v3_table": "inv_purchase_orders",
+      "table": "purchase_order",
+      "column": "remarks",
+      "field": "supplier_response_notes",
+      "kind": "copied",
+      "rule": "",
+      "transform": "",
+      "why": ""
+    },
+    {
+      "model": "App\\Models\\Inventory\\PurchaseOrder",
+      "v3_table": "inv_purchase_orders",
+      "table": "purchase_order",
+      "column": "canceled_by",
+      "field": "rejected_by",
+      "kind": "copied",
+      "rule": "",
+      "transform": "",
+      "why": ""
+    },
+    {
+      "model": "App\\Models\\Inventory\\PurchaseOrder",
+      "v3_table": "inv_purchase_orders",
+      "table": "purchase_order",
+      "column": "notes",
+      "field": "notes",
+      "kind": "copied",
+      "rule": "",
+      "transform": "",
+      "why": ""
+    },
+    {
+      "model": "App\\Models\\Inventory\\PurchaseOrder",
+      "v3_table": "inv_purchase_orders",
+      "table": "purchase_order",
+      "column": "facility_id",
+      "field": "facility_id",
+      "kind": "copied",
+      "rule": "",
+      "transform": "",
+      "why": ""
+    },
+    {
+      "model": "App\\Models\\Inventory\\PurchaseOrderItem",
+      "v3_table": "inv_purchase_order_items",
+      "table": "purchase_order_item",
+      "column": "id",
+      "field": "uuid",
+      "kind": "copied",
+      "rule": "",
+      "transform": "",
+      "why": ""
+    },
+    {
+      "model": "App\\Models\\Inventory\\PurchaseOrderItem",
+      "v3_table": "inv_purchase_order_items",
+      "table": "purchase_order_item",
+      "column": "purchase_order_id",
+      "field": "purchase_order_id",
+      "kind": "copied",
+      "rule": "",
+      "transform": "",
+      "why": ""
+    },
+    {
+      "model": "App\\Models\\Inventory\\PurchaseOrderItem",
+      "v3_table": "inv_purchase_order_items",
+      "table": "purchase_order_item",
+      "column": "item_id",
+      "field": "product_id",
+      "kind": "copied",
+      "rule": "",
+      "transform": "",
+      "why": ""
+    },
+    {
+      "model": "App\\Models\\Inventory\\PurchaseOrderItem",
+      "v3_table": "inv_purchase_order_items",
+      "table": "purchase_order_item",
+      "column": "quantity",
+      "field": "quantity_ordered",
+      "kind": "copied",
+      "rule": "",
+      "transform": "",
+      "why": ""
+    },
+    {
+      "model": "App\\Models\\Inventory\\PurchaseOrderItem",
+      "v3_table": "inv_purchase_order_items",
+      "table": "purchase_order_item",
+      "column": "received_quantity",
+      "field": "quantity_received",
+      "kind": "copied",
+      "rule": "",
+      "transform": "",
+      "why": ""
+    },
+    {
+      "model": "App\\Models\\Inventory\\PurchaseOrderItem",
+      "v3_table": "inv_purchase_order_items",
+      "table": "purchase_order_item",
+      "column": "discount",
+      "field": "discount_amount",
+      "kind": "copied",
+      "rule": "",
+      "transform": "",
+      "why": ""
+    },
+    {
+      "model": "App\\Models\\Inventory\\PurchaseOrderItem",
+      "v3_table": "inv_purchase_order_items",
+      "table": "purchase_order_item",
+      "column": "tax_amount",
+      "field": "tax_amount",
+      "kind": "copied",
+      "rule": "",
+      "transform": "",
+      "why": ""
+    },
+    {
+      "model": "App\\Models\\Inventory\\PurchaseOrderItem",
+      "v3_table": "inv_purchase_order_items",
+      "table": "purchase_order_item",
+      "column": "pack_size",
+      "field": "pack_size",
+      "kind": "copied",
+      "rule": "",
+      "transform": "",
+      "why": ""
+    },
+    {
+      "model": "App\\Models\\Inventory\\PurchaseOrderItem",
+      "v3_table": "inv_purchase_order_items",
+      "table": "purchase_order_item",
+      "column": "pack_size",
+      "field": "pack_unit",
+      "kind": "copied",
+      "rule": "",
+      "transform": "",
+      "why": ""
+    },
+    {
+      "model": "App\\Models\\Inventory\\PurchaseOrderItem",
+      "v3_table": "inv_purchase_order_items",
+      "table": "purchase_order_item",
+      "column": "facility_id",
+      "field": "facility_id",
+      "kind": "copied",
+      "rule": "",
+      "transform": "",
+      "why": ""
+    },
+    {
+      "model": "App\\Models\\Inventory\\RequisitionApproval",
+      "v3_table": "inv_requisition_approvals",
+      "table": "requisition_approval",
+      "column": "id",
+      "field": "uuid",
+      "kind": "copied",
+      "rule": "",
+      "transform": "",
+      "why": ""
+    },
+    {
+      "model": "App\\Models\\Inventory\\RequisitionApproval",
+      "v3_table": "inv_requisition_approvals",
+      "table": "requisition_approval",
+      "column": "requisition_id",
+      "field": "requisition_id",
+      "kind": "copied",
+      "rule": "",
+      "transform": "",
+      "why": ""
+    },
+    {
+      "model": "App\\Models\\Inventory\\RequisitionApproval",
+      "v3_table": "inv_requisition_approvals",
+      "table": "requisition_approval",
+      "column": "approver_id",
+      "field": "approver_id",
+      "kind": "copied",
+      "rule": "",
+      "transform": "",
+      "why": ""
+    },
+    {
+      "model": "App\\Models\\Inventory\\RequisitionApproval",
+      "v3_table": "inv_requisition_approvals",
+      "table": "requisition_approval",
+      "column": "approved_at_level",
+      "field": "approval_level",
+      "kind": "copied",
+      "rule": "",
+      "transform": "",
+      "why": ""
+    },
+    {
+      "model": "App\\Models\\Inventory\\RequisitionApproval",
+      "v3_table": "inv_requisition_approvals",
+      "table": "requisition_approval",
+      "column": "comment",
+      "field": "comments",
+      "kind": "copied",
+      "rule": "",
+      "transform": "",
+      "why": ""
+    },
+    {
+      "model": "App\\Models\\Inventory\\RequisitionApproval",
+      "v3_table": "inv_requisition_approvals",
+      "table": "requisition_approval",
+      "column": "facility_id",
+      "field": "facility_id",
+      "kind": "copied",
+      "rule": "",
+      "transform": "",
+      "why": ""
+    },
+    {
+      "model": "App\\Models\\Inventory\\Sale",
+      "v3_table": "inv_sales",
+      "table": "sale",
+      "column": "id",
+      "field": "uuid",
+      "kind": "copied",
+      "rule": "",
+      "transform": "",
+      "why": ""
+    },
+    {
+      "model": "App\\Models\\Inventory\\Sale",
+      "v3_table": "inv_sales",
+      "table": "sale",
+      "column": "facility_id",
+      "field": "facility_id",
+      "kind": "copied",
+      "rule": "",
+      "transform": "",
+      "why": ""
+    },
+    {
+      "model": "App\\Models\\Inventory\\Sale",
+      "v3_table": "inv_sales",
+      "table": "sale",
+      "column": "payment_mode",
+      "field": "payment_mode",
       "kind": "copied",
       "rule": "",
       "transform": "",
@@ -3718,30 +4641,8 @@
       "model": "App\\Models\\Inventory\\SaleItem",
       "v3_table": "inv_sale_items",
       "table": "pharmacy_dispensing_drugs",
-      "column": "prescription_id",
-      "field": "prescription_id",
-      "kind": "copied",
-      "rule": "",
-      "transform": "",
-      "why": ""
-    },
-    {
-      "model": "App\\Models\\Inventory\\SaleItem",
-      "v3_table": "inv_sale_items",
-      "table": "pharmacy_dispensing_drugs",
       "column": "batch_number",
       "field": "batch_id",
-      "kind": "copied",
-      "rule": "",
-      "transform": "",
-      "why": ""
-    },
-    {
-      "model": "App\\Models\\Inventory\\SaleItem",
-      "v3_table": "inv_sale_items",
-      "table": "pharmacy_dispensing_drugs",
-      "column": "walkin_flag",
-      "field": "dispensed",
       "kind": "copied",
       "rule": "",
       "transform": "",
@@ -3894,8 +4795,8 @@
       "model": "App\\Models\\Inventory\\Store",
       "v3_table": "inv_stores",
       "table": "st_stores",
-      "column": "active",
-      "field": "is_active",
+      "column": "store_type",
+      "field": "type",
       "kind": "copied",
       "rule": "",
       "transform": "",
@@ -3916,19 +4817,19 @@
       "model": "App\\Models\\Inventory\\Store",
       "v3_table": "inv_stores",
       "table": "st_stores",
-      "column": "facility_id",
-      "field": "facility_id",
+      "column": "active",
+      "field": "is_active",
       "kind": "copied",
       "rule": "",
       "transform": "",
       "why": ""
     },
     {
-      "model": "App\\Models\\Inventory\\Supplier",
-      "v3_table": "inv_suppliers",
-      "table": "supplier",
-      "column": "supplier_name",
-      "field": "name",
+      "model": "App\\Models\\Inventory\\Store",
+      "v3_table": "inv_stores",
+      "table": "st_stores",
+      "column": "facility_id",
+      "field": "facility_id",
       "kind": "copied",
       "rule": "",
       "transform": "",
@@ -4001,11 +4902,55 @@
       "why": ""
     },
     {
-      "model": "App\\Models\\Inventory\\Supplier",
-      "v3_table": "inv_suppliers",
-      "table": "supplier",
-      "column": "facility_id",
-      "field": "country",
+      "model": "App\\Models\\Inventory\\SupplierPayment",
+      "v3_table": "inv_supplier_payments",
+      "table": "acc_supplier_payment",
+      "column": "id",
+      "field": "uuid",
+      "kind": "copied",
+      "rule": "",
+      "transform": "",
+      "why": ""
+    },
+    {
+      "model": "App\\Models\\Inventory\\SupplierPayment",
+      "v3_table": "inv_supplier_payments",
+      "table": "acc_supplier_payment",
+      "column": "amount_paid",
+      "field": "amount",
+      "kind": "copied",
+      "rule": "",
+      "transform": "",
+      "why": ""
+    },
+    {
+      "model": "App\\Models\\Inventory\\SupplierPayment",
+      "v3_table": "inv_supplier_payments",
+      "table": "acc_supplier_payment",
+      "column": "payment_date",
+      "field": "payment_date",
+      "kind": "copied",
+      "rule": "",
+      "transform": "",
+      "why": ""
+    },
+    {
+      "model": "App\\Models\\Inventory\\SupplierPayment",
+      "v3_table": "inv_supplier_payments",
+      "table": "acc_supplier_payment",
+      "column": "payment_id",
+      "field": "payment_mode_id",
+      "kind": "copied",
+      "rule": "",
+      "transform": "",
+      "why": ""
+    },
+    {
+      "model": "App\\Models\\Inventory\\SupplierPayment",
+      "v3_table": "inv_supplier_payments",
+      "table": "acc_supplier_payment",
+      "column": "reference",
+      "field": "reference",
       "kind": "copied",
       "rule": "",
       "transform": "",
@@ -4067,55 +5012,22 @@
       "why": ""
     },
     {
-      "model": "App\\Models\\Oncology\\OncologyObservation",
-      "v3_table": "oncology_observations",
-      "table": "lab_results_history",
-      "column": "lab_result_id",
-      "field": "patient_id",
+      "model": "App\\Models\\Inventory\\Unit",
+      "v3_table": "inv_units",
+      "table": "stock_uom",
+      "column": "name",
+      "field": "name",
       "kind": "copied",
       "rule": "",
       "transform": "",
       "why": ""
     },
     {
-      "model": "App\\Models\\Oncology\\OncologyObservation",
-      "v3_table": "oncology_observations",
-      "table": "lab_results_history",
-      "column": "result_value",
-      "field": "value",
-      "kind": "copied",
-      "rule": "",
-      "transform": "",
-      "why": ""
-    },
-    {
-      "model": "App\\Models\\Oncology\\OncologyObservation",
-      "v3_table": "oncology_observations",
-      "table": "lab_results_history",
-      "column": "created_on",
-      "field": "observed_at",
-      "kind": "copied",
-      "rule": "",
-      "transform": "",
-      "why": ""
-    },
-    {
-      "model": "App\\Models\\Oncology\\OncologyObservation",
-      "v3_table": "oncology_observations",
-      "table": "lab_results_history",
-      "column": "facility_id",
-      "field": "source",
-      "kind": "copied",
-      "rule": "",
-      "transform": "",
-      "why": ""
-    },
-    {
-      "model": "App\\Models\\Oncology\\OncologyObservation",
-      "v3_table": "oncology_observations",
-      "table": "lab_results_history",
-      "column": "version",
-      "field": "revision",
+      "model": "App\\Models\\Inventory\\Unit",
+      "v3_table": "inv_units",
+      "table": "stock_uom",
+      "column": "symbol",
+      "field": "symbol",
       "kind": "copied",
       "rule": "",
       "transform": "",
@@ -4345,17 +5257,6 @@
       "model": "App\\Models\\PatientEvaluation\\Diagnosis",
       "v3_table": "evaluation_diagnosis",
       "table": "patient_diagnosis",
-      "column": "id",
-      "field": "uuid",
-      "kind": "copied",
-      "rule": "",
-      "transform": "",
-      "why": ""
-    },
-    {
-      "model": "App\\Models\\PatientEvaluation\\Diagnosis",
-      "v3_table": "evaluation_diagnosis",
-      "table": "patient_diagnosis",
       "column": "visit_id",
       "field": "visit_id",
       "kind": "copied",
@@ -4369,17 +5270,6 @@
       "table": "patient_diagnosis",
       "column": "patient_id",
       "field": "patient_id",
-      "kind": "copied",
-      "rule": "",
-      "transform": "",
-      "why": ""
-    },
-    {
-      "model": "App\\Models\\PatientEvaluation\\Diagnosis",
-      "v3_table": "evaluation_diagnosis",
-      "table": "patient_diagnosis",
-      "column": "code",
-      "field": "diagnosis_code_id",
       "kind": "copied",
       "rule": "",
       "transform": "",
@@ -4413,43 +5303,13 @@
       "table": "patient_diagnosis",
       "column": "diagnosis_order",
       "field": "diagnosis_type",
-      "kind": "copied",
-      "rule": "",
-      "transform": "",
-      "why": ""
-    },
-    {
-      "model": "App\\Models\\PatientEvaluation\\Diagnosis",
-      "v3_table": "evaluation_diagnosis",
-      "table": "patient_diagnosis",
-      "column": "is_condition",
-      "field": "is_primary",
-      "kind": "copied",
-      "rule": "",
-      "transform": "",
-      "why": ""
-    },
-    {
-      "model": "App\\Models\\PatientEvaluation\\Diagnosis",
-      "v3_table": "evaluation_diagnosis",
-      "table": "patient_diagnosis",
-      "column": "created_by",
-      "field": "confirmed_by",
-      "kind": "copied",
-      "rule": "",
-      "transform": "",
-      "why": ""
-    },
-    {
-      "model": "App\\Models\\PatientEvaluation\\Diagnosis",
-      "v3_table": "evaluation_diagnosis",
-      "table": "patient_diagnosis",
-      "column": "date_recorded",
-      "field": "confirmation_date",
-      "kind": "copied",
-      "rule": "",
-      "transform": "",
-      "why": ""
+      "kind": "worked out",
+      "rule": "{\"steps\": [{\"op\": \"lowercase\"}], \"column\": \"diagnosis_order\"}",
+      "transform": "lowercase",
+      "why": "pipeline review 2026-10-09: V3 uses primary / secondary / provisional",
+      "also": [
+        "diagnosis_type"
+      ]
     },
     {
       "model": "App\\Models\\PatientEvaluation\\Diagnosis",
@@ -4474,11 +5334,44 @@
       "why": ""
     },
     {
-      "model": "App\\Models\\PatientEvaluation\\Diagnosis",
-      "v3_table": "evaluation_diagnosis",
-      "table": "patient_diagnosis",
-      "column": "last_modified_by",
-      "field": "recorded_by",
+      "model": "App\\Models\\PatientEvaluation\\DiagnosisList",
+      "v3_table": "evaluation_diagnosis_lists",
+      "table": "moh",
+      "column": "code",
+      "field": "code",
+      "kind": "copied",
+      "rule": "",
+      "transform": "",
+      "why": ""
+    },
+    {
+      "model": "App\\Models\\PatientEvaluation\\DiagnosisList",
+      "v3_table": "evaluation_diagnosis_lists",
+      "table": "moh",
+      "column": "description",
+      "field": "description",
+      "kind": "copied",
+      "rule": "",
+      "transform": "",
+      "why": ""
+    },
+    {
+      "model": "App\\Models\\PatientEvaluation\\DiagnosisList",
+      "v3_table": "evaluation_diagnosis_lists",
+      "table": "moh",
+      "column": "category",
+      "field": "category",
+      "kind": "copied",
+      "rule": "",
+      "transform": "",
+      "why": ""
+    },
+    {
+      "model": "App\\Models\\PatientEvaluation\\DiagnosisList",
+      "v3_table": "evaluation_diagnosis_lists",
+      "table": "moh",
+      "column": "active",
+      "field": "is_active",
       "kind": "copied",
       "rule": "",
       "transform": "",
@@ -4628,44 +5521,11 @@
       "why": ""
     },
     {
-      "model": "App\\Models\\PatientEvaluation\\DoctorNotesViewLog",
-      "v3_table": "doctor_notes_view_logs",
-      "table": "medical_reports",
-      "column": "visit_id",
-      "field": "visit_id",
-      "kind": "copied",
-      "rule": "",
-      "transform": "",
-      "why": ""
-    },
-    {
-      "model": "App\\Models\\PatientEvaluation\\DoctorNotesViewLog",
-      "v3_table": "doctor_notes_view_logs",
-      "table": "medical_reports",
-      "column": "date",
-      "field": "viewed_date",
-      "kind": "copied",
-      "rule": "",
-      "transform": "",
-      "why": ""
-    },
-    {
       "model": "App\\Models\\PatientEvaluation\\EvaluationMachine",
       "v3_table": "evaluation_machines",
       "table": "lab_equipment",
       "column": "equipment_name",
       "field": "display_name",
-      "kind": "copied",
-      "rule": "",
-      "transform": "",
-      "why": ""
-    },
-    {
-      "model": "App\\Models\\PatientEvaluation\\EvaluationMachine",
-      "v3_table": "evaluation_machines",
-      "table": "lab_equipment",
-      "column": "facility_id",
-      "field": "location",
       "kind": "copied",
       "rule": "",
       "transform": "",
@@ -4831,17 +5691,6 @@
       "table": "eye_refraction",
       "column": "code_frame_design_value_id",
       "field": "frame_type",
-      "kind": "copied",
-      "rule": "",
-      "transform": "",
-      "why": ""
-    },
-    {
-      "model": "App\\Models\\PatientEvaluation\\Facility",
-      "v3_table": "evaluation_facilities",
-      "table": "facility",
-      "column": "id",
-      "field": "uuid",
       "kind": "copied",
       "rule": "",
       "transform": "",
@@ -5106,17 +5955,6 @@
       "table": "patient_doctor_request",
       "column": "facility_id",
       "field": "facility_id",
-      "kind": "copied",
-      "rule": "",
-      "transform": "",
-      "why": ""
-    },
-    {
-      "model": "App\\Models\\PatientEvaluation\\InvestigationApproval",
-      "v3_table": "evaluation_investigation_approvals",
-      "table": "lab_result_approval",
-      "column": "lab_result_id",
-      "field": "investigation_id",
       "kind": "copied",
       "rule": "",
       "transform": "",
@@ -5541,17 +6379,6 @@
       "why": ""
     },
     {
-      "model": "App\\Models\\PatientEvaluation\\PrescriptionFrequency",
-      "v3_table": "prescription_frequencies",
-      "table": "drug_frequency",
-      "column": "facility_id",
-      "field": "active",
-      "kind": "copied",
-      "rule": "",
-      "transform": "",
-      "why": ""
-    },
-    {
       "model": "App\\Models\\PatientEvaluation\\Procedure",
       "v3_table": "procedures",
       "table": "product_services",
@@ -5667,6 +6494,61 @@
       "table": "lab_analytes",
       "column": "upper_limit",
       "field": "upper",
+      "kind": "copied",
+      "rule": "",
+      "transform": "",
+      "why": ""
+    },
+    {
+      "model": "App\\Models\\PatientEvaluation\\Refraction",
+      "v3_table": "evaluation_refraction",
+      "table": "refraction_request",
+      "column": "id",
+      "field": "uuid",
+      "kind": "copied",
+      "rule": "",
+      "transform": "",
+      "why": ""
+    },
+    {
+      "model": "App\\Models\\PatientEvaluation\\Refraction",
+      "v3_table": "evaluation_refraction",
+      "table": "refraction_request",
+      "column": "visit_id",
+      "field": "visit_id",
+      "kind": "copied",
+      "rule": "",
+      "transform": "",
+      "why": ""
+    },
+    {
+      "model": "App\\Models\\PatientEvaluation\\Refraction",
+      "v3_table": "evaluation_refraction",
+      "table": "refraction_request",
+      "column": "patient_id",
+      "field": "patient_id",
+      "kind": "copied",
+      "rule": "",
+      "transform": "",
+      "why": ""
+    },
+    {
+      "model": "App\\Models\\PatientEvaluation\\Refraction",
+      "v3_table": "evaluation_refraction",
+      "table": "refraction_request",
+      "column": "facility_id",
+      "field": "facility_id",
+      "kind": "copied",
+      "rule": "",
+      "transform": "",
+      "why": ""
+    },
+    {
+      "model": "App\\Models\\PatientEvaluation\\Refraction",
+      "v3_table": "evaluation_refraction",
+      "table": "refraction_request",
+      "column": "created_on",
+      "field": "recorded_date",
       "kind": "copied",
       "rule": "",
       "transform": "",
@@ -6080,6 +6962,17 @@
       "why": ""
     },
     {
+      "model": "App\\Models\\PatientEvaluation\\Vital",
+      "v3_table": "vitals",
+      "table": "patient_vitals_record",
+      "column": "spo2",
+      "field": "oxygen_saturation",
+      "kind": "copied",
+      "rule": "",
+      "transform": "",
+      "why": ""
+    },
+    {
       "model": "App\\Models\\Reception\\Appointment",
       "v3_table": "appointments",
       "table": "appointments",
@@ -6289,21 +7182,120 @@
       "why": ""
     },
     {
-      "model": "App\\Models\\Reception\\PatientDependant",
-      "v3_table": "patient_dependants",
-      "table": "person_contacts",
-      "column": "person_id",
-      "field": "patient_id",
+      "model": "App\\Models\\Reception\\Patient",
+      "v3_table": "patients",
+      "table": "person",
+      "column": "person_number",
+      "field": "patient_no",
       "kind": "copied",
       "rule": "",
       "transform": "",
       "why": ""
     },
     {
-      "model": "App\\Models\\Reception\\PatientDependant",
-      "v3_table": "patient_dependants",
-      "table": "person_contacts",
-      "column": "mobile",
+      "model": "App\\Models\\Reception\\Patient",
+      "v3_table": "patients",
+      "table": "person",
+      "column": "given_name",
+      "field": "first_name",
+      "kind": "copied",
+      "rule": "",
+      "transform": "",
+      "why": ""
+    },
+    {
+      "model": "App\\Models\\Reception\\Patient",
+      "v3_table": "patients",
+      "table": "person",
+      "column": "middle_name",
+      "field": "middle_name",
+      "kind": "copied",
+      "rule": "",
+      "transform": "",
+      "why": ""
+    },
+    {
+      "model": "App\\Models\\Reception\\Patient",
+      "v3_table": "patients",
+      "table": "person",
+      "column": "surname",
+      "field": "last_name",
+      "kind": "copied",
+      "rule": "",
+      "transform": "",
+      "why": ""
+    },
+    {
+      "model": "App\\Models\\Reception\\Patient",
+      "v3_table": "patients",
+      "table": "person",
+      "column": "national_id_number",
+      "field": "id_no",
+      "kind": "copied",
+      "rule": "",
+      "transform": "",
+      "why": ""
+    },
+    {
+      "model": "App\\Models\\Reception\\Patient",
+      "v3_table": "patients",
+      "table": "person",
+      "column": "date_of_birth",
+      "field": "dob",
+      "kind": "copied",
+      "rule": "",
+      "transform": "",
+      "why": ""
+    },
+    {
+      "model": "App\\Models\\Reception\\Patient",
+      "v3_table": "patients",
+      "table": "person",
+      "column": "gender",
+      "field": "gender",
+      "kind": "copied",
+      "rule": "",
+      "transform": "",
+      "why": ""
+    },
+    {
+      "model": "App\\Models\\Reception\\Patient",
+      "v3_table": "patients",
+      "table": "person",
+      "column": "marital_status",
+      "field": "marital_status",
+      "kind": "copied",
+      "rule": "",
+      "transform": "",
+      "why": ""
+    },
+    {
+      "model": "App\\Models\\Reception\\Patient",
+      "v3_table": "patients",
+      "table": "person",
+      "column": "nationality",
+      "field": "nationality",
+      "kind": "copied",
+      "rule": "",
+      "transform": "",
+      "why": ""
+    },
+    {
+      "model": "App\\Models\\Reception\\Patient",
+      "v3_table": "patients",
+      "table": "person",
+      "column": "religion",
+      "field": "religion",
+      "kind": "copied",
+      "rule": "",
+      "transform": "",
+      "why": ""
+    },
+    {
+      "model": "App\\Models\\Reception\\Patient",
+      "v3_table": "patients",
+      "table": "person",
+      "column": "primary_contact",
       "field": "mobile",
       "kind": "copied",
       "rule": "",
@@ -6311,11 +7303,11 @@
       "why": ""
     },
     {
-      "model": "App\\Models\\Reception\\PatientDependant",
-      "v3_table": "patient_dependants",
-      "table": "person_contacts",
-      "column": "email",
-      "field": "email",
+      "model": "App\\Models\\Reception\\Patient",
+      "v3_table": "patients",
+      "table": "person",
+      "column": "date_registered",
+      "field": "registration_date",
       "kind": "copied",
       "rule": "",
       "transform": "",
@@ -6432,6 +7424,83 @@
       "why": ""
     },
     {
+      "model": "App\\Models\\Reception\\PatientInsurance",
+      "v3_table": "patient_insurance",
+      "table": "patient_insurance",
+      "column": "id",
+      "field": "uuid",
+      "kind": "copied",
+      "rule": "",
+      "transform": "",
+      "why": ""
+    },
+    {
+      "model": "App\\Models\\Reception\\PatientInsurance",
+      "v3_table": "patient_insurance",
+      "table": "patient_insurance",
+      "column": "patient_id",
+      "field": "patient_id",
+      "kind": "copied",
+      "rule": "",
+      "transform": "",
+      "why": ""
+    },
+    {
+      "model": "App\\Models\\Reception\\PatientInsurance",
+      "v3_table": "patient_insurance",
+      "table": "patient_insurance",
+      "column": "payer_id",
+      "field": "insurance_company_id",
+      "kind": "copied",
+      "rule": "",
+      "transform": "",
+      "why": ""
+    },
+    {
+      "model": "App\\Models\\Reception\\PatientInsurance",
+      "v3_table": "patient_insurance",
+      "table": "patient_insurance",
+      "column": "policy_no",
+      "field": "policy_no",
+      "kind": "copied",
+      "rule": "",
+      "transform": "",
+      "why": ""
+    },
+    {
+      "model": "App\\Models\\Reception\\PatientInsurance",
+      "v3_table": "patient_insurance",
+      "table": "patient_insurance",
+      "column": "subscriber_name",
+      "field": "principal_member_name",
+      "kind": "copied",
+      "rule": "",
+      "transform": "",
+      "why": ""
+    },
+    {
+      "model": "App\\Models\\Reception\\PatientInsurance",
+      "v3_table": "patient_insurance",
+      "table": "patient_insurance",
+      "column": "insurance_active",
+      "field": "status",
+      "kind": "copied",
+      "rule": "",
+      "transform": "",
+      "why": ""
+    },
+    {
+      "model": "App\\Models\\Reception\\PatientInsurance",
+      "v3_table": "patient_insurance",
+      "table": "patient_insurance",
+      "column": "facility_id",
+      "field": "facility_id",
+      "kind": "copied",
+      "rule": "",
+      "transform": "",
+      "why": ""
+    },
+    {
       "model": "App\\Models\\Reception\\PatientNextOfKin",
       "v3_table": "patient_next_of_kin",
       "table": "person_next_of_kin",
@@ -6490,8 +7559,52 @@
       "model": "App\\Models\\Reception\\Queue",
       "v3_table": "queue",
       "table": "patient_queue",
-      "column": "facility_id",
-      "field": "facility_id",
+      "column": "patient_id",
+      "field": "patient_id",
+      "kind": "copied",
+      "rule": "",
+      "transform": "",
+      "why": ""
+    },
+    {
+      "model": "App\\Models\\Reception\\Queue",
+      "v3_table": "queue",
+      "table": "patient_queue",
+      "column": "visit_id",
+      "field": "visit_id",
+      "kind": "copied",
+      "rule": "",
+      "transform": "",
+      "why": ""
+    },
+    {
+      "model": "App\\Models\\Reception\\Queue",
+      "v3_table": "queue",
+      "table": "patient_queue",
+      "column": "status",
+      "field": "status",
+      "kind": "copied",
+      "rule": "",
+      "transform": "",
+      "why": ""
+    },
+    {
+      "model": "App\\Models\\Reception\\Queue",
+      "v3_table": "queue",
+      "table": "patient_queue",
+      "column": "created_on",
+      "field": "joined_at",
+      "kind": "copied",
+      "rule": "",
+      "transform": "",
+      "why": ""
+    },
+    {
+      "model": "App\\Models\\Reception\\Queue",
+      "v3_table": "queue",
+      "table": "patient_queue",
+      "column": "special_notes",
+      "field": "notes",
       "kind": "copied",
       "rule": "",
       "transform": "",
@@ -6523,227 +7636,12 @@
       "model": "App\\Models\\Reception\\Queue",
       "v3_table": "queue",
       "table": "patient_queue",
-      "column": "patient_id",
-      "field": "patient_id",
+      "column": "facility_id",
+      "field": "facility_id",
       "kind": "copied",
       "rule": "",
       "transform": "",
       "why": ""
-    },
-    {
-      "model": "App\\Models\\Reception\\Queue",
-      "v3_table": "queue",
-      "table": "patient_queue",
-      "column": "visit_id",
-      "field": "visit_id",
-      "kind": "copied",
-      "rule": "",
-      "transform": "",
-      "why": ""
-    },
-    {
-      "model": "App\\Models\\Reception\\Queue",
-      "v3_table": "queue",
-      "table": "patient_queue",
-      "column": "created_on",
-      "field": "joined_at",
-      "kind": "copied",
-      "rule": "",
-      "transform": "",
-      "why": ""
-    },
-    {
-      "model": "App\\Models\\Reception\\Queue",
-      "v3_table": "queue",
-      "table": "patient_queue",
-      "column": "special_notes",
-      "field": "notes",
-      "kind": "copied",
-      "rule": "",
-      "transform": "",
-      "why": ""
-    },
-    {
-      "model": "App\\Models\\Reception\\Patient",
-      "v3_table": "patients",
-      "table": "person",
-      "column": "person_number",
-      "field": "patient_no",
-      "kind": "copied",
-      "rule": "",
-      "transform": "",
-      "why": "pipeline fix 2026-10-08",
-      "also": [
-        "patient_no"
-      ]
-    },
-    {
-      "model": "App\\Models\\Reception\\Patient",
-      "v3_table": "patients",
-      "table": "person",
-      "column": "given_name",
-      "field": "first_name",
-      "kind": "copied",
-      "rule": "",
-      "transform": "",
-      "why": "pipeline fix 2026-10-08",
-      "also": [
-        "first_name"
-      ]
-    },
-    {
-      "model": "App\\Models\\Reception\\Patient",
-      "v3_table": "patients",
-      "table": "person",
-      "column": "middle_name",
-      "field": "middle_name",
-      "kind": "copied",
-      "rule": "",
-      "transform": "",
-      "why": "pipeline fix 2026-10-08",
-      "also": [
-        "middle_name"
-      ]
-    },
-    {
-      "model": "App\\Models\\Reception\\Patient",
-      "v3_table": "patients",
-      "table": "person",
-      "column": "surname",
-      "field": "last_name",
-      "kind": "copied",
-      "rule": "",
-      "transform": "",
-      "why": "pipeline fix 2026-10-08",
-      "also": [
-        "last_name"
-      ]
-    },
-    {
-      "model": "App\\Models\\Reception\\Patient",
-      "v3_table": "patients",
-      "table": "person",
-      "column": "national_id_number",
-      "field": "id_no",
-      "kind": "copied",
-      "rule": "",
-      "transform": "",
-      "why": "pipeline fix 2026-10-08",
-      "also": [
-        "id_no"
-      ]
-    },
-    {
-      "model": "App\\Models\\Reception\\Patient",
-      "v3_table": "patients",
-      "table": "person",
-      "column": "date_of_birth",
-      "field": "dob",
-      "kind": "copied",
-      "rule": "",
-      "transform": "",
-      "why": "pipeline fix 2026-10-08",
-      "also": [
-        "dob"
-      ]
-    },
-    {
-      "model": "App\\Models\\Reception\\Patient",
-      "v3_table": "patients",
-      "table": "person",
-      "column": "gender",
-      "field": "gender",
-      "kind": "copied",
-      "rule": "",
-      "transform": "",
-      "why": "pipeline fix 2026-10-08",
-      "also": [
-        "gender"
-      ]
-    },
-    {
-      "model": "App\\Models\\Reception\\Patient",
-      "v3_table": "patients",
-      "table": "person",
-      "column": "marital_status",
-      "field": "marital_status",
-      "kind": "copied",
-      "rule": "",
-      "transform": "",
-      "why": "pipeline fix 2026-10-08",
-      "also": [
-        "marital_status"
-      ]
-    },
-    {
-      "model": "App\\Models\\Reception\\Patient",
-      "v3_table": "patients",
-      "table": "person",
-      "column": "nationality",
-      "field": "nationality",
-      "kind": "copied",
-      "rule": "",
-      "transform": "",
-      "why": "pipeline fix 2026-10-08",
-      "also": [
-        "nationality"
-      ]
-    },
-    {
-      "model": "App\\Models\\Reception\\Patient",
-      "v3_table": "patients",
-      "table": "person",
-      "column": "religion",
-      "field": "religion",
-      "kind": "copied",
-      "rule": "",
-      "transform": "",
-      "why": "pipeline fix 2026-10-08",
-      "also": [
-        "religion"
-      ]
-    },
-    {
-      "model": "App\\Models\\Reception\\Patient",
-      "v3_table": "patients",
-      "table": "person",
-      "column": "occupation_id",
-      "field": "occupation",
-      "kind": "copied",
-      "rule": "",
-      "transform": "",
-      "why": "pipeline fix 2026-10-08",
-      "also": [
-        "occupation"
-      ]
-    },
-    {
-      "model": "App\\Models\\Reception\\Patient",
-      "v3_table": "patients",
-      "table": "person",
-      "column": "primary_contact",
-      "field": "mobile",
-      "kind": "copied",
-      "rule": "",
-      "transform": "",
-      "why": "pipeline fix 2026-10-08",
-      "also": [
-        "mobile"
-      ]
-    },
-    {
-      "model": "App\\Models\\Reception\\Patient",
-      "v3_table": "patients",
-      "table": "person",
-      "column": "date_registered",
-      "field": "registration_date",
-      "kind": "copied",
-      "rule": "",
-      "transform": "",
-      "why": "pipeline fix 2026-10-08",
-      "also": [
-        "registration_date"
-      ]
     },
     {
       "model": "App\\Models\\Visit",
@@ -6754,7 +7652,7 @@
       "kind": "copied",
       "rule": "",
       "transform": "",
-      "why": "pipeline fix 2026-10-08",
+      "why": "pipeline review 2026-10-09: evaluation visits column",
       "also": [
         "visit_no"
       ]
@@ -6768,7 +7666,7 @@
       "kind": "copied",
       "rule": "",
       "transform": "",
-      "why": "pipeline fix 2026-10-08",
+      "why": "pipeline review 2026-10-09: evaluation visits column",
       "also": [
         "patient_id"
       ]
@@ -6782,7 +7680,7 @@
       "kind": "copied",
       "rule": "",
       "transform": "",
-      "why": "pipeline fix 2026-10-08",
+      "why": "pipeline review 2026-10-09: evaluation visits column",
       "also": [
         "clinic_id"
       ]
@@ -6796,7 +7694,7 @@
       "kind": "copied",
       "rule": "",
       "transform": "",
-      "why": "pipeline fix 2026-10-08",
+      "why": "pipeline review 2026-10-09: evaluation visits column",
       "also": [
         "visit_type"
       ]
@@ -6810,7 +7708,7 @@
       "kind": "copied",
       "rule": "",
       "transform": "",
-      "why": "pipeline fix 2026-10-08",
+      "why": "pipeline review 2026-10-09: evaluation visits column",
       "also": [
         "payment_mode"
       ]
@@ -6824,7 +7722,7 @@
       "kind": "copied",
       "rule": "",
       "transform": "",
-      "why": "pipeline fix 2026-10-08",
+      "why": "pipeline review 2026-10-09: evaluation visits column",
       "also": [
         "purpose"
       ]
@@ -6838,7 +7736,7 @@
       "kind": "copied",
       "rule": "",
       "transform": "",
-      "why": "pipeline fix 2026-10-08",
+      "why": "pipeline review 2026-10-09: evaluation visits column",
       "also": [
         "status"
       ]
@@ -6852,7 +7750,7 @@
       "kind": "copied",
       "rule": "",
       "transform": "",
-      "why": "pipeline fix 2026-10-08",
+      "why": "pipeline review 2026-10-09: evaluation visits column",
       "also": [
         "visit_date"
       ]
@@ -6866,7 +7764,7 @@
       "kind": "copied",
       "rule": "",
       "transform": "",
-      "why": "pipeline fix 2026-10-08",
+      "why": "pipeline review 2026-10-09: evaluation visits column",
       "also": [
         "facility_id"
       ]
@@ -6880,10 +7778,99 @@
       "kind": "copied",
       "rule": "",
       "transform": "",
-      "why": "pipeline fix 2026-10-08",
+      "why": "pipeline review 2026-10-09: evaluation visits column",
       "also": [
         "created_by"
       ]
+    },
+    {
+      "model": "App\\Models\\PatientEvaluation\\Diagnosis",
+      "v3_table": "evaluation_diagnosis",
+      "table": "patient_diagnosis",
+      "column": "created_by",
+      "field": "recorded_by",
+      "kind": "copied",
+      "rule": "",
+      "transform": "",
+      "why": "pipeline review 2026-10-09: who recorded the diagnosis"
+    },
+    {
+      "model": "App\\Models\\PatientEvaluation\\Diagnosis",
+      "v3_table": "evaluation_diagnosis",
+      "table": "patient_diagnosis",
+      "column": "diagnosis_order",
+      "field": "is_primary",
+      "kind": "codes converted",
+      "rule": "{\"map\": {\"Primary\": 1, \"primary\": 1, \"Secondary\": 0, \"secondary\": 0, \"Provisional\": 0}, \"default\": 0, \"column\": \"diagnosis_order\"}",
+      "transform": "",
+      "why": "pipeline review 2026-10-09: Primary → 1, anything else → 0",
+      "also": [
+        "diagnosis_type"
+      ]
+    },
+    {
+      "model": "App\\Models\\Finance\\PaymentMode",
+      "v3_table": "payment_modes",
+      "table": "ref_payment_method",
+      "column": "value",
+      "field": "slug",
+      "kind": "worked out",
+      "rule": "{\"steps\": [{\"op\": \"slug\"}], \"column\": \"value\"}",
+      "transform": "",
+      "why": "pipeline review 2026-10-09: required; made from the name",
+      "also": [
+        "name"
+      ]
+    },
+    {
+      "model": "App\\Models\\Core\\UserProfile",
+      "v3_table": "user_profiles",
+      "table": "auth_user",
+      "column": "id",
+      "field": "user_id",
+      "kind": "copied",
+      "rule": "",
+      "transform": "",
+      "why": "pipeline review 2026-10-09: profiles from auth_user — facility_employee has no names, V3 requires them"
+    },
+    {
+      "model": "App\\Models\\Core\\UserProfile",
+      "v3_table": "user_profiles",
+      "table": "auth_user",
+      "column": "first_name",
+      "field": "first_name",
+      "kind": "worked out",
+      "rule": "{\"steps\": [{\"op\": \"trim\"}, {\"op\": \"first_word\"}, {\"op\": \"title_case\"}], \"column\": \"first_name\"}",
+      "transform": "",
+      "why": "pipeline review 2026-10-09: profiles from auth_user — facility_employee has no names, V3 requires them",
+      "also": [
+        "name"
+      ]
+    },
+    {
+      "model": "App\\Models\\Core\\UserProfile",
+      "v3_table": "user_profiles",
+      "table": "auth_user",
+      "column": "first_name",
+      "field": "last_name",
+      "kind": "worked out",
+      "rule": "{\"steps\": [{\"op\": \"trim\"}, {\"op\": \"rest_words\"}, {\"op\": \"title_case\"}], \"column\": \"first_name\"}",
+      "transform": "",
+      "why": "pipeline review 2026-10-09: profiles from auth_user — facility_employee has no names, V3 requires them",
+      "also": [
+        "name"
+      ]
+    },
+    {
+      "model": "App\\Models\\Core\\User",
+      "v3_table": "users",
+      "table": "auth_user",
+      "column": "id",
+      "field": "employee_number",
+      "kind": "worked out",
+      "transform": "",
+      "rule": "{\"lookup\": {\"table\": \"facility_employee\", \"match\": \"user_id\", \"value\": \"staff_number\"}, \"column\": \"id\"}",
+      "why": "pipeline review 2026-10-09: staff number from facility_employee (user_id = this user)"
     }
   ]
 }

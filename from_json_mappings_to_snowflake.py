@@ -85,6 +85,79 @@ def slug(name: str) -> str:
 
 # ─── MAPPINGS ────────────────────────────────────────────────────────────
 
+def _rule(f: dict) -> dict:
+    """A field's "rule" (JSON text or object) — {} when there is none."""
+    rule = f.get("rule")
+    if isinstance(rule, dict):
+        return rule
+    try:
+        return json.loads(rule) if rule else {}
+    except (TypeError, ValueError):
+        log.warning("%s.%s → %s: unreadable rule %r — copied as is", f.get("table"), f.get("column"), f.get("field"), rule)
+        return {}
+
+
+_STEPS = {"lowercase": lambda s: s.lower(), "uppercase": lambda s: s.upper(), "trim": lambda s: s.strip(),
+          "slug": lambda s: slug(s),
+          # "Stephen Ombaka Murono" → first_word "Stephen" · rest_words "Ombaka Murono"
+          "first_word": lambda s: (s.split() or [""])[0], "rest_words": lambda s: " ".join(s.split()[1:]),
+          "title_case": lambda s: s.title()}
+
+
+# Lookup rules read a value from another source table:
+#   {"lookup": {"table": "facility_employee", "match": "user_id", "value": "staff_number"}, "column": "id"}
+# = facility_employee.staff_number of the row whose user_id equals this row's id.
+# Tables are fetched once per process (load_lookups) before rows are mapped.
+_LOOKUPS: dict[tuple[str, str, str], dict[str, object]] = {}
+_lookup_lock = threading.Lock()
+
+
+def _lookup_key(spec: dict) -> tuple[str, str, str]:
+    return spec["table"], spec["match"], spec["value"]
+
+
+def load_lookups(models: list["V3Model"], client: "ExtractionClient") -> None:
+    for m in models:
+        for f in m.fields:
+            spec = _rule(f).get("lookup")
+            if not spec:
+                continue
+            key = _lookup_key(spec)
+            with _lookup_lock:
+                if key in _LOOKUPS:
+                    continue
+            rows = client.fetch_all(spec["table"])
+            found = {str(r.get(spec["match"])): r.get(spec["value"]) for r in rows
+                     if r.get(spec["match"]) not in (None, "")}
+            with _lookup_lock:
+                _LOOKUPS[key] = found
+            log.info("  lookup %s.%s by %s: %d rows", spec["table"], spec["value"], spec["match"], len(found))
+
+
+def _lookup(spec: dict, value):
+    if value in (None, ""):
+        return None
+    return _LOOKUPS.get(_lookup_key(spec), {}).get(str(value))
+
+
+def _apply_rule(rule: dict, value):
+    """Apply a mapping rule to one value:
+      {"map": {"0": 1, "1": 0}, "default": …}  code conversion (unknown codes → default, else unchanged)
+      {"steps": [{"op": "lowercase"}, …]}     text steps: lowercase, uppercase, trim, slug"""
+    if not rule or value is None:
+        return value
+    if "map" in rule:
+        table = {str(k).lower(): v for k, v in rule["map"].items()}
+        value = table.get(str(value).strip().lower(), rule.get("default", value))
+    for step in rule.get("steps", []):
+        op = _STEPS.get(str(step.get("op", "")).lower())
+        if op is None:
+            log.warning("unknown rule step %r — skipped", step)
+        elif isinstance(value, str):
+            value = op(value)
+    return value
+
+
 @dataclass
 class V3Model:
     """One V3 table fed by one source table, with its field mappings."""
@@ -93,6 +166,16 @@ class V3Model:
     v3_table: str = ""                                 # "v3 table" in the mappings: patients, visits …
     service: str = ""                                  # "v3 service": reception-service …
     fields: list[dict] = field(default_factory=list)   # {"column", "field", ...}
+    where: dict | None = None                          # table filter: {"column": c, "in": [values]}
+
+    def accepts(self, row: dict) -> bool:
+        """Rows this V3 table takes (a table entry's "where": e.g. only the
+        Drug / Consumable rows of a services list go to inventory products)."""
+        if not self.where:
+            return True
+        value = row.get(self.where["column"])
+        allowed = {str(v).lower() for v in self.where.get("in", [])}
+        return value is not None and str(value).lower() in allowed
 
     @property
     def module(self) -> str:
@@ -120,10 +203,17 @@ class V3Model:
             target, column = f["field"], f["column"]
             if target == "id":
                 continue                      # the source id stays the record's id
+            rule = _rule(f)
+            column = rule.get("column") or column
             # the source column, else a name the extraction tool already
-            # renamed it to: the V3 field itself, or any listed under "also"
-            value = next((row.get(k) for k in (column, target, *f.get("also", ()))
+            # renamed it to: those listed under "also", then the V3 field
+            # name itself (last — the tool may fill that name from a
+            # different column of its own)
+            value = next((row.get(k) for k in (column, *f.get("also", ()), target)
                           if row.get(k) is not None), None)
+            if "lookup" in rule:
+                value = _lookup(rule["lookup"], value)
+            value = _apply_rule(rule, value)
             # several columns mapped to one field (e.g. visit_id → visit AND
             # id → visit): the first one, in mapping order, with a value wins
             if out.get(target) is None:
@@ -161,7 +251,7 @@ class Mappings:
                     + fields.get((src, ns.split("\\")[-1]), []))
 
         models = [V3Model(t["source table"], t["v3 model"], t.get("v3 table") or "", t.get("v3 service") or "",
-                          fields_for(t)) for t in doc["tables"]]
+                          fields_for(t), t.get("where")) for t in doc["tables"]]
         dupes = sorted(n for n, c in Counter(m.table for m in models).items() if c > 1)
         if dupes:
             raise SystemExit(f"{Path(path).name}: several entries map to the same V3 table: {dupes}")
@@ -377,10 +467,11 @@ def process_table(spec: Mappings, wh: Warehouse, client: ExtractionClient, sourc
     models = spec.models_for(source_table)
     sf = None if dry_run else SnowflakeClient()
     try:
+        load_lookups(models, client)
         rows = [_strip_secrets(r) for r in client.fetch_all(source_table)]
         result = TableResult(source_table, "dry_run" if dry_run else ("loaded" if rows else "empty"), len(rows))
         for m in models:
-            records = [m.to_v3(r) for r in rows]
+            records = [m.to_v3(r) for r in rows if m.accepts(r)]
             fields = sorted({f["field"] for f in m.fields})
             result.v3[m.table] = {"rows": len(records),
                                   "fields": {f: sum(1 for x in records if x.get(f) not in (None, "")) for f in fields}}

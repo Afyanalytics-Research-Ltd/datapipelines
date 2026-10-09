@@ -15,11 +15,15 @@ Migrate one V2 facility to V3 end to end, prerequisites first
                  procedure categories, procedures, wards, beds, products
   reconcile_ids  lookups V3 inserted without returning an id, re-matched by key
   departments    one V3 department per V2 visit-destination name
-  gate           FAILS the run if any prerequisite isn't fully in V3 (unless
-                 allow_gaps) — main_tables then doesn't start
+  gate           FAILS if any prerequisite isn't fully in V3 (unless
+                 allow_gaps) — main_tables is then skipped
   main_tables    patients, visits, admissions, clinical tables in tier order;
                  records whose parent isn't in V3 yet are held back for the next run
   report         per-table status (always runs)
+
+Every task after setup runs even if the one before it failed, so one bad step
+(e.g. a lookup table erroring) doesn't stop the rest; the run still ends failed.
+Only the gate holds anything back.
 
 Trigger form: facility, phases (snowflake / prereqs / main), dry_run,
 allow_gaps, workers, record_workers. Re-runs are safe — every step skips
@@ -34,7 +38,7 @@ import sys
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from airflow.exceptions import AirflowFailException
+from airflow.exceptions import AirflowFailException, AirflowSkipException
 from airflow.sdk import Param, dag, get_current_context, task
 from airflow.task.trigger_rule import TriggerRule
 
@@ -103,7 +107,9 @@ def migrate_facility():
         mf, p, org = _start(write=False)
         return {"facility": p["facility"], "organization_id": org["organization_id"], "facility_id": org["facility_id"]}
 
-    @task(execution_timeout=timedelta(hours=24))
+    # Every task after setup runs ALL_DONE: one failed step doesn't stop the rest.
+    # An upstream that failed hands its downstream None instead of its result.
+    @task(execution_timeout=timedelta(hours=24), trigger_rule=TriggerRule.ALL_DONE)
     def to_snowflake(_setup: dict) -> str:
         mf, p, _ = _start()
         if not _wants(p, "snowflake"):
@@ -111,14 +117,14 @@ def migrate_facility():
         mf.phase_snowflake(p["facility"])
         return "done"
 
-    @task(execution_timeout=timedelta(hours=6))
+    @task(execution_timeout=timedelta(hours=6), trigger_rule=TriggerRule.ALL_DONE)
     def users(_prev) -> dict:
         mf, p, _ = _start()
         if not _wants(p, "prereqs"):
             return {"skipped": True}
         return {k: (len(v) if k == "failed" else v) for k, v in mf.sync_users(p["facility"], p["dry_run"]).items()}
 
-    @task(execution_timeout=timedelta(hours=12))
+    @task(execution_timeout=timedelta(hours=12), trigger_rule=TriggerRule.ALL_DONE)
     def lookup_tables(_prev) -> list:
         mf, p, _ = _start()
         if not _wants(p, "prereqs"):
@@ -127,7 +133,7 @@ def migrate_facility():
         tables = [t for t in mf.PREREQUISITE_TABLES if entries.get(t, {}).get("v3")]
         return mf.s2v3.run_migration(p["facility"], tables, workers=int(p["workers"]), dry_run=p["dry_run"]) or []
 
-    @task
+    @task(trigger_rule=TriggerRule.ALL_DONE)
     def reconcile_ids(_prev) -> str:
         mf, p, org = _start()
         if not _wants(p, "prereqs"):
@@ -135,7 +141,7 @@ def migrate_facility():
         mf.reconcile_id_maps(p["facility"], mf._discover(p["facility"]), org, p["dry_run"])
         return "done"
 
-    @task
+    @task(trigger_rule=TriggerRule.ALL_DONE)
     def departments(_prev) -> str:
         mf, p, _ = _start()
         if not _wants(p, "prereqs") or p["dry_run"]:
@@ -145,23 +151,29 @@ def migrate_facility():
         mf.s2v3.ensure_departments_from_destinations(p["facility"])
         return "done"
 
-    @task
-    def gate(user_stats: dict, _prev) -> list:
+    @task(trigger_rule=TriggerRule.ALL_DONE)
+    def gate(user_stats: dict | None, _prev) -> list:
         mf, p, _ = _start(write=False)
         if not _wants(p, "prereqs"):
             return []
-        stats = user_stats if "v2" in user_stats else {"v2": 0, "matched": 0}
+        stats = user_stats if user_stats and "v2" in user_stats else {"v2": 0, "matched": 0}
         gaps = mf.gate(p["facility"], mf._discover(p["facility"]), stats)
+        if user_stats is None:
+            gaps.append("users: task failed — V3 user coverage unknown")
         if gaps and _wants(p, "main") and not p["allow_gaps"] and not p["dry_run"]:
             raise AirflowFailException("Prerequisites not all in V3 — main tables not started:\n  " + "\n  ".join(gaps)
                                        + "\nRe-run after fixing them, or trigger with allow_gaps.")
         return gaps
 
-    @task(execution_timeout=timedelta(hours=48))
-    def main_tables(_gate) -> list:
+    @task(execution_timeout=timedelta(hours=48), trigger_rule=TriggerRule.ALL_DONE)
+    def main_tables(_gate: list | None) -> list:
         mf, p, _ = _start()
         if not _wants(p, "main"):
             return []
+        if _gate is None and not p["allow_gaps"] and not p["dry_run"]:
+            # gate failed: either it found gaps (its log lists them) or it crashed
+            raise AirflowSkipException("gate failed — main tables not started. "
+                                       "Re-run after fixing prerequisites, or trigger with allow_gaps.")
         failed = mf.phase_main(p["facility"], int(p["workers"]), p["dry_run"])
         if failed:
             log.warning("tables with failed records: %s — re-run to retry", failed)
