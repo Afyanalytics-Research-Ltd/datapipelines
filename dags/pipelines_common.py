@@ -30,7 +30,7 @@ LOADER_SCRIPT = PIPELINES_DIR / "facility_to_snowflake_fast_resume.py"
 PIPELINE_MODULES = ("facility_to_snowflake_fast_resume", "flatten_jsons_schemas",
                     "snowflake_to_v3_migration", "v2_to_v3_api_migration",
                     "migrate_facility", "reingest", "from_json_mappings_to_snowflake",
-                    "repair_v3_links")
+                    "repair_v3_links", "patient_journey_v3")
 
 # Used only if the scripts aren't mounted, so the DAGs still parse and the
 # import error surfaces when a task runs, not as a broken DAG.
