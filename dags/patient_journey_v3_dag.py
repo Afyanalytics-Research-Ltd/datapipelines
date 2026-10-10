@@ -150,7 +150,10 @@ def patient_journey_v3():
         log.info("%s: %s", item["alias"], json.dumps(out, default=str))
         return {"alias": item["alias"], **out}
 
-    @task(trigger_rule=TriggerRule.ALL_DONE)
+    # NONE_FAILED, not ALL_DONE: the run's state comes from this last task, so
+    # it must not succeed after check / walk / plan / an apply task failed
+    # (skipped is fine — plan only, or nothing to apply)
+    @task(trigger_rule=TriggerRule.NONE_FAILED)
     def report(results) -> None:
         results = [r for r in (results or []) if r]
         for r in results:

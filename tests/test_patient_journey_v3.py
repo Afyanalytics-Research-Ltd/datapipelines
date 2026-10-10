@@ -56,10 +56,18 @@ class FakeJourneyAPI:
         self.journeys = sorted(journeys, key=lambda j: j["patient"]["id"])
         self.identity_rows = identity_rows
         self.calls: list[dict] = []
+        self.logins: list[dict] = []
+        self.tokens = ["tok-1"]           # handed out by login, in order (the last one repeats)
         self.script: list = []           # queued Resp / exceptions returned before normal handling
         self.stuck_cursor = False
 
     def post(self, url, json=None, timeout=None, headers=None):
+        if url.endswith("/api/users/authenticate/user"):
+            self.logins.append(dict(json))
+            if json.get("password") == "wrong":
+                return Resp(400, {"error": "Email_or_password_wrong"})
+            tok = self.tokens.pop(0) if len(self.tokens) > 1 else self.tokens[0]
+            return Resp(200, {"success": {"token": tok}})
         assert url.endswith(pj.JOURNEY_PATH)
         self.calls.append({"body": dict(json), "auth": (headers or {}).get("Authorization")})
         if self.script:
@@ -232,7 +240,12 @@ def env(tmp_path, monkeypatch):
                         {a: {"service": d["service"], "facility": d["facility"], "operations": ["insert", "read"]}
                          for a, d in models.items()})
     monkeypatch.setattr(v2v3, "_alias_to_service", {a: d["service"] for a, d in models.items()})
-    monkeypatch.setattr(v2v3, "_v2_token", lambda f: "tok-1")
+    monkeypatch.setenv("FACILITY_KISUMU_V3_USERNAME", "u")
+    monkeypatch.setenv("FACILITY_KISUMU_V3_PASSWORD", "p")
+    monkeypatch.delenv("JOURNEY_KISUMU_V3_TOKEN", raising=False)
+    monkeypatch.delenv("JOURNEY_KISUMU_V3_BASE_URL", raising=False)
+    monkeypatch.delenv("JOURNEY_KISUMU_V3_USERNAME", raising=False)
+    monkeypatch.setattr(v2v3, "_v2_token", lambda f: "migration-token")
     monkeypatch.setattr(v2v3, "_v2_invalidate_token", lambda f: None)
     monkeypatch.setattr(v2v3, "_v3_invalidate_token", lambda: None)
     monkeypatch.setattr(pj, "_connect_v3", lambda facility: ORG)
@@ -303,14 +316,43 @@ class TestClient:
         with pytest.raises(RuntimeError, match="gave up after 3"):
             self._client(env["api"], max_retries=3).describe()
 
-    def test_401_refreshes_token_once(self, env, monkeypatch):
-        tokens = iter(["old", "new"])
-        state = {"tok": next(tokens)}
-        monkeypatch.setattr(v2v3, "_v2_token", lambda f: state["tok"])
-        monkeypatch.setattr(v2v3, "_v2_invalidate_token", lambda f: state.update(tok=next(tokens)))
+    def test_401_logs_in_again_once(self, env):
+        env["api"].tokens = ["old", "new"]
         env["api"].script = [Resp(401, {"message": "expired"})]
         self._client(env["api"]).describe()
         assert [c["auth"] for c in env["api"].calls] == ["Bearer old", "Bearer new"]
+        assert len(env["api"].logins) == 2
+
+    def test_logs_in_at_the_journey_host_with_facility_credentials(self, env):
+        c = self._client(env["api"])
+        c.describe(); c.describe()
+        assert env["api"].logins == [{"username": "u", "password": "p"}]      # once, then cached
+        assert env["api"].calls[0]["auth"] == "Bearer tok-1"
+
+    def test_journey_credentials_win(self, env, monkeypatch):
+        monkeypatch.setenv("JOURNEY_KISUMU_V3_USERNAME", "ju")
+        monkeypatch.setenv("JOURNEY_KISUMU_V3_PASSWORD", "jp")
+        self._client(env["api"]).describe()
+        assert env["api"].logins == [{"username": "ju", "password": "jp"}]
+
+    def test_facility_host_reuses_the_migration_login(self, env):
+        api = env["api"]
+        c = pj.JourneyClient(FACILITY, session=api, sleep=lambda s: None, min_interval=0)
+        assert not c.own_login
+        api.post = lambda url, json=None, timeout=None, headers=None: (
+            api.calls.append({"body": json, "auth": headers["Authorization"]}) or Resp(200, {"success": True, "data": {}}))
+        c.describe()
+        assert api.calls[0]["auth"] == "Bearer migration-token" and api.logins == []
+
+    def test_bad_login_is_unavailable(self, env, monkeypatch):
+        monkeypatch.setenv("FACILITY_KISUMU_V3_PASSWORD", "wrong")
+        with pytest.raises(pj.JourneyUnavailable, match="login at http://v2.test/api/users/authenticate/user failed"):
+            self._client(env["api"]).describe()
+
+    def test_no_credentials_is_unavailable(self, env, monkeypatch):
+        monkeypatch.delenv("FACILITY_KISUMU_V3_USERNAME")
+        with pytest.raises(pj.JourneyUnavailable, match="no credentials"):
+            self._client(env["api"]).describe()
 
     def test_second_401_is_fatal(self, env):
         env["api"].script = [Resp(401, {}), Resp(401, {"message": "nope"})]
@@ -720,3 +762,79 @@ class TestCli:
         monkeypatch.setattr("sys.argv", ["patient_journey_v3.py", "--facility", FACILITY])
         with pytest.raises(SystemExit, match="isn't deployed"):
             pj.main()
+
+
+# ─── the live API's shape (level6.collabmed.net, 2026-10-10) ─────────────
+
+LIVE_PAGE = {
+    "success": True,
+    "models": {"Evaluation": ["evaluation_visits"]},
+    "pagination": {"mode": "keyset", "per_page": 2, "after_id": 0, "next_after_id": 232040,
+                   "returned": 2, "has_more_pages": False},
+    "data": [{
+        "patient": {"id": 232040, "patient_uuid": "05f552ee-0000-0000-0000-000000000001",
+                    "registration_uuid": "11795B94-0000-0000-0000-000000000002", "patient_no": 10,
+                    "first_name": "x", "middle_name": None, "last_name": "y", "dob": None, "mobile": None, "email": None},
+        "visits": [{"visit_uuid": "3feb8752-0000-0000-0000-000000000003", "visit_id": 314103, "records": [
+            {"table": "evaluation_investigations", "module": "Evaluation", "type": "investigation",
+             "id": 588909, "uuid": "2b5ec1a1-0000-0000-0000-000000000004"},
+            {"table": "evaluation_visits", "module": "Evaluation", "type": "visit",
+             "id": 314103, "uuid": "3feb8752-0000-0000-0000-000000000003"},
+            {"table": "finance_invoice_items", "module": "Finance", "type": "invoice_item",
+             "id": 629736, "uuid": "2107919c-0000-0000-0000-000000000005"},
+        ]}],
+        "patient_level": [
+            {"table": "reception_patient_schemes", "module": "Reception", "type": "patient_scheme",
+             "id": 60041, "uuid": "5fba691c-0000-0000-0000-000000000006"},
+            {"table": "reception_patients", "module": "Reception", "type": "patient",
+             "id": 232040, "uuid": "11795b94-0000-0000-0000-000000000002"},
+        ],
+        "counts": {"visits": 1, "visit_records": 3, "patient_level": 2},
+    }],
+}
+
+
+class TestLiveShape:
+    @pytest.fixture
+    def live(self, env):
+        env["api"].script = [Resp(200, copy.deepcopy(LIVE_PAGE))]
+        pj.walk(env["st"], env["client"], per_page=2)
+        return env
+
+    def test_flatten_live_page(self, live):
+        es = list(pj.iter_entries(live["st"]))
+        # the visit's own row is listed as a record too: counted once
+        assert sum(e.table == "evaluation_visits" for e in es) == 1
+        assert len(es) == 1 + 2 + 2
+        inv = next(e for e in es if e.table == "evaluation_investigations")
+        assert (inv.patient_id, inv.patient_reg_uuid, inv.visit_id) == (232040, "11795b94-0000-0000-0000-000000000002", 314103)
+
+    def test_patient_found_by_registration_uuid(self, live):
+        # V3 patient row carries the V2 registration (row) uuid; patient_uuid matches nothing
+        M = live["models"]
+        M["patient"]["rows"][903] = {"id": 903, "uuid": "11795b94-0000-0000-0000-000000000002", "facility_id": 4}
+        M["visits"]["rows"][16] = {"id": 16, "uuid": "3feb8752-0000-0000-0000-000000000003", "facility_id": 4,
+                                   "patient": 555}
+        M["investigations"]["rows"][32] = {"id": 32, "uuid": "2b5ec1a1-0000-0000-0000-000000000004",
+                                           "visit": None, "patient_id": None, "price": 1}
+        rep = pj.run_plan(FACILITY)
+        assert live["st"].load("targets_visits.json")["16"]["set"] == {"patient": 903}       # corrected: all by uuid
+        assert live["st"].load("targets_investigations.json")["32"]["set"] == {"visit": 16, "patient_id": 903}
+        assert rep["tables"]["evaluation_visits"]["found_by_uuid"] == 1
+        assert rep["tables"]["finance_invoice_items"] == {"records": 1, "no_v3_model": 1}
+
+    def test_kisumu_style_v3_uuids_fall_back_to_id_map(self, live):
+        # kisumu V3 rows have V3-generated uuids: only the id map places them,
+        # so a wrong link is filled-if-empty but not overwritten under `strong`
+        M = live["models"]
+        M["patient"]["rows"][380626] = {"id": 380626, "uuid": "a2eb1d41-v3-own", "facility_id": 4}
+        M["visits"]["rows"][129941] = {"id": 129941, "uuid": "a2eb4016-v3-own", "facility_id": 4, "patient": 1}
+        M["investigations"]["rows"][77] = {"id": 77, "uuid": "a2eb-inv", "visit": None, "patient_id": None, "price": 1}
+        (live["st"].dir / ".migration_id_map.json").write_text(json.dumps({
+            "patient": {"232040": 380626}, "visits": {"314103": 129941}, "investigations": {"588909": 77}}))
+        rep = pj.run_plan(FACILITY)
+        assert "129941" not in live["st"].load("targets_visits.json")
+        assert rep["tables"]["[visits]"]["wrong_kept"] == 1
+        assert live["st"].load("targets_investigations.json")["77"]["set"] == {"visit": 129941, "patient_id": 380626}
+        pj.run_plan(FACILITY, overwrite="all", snapshot_first=False)
+        assert live["st"].load("targets_visits.json")["129941"]["set"] == {"patient": 380626}

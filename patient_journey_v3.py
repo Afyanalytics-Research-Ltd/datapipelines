@@ -96,29 +96,66 @@ class JourneyUnavailable(RuntimeError):
 # ─── journey API client ──────────────────────────────────────────────────
 
 class JourneyClient:
-    """POST {base}/api/system/access/patient/journey with the facility's V2
-    bearer token. Retries 429 (honouring Retry-After), 5xx and network
-    errors with backoff; refreshes the token once per 401."""
+    """POST {base}/api/system/access/patient/journey with a V2 bearer token.
+    Retries 429 (honouring Retry-After), 5xx and network errors with backoff;
+    refreshes the token once per 401.
+
+    The token must come from the host being called — a token from another V2
+    instance isn't 401'd there but 500s (it can't be decoded). So on the
+    facility's own V2 host the migration's cached login is reused; on any
+    other host (a journey URL) this logs in there itself, with
+    JOURNEY_<F>_USERNAME/_PASSWORD or else FACILITY_<F>_USERNAME/_PASSWORD."""
 
     def __init__(self, facility: str, base_url: str | None = None, *, timeout: int = 180,
                  max_retries: int = 8, min_interval: float = LIST_MIN_INTERVAL,
                  session: requests.Session | None = None, sleep=time.sleep):
         self.facility = facility
-        env_url = (os.getenv(f"JOURNEY_{facility.upper()}_BASE_URL") or "").strip()
-        self.base_url = (base_url or env_url or v2v3.v2_facility_config(facility)["base_url"]).rstrip("/")
+        up = facility.upper()
+        env_url = (os.getenv(f"JOURNEY_{up}_BASE_URL") or "").strip()
+        try:
+            facility_host = v2v3.v2_facility_config(facility)["base_url"].rstrip("/")
+        except KeyError:
+            facility_host = None
+        self.base_url = (base_url or env_url or facility_host or "").rstrip("/")
+        if not self.base_url:
+            raise KeyError(f"No journey API host for {facility!r} — pass one or set JOURNEY_{up}_BASE_URL")
+        self.own_login = self.base_url != facility_host
         self.url = self.base_url + JOURNEY_PATH
-        self.fixed_token = (os.getenv(f"JOURNEY_{facility.upper()}_TOKEN") or "").strip() or None
+        self.fixed_token = (os.getenv(f"JOURNEY_{up}_TOKEN") or "").strip() or None
         self.timeout, self.max_retries, self.min_interval = timeout, max_retries, min_interval
         self.session = session or requests.Session()
         self.sleep = sleep
         self._last = 0.0
+        self._login_token: str | None = None
 
     def _token(self, refresh: bool = False) -> str:
         if self.fixed_token:
             return self.fixed_token
-        if refresh:
-            v2v3._v2_invalidate_token(self.facility)
-        return v2v3._v2_token(self.facility)
+        if not self.own_login:
+            if refresh:
+                v2v3._v2_invalidate_token(self.facility)
+            return v2v3._v2_token(self.facility)
+        if refresh or not self._login_token:
+            self._login_token = self._login()
+        return self._login_token
+
+    def _login(self) -> str:
+        up = self.facility.upper()
+        user = (os.getenv(f"JOURNEY_{up}_USERNAME") or os.getenv(f"FACILITY_{up}_USERNAME") or "").strip()
+        pwd = (os.getenv(f"JOURNEY_{up}_PASSWORD") or os.getenv(f"FACILITY_{up}_PASSWORD") or "").strip()
+        if not user or not pwd:
+            raise JourneyUnavailable(f"no credentials for {self.base_url}: set JOURNEY_{up}_USERNAME/_PASSWORD "
+                                     f"(or FACILITY_{up}_…), or JOURNEY_{up}_TOKEN")
+        url = f"{self.base_url}/api/users/authenticate/user"
+        try:
+            r = self.session.post(url, json={"username": user, "password": pwd}, timeout=60,
+                                  headers={"Accept": "application/json"})
+            token = ((r.json() or {}).get("success") or {}).get("token") if r.status_code == 200 else None
+        except (requests.RequestException, ValueError) as e:
+            raise JourneyUnavailable(f"login at {url} failed: {e}") from None
+        if not token:
+            raise JourneyUnavailable(f"login at {url} failed: HTTP {r.status_code} {_message(r)}")
+        return token
 
     def call(self, body: dict) -> dict:
         wait, refreshed = 5, False
@@ -318,6 +355,9 @@ class Entry:
     patient_uuid: str | None
     visit_id: int | None        # V2 visit id (None for patient-level records)
     visit_uuid: str | None
+    # the reception_patients row's own uuid (journey `registration_uuid`) —
+    # patient_uuid is the journey's identity, not the row's
+    patient_reg_uuid: str | None = None
 
 
 def _u(x) -> str | None:
@@ -346,6 +386,7 @@ def iter_entries(st: State):
             j = json.loads(line)
             pat = j.get("patient") or {}
             pid, puuid = _i(pat.get("id")), _u(pat.get("patient_uuid") or pat.get("uuid"))
+            preg = _u(pat.get("registration_uuid"))
             key = pid if pid is not None else puuid
             if key in seen:
                 continue
@@ -359,7 +400,7 @@ def iter_entries(st: State):
                     return None
                 done.add(k)
                 return Entry(tbl, e.get("module") or "", k[1], k[2], pid,
-                             puuid, _i(e.get("visit_id", vid)), _u(e.get("visit_uuid") or vuuid))
+                             puuid, _i(e.get("visit_id", vid)), _u(e.get("visit_uuid") or vuuid), preg)
 
             for v in j.get("visits") or []:
                 vid, vuuid = _i(v.get("visit_id", v.get("id"))), _u(v.get("visit_uuid") or v.get("uuid"))
@@ -521,18 +562,21 @@ class Finder:
         self.indexes, self.id_map = indexes, id_map
 
     def find(self, alias: str, v2_id, uuid) -> tuple[int | None, str]:
-        """(v3 id, how): how ∈ uuid | id_map | uuid_ambiguous | id_map_stale | not_in_v3"""
+        """(v3 id, how): how ∈ uuid | id_map | uuid_ambiguous | id_map_stale | not_in_v3.
+        `uuid` may be several candidates (a patient: registration row uuid, then
+        journey patient_uuid), tried in order."""
         idx = self.indexes.get(alias)
         if idx is None:
             return None, "not_in_v3"
-        if uuid:
-            hits = idx.by_uuid.get(uuid, [])
+        uuids = [u for u in (uuid if isinstance(uuid, (tuple, list)) else (uuid,)) if u]
+        for u in uuids:
+            hits = idx.by_uuid.get(u, [])
             if len(hits) == 1:
                 return hits[0], "uuid"
             if len(hits) > 1:
                 return None, "uuid_ambiguous"
         mp = _id_map_for(self.id_map, alias)
-        for k in ([uuid] if uuid else []) + ([str(v2_id)] if v2_id is not None else []):
+        for k in uuids + ([str(v2_id)] if v2_id is not None else []):
             v3 = mp.get(k)
             if v3 is not None:
                 v3 = _i(v3)
@@ -642,7 +686,7 @@ def plan(st: State, resolver: Resolver, *, overwrite: str = "strong", aliases: l
         for col, kind in links.items():
             if kind == VISIT and e.visit_id is None and not e.visit_uuid:
                 continue                                    # patient-level record: no visit
-            pid, phow = (parent(PATIENT, e.patient_id, e.patient_uuid) if kind == PATIENT
+            pid, phow = (parent(PATIENT, e.patient_id, (e.patient_reg_uuid, e.patient_uuid)) if kind == PATIENT
                          else parent(VISIT, e.visit_id, e.visit_uuid))
             if pid is None:
                 r[f"{kind}_not_in_v3"] += 1
