@@ -829,7 +829,15 @@ MAX_PAGES      = 10000
 # times out on the V2 server (investigations didn't answer page 1 in 120s);
 # keyset answers in ~1s. after_id is exclusive, so a fresh run starts at 0.
 # The API ignores updated_since in this mode, so every run is a full extract.
-KEYSET_TABLES  = {t.strip() for t in os.getenv("KEYSET_TABLES", "evaluation_investigations,users").split(",") if t.strip()}
+# Default "*" = every table: since V2's uuid layer (2026-10) the gateway
+# ignores updated_since in page mode too (same total either way, checked live
+# on level6), so offset paging is just a slower full extract — and each page
+# runs a COUNT(*). KEYSET_TABLES=a,b limits keyset to those tables again.
+KEYSET_TABLES  = {t.strip() for t in os.getenv("KEYSET_TABLES", "*").split(",") if t.strip()}
+
+
+def _use_keyset(table: str) -> bool:
+    return "*" in KEYSET_TABLES or table in KEYSET_TABLES
 
 # Never written to spool, S3 or Snowflake — at any depth (admissions embed
 # their doctor's whole user record, e.g. doctor_email_token).
@@ -961,6 +969,13 @@ def _extract_keyset(job: dict, run_id: str, dry_run: bool, sf: "SnowflakeClient 
             "per_page": KEYSET_PER_PAGE}
     state_path, spool = _page_state_paths(job)
     state = {} if dry_run else _load_page_state(state_path)
+    if state and state.get("mode") != "keyset":
+        # a half-done page-mode run (from before keyset became the default):
+        # its page numbers / spool would be mistaken for keyset batches — start over
+        log.info("    %s — discarding page-mode resume state; starting a keyset walk", job["table"])
+        for f in _spooled_pages(spool):
+            (spool / f"page_{f:05d}.jsonl.gz").unlink(missing_ok=True)
+        state = {}
     state.setdefault("mode", "keyset")
     state.setdefault("after_id", 0)
     state.setdefault("batch", 0)
@@ -971,16 +986,32 @@ def _extract_keyset(job: dict, run_id: str, dry_run: bool, sf: "SnowflakeClient 
         log.info("    %s — resuming keyset after id %s: %d batch(es) already in Snowflake, %d spooled",
                  job["table"], state["after_id"], len(state["loaded_pages"]), len(_spooled_pages(spool)))
 
+    # Until one answers, try the same namespace spellings as the page loop
+    # (V2 class names are singular or plural per model: Visit, Patients …);
+    # the one that worked is kept for every later batch and for a resume.
+    if state.get("namespace"):
+        body["namespace"] = state["namespace"]
+        variants = [body]
+    else:
+        ns = body["namespace"]
+        variants = list({b["namespace"]: b for b in (
+            body, {**body, "namespace": namespace_to_singular_model(ns)},
+            {**body, "namespace": double_namespace_model(ns)},
+            {**body, "namespace": double_namespace_model(namespace_to_singular_model(ns))})}.values())
+
     counted, error = 0, None
     while state["batch"] < MAX_PAGES:
         try:
-            r, _ = post_with_retry_and_fallback(
+            r, used = post_with_retry_and_fallback(
                 url=url, headers=headers, session=session, timeout=60,
-                bodies=[{**body, "after_id": state["after_id"]}],
+                bodies=[{**b, "after_id": state["after_id"]} for b in variants],
             )
         except Exception as e:
             error = e
             break
+        if len(variants) > 1:
+            body["namespace"] = state["namespace"] = used["namespace"]
+            variants = [body]
         payload = r.json()
         rows = _extract_rows(payload)
         pagination = payload.get("pagination") or {}
@@ -1057,7 +1088,7 @@ def extract_one_model(job: dict, run_id: str, dry_run: bool = False,
     double_namespace_body          = {**body, "namespace": double_namespace_model(job["namespace"])}
     double_namespace_singular_body = {**body, "namespace": double_namespace_model(namespace_to_singular_model(job["namespace"]))}
 
-    if job["table"] in KEYSET_TABLES:
+    if _use_keyset(job["table"]):
         return _extract_keyset(job, run_id, dry_run, sf, url=url, headers=headers, session=session)
 
     if dry_run:

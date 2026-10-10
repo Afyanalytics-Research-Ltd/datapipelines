@@ -98,7 +98,7 @@ import sys
 import threading
 import time
 import uuid as uuid_lib
-from collections import defaultdict
+from collections import Counter, defaultdict
 from contextlib import contextmanager
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -356,10 +356,12 @@ def _load_id_to_uuid() -> None:
     persisting only one of them would still leave the other empty on a fresh
     process and silently break FK resolution exactly like the bug this was
     written to fix."""
-    global _id_to_uuid, _alias_to_table
+    global _id_to_uuid, _alias_to_table, _uuid_to_id
+    _uuids_loaded.clear()
     if not ID_TO_UUID_FILE.exists():
         _id_to_uuid = {}
         _alias_to_table = {}
+        _uuid_to_id = {}
         return
     try:
         raw = json.loads(ID_TO_UUID_FILE.read_text())
@@ -368,6 +370,8 @@ def _load_id_to_uuid() -> None:
             for table, mapping in raw.get("id_to_uuid", {}).items()
         }
         _alias_to_table = dict(raw.get("alias_to_table", {}))
+        _uuid_to_id = {_norm_uuid(u): i for mapping in _id_to_uuid.values() for i, u in mapping.items()}
+        _uuid_to_id.update(raw.get("person_uuid_to_id", {}))
         total = sum(len(v) for v in _id_to_uuid.values())
         if total:
             log.info("id->uuid map loaded — %d entries across %d tables (%d aliases)",
@@ -376,6 +380,7 @@ def _load_id_to_uuid() -> None:
         log.warning("Could not load %s: %s — starting fresh", ID_TO_UUID_FILE.name, e)
         _id_to_uuid = {}
         _alias_to_table = {}
+        _uuid_to_id = {}
 
 
 def _register_table(alias: str, table: str, records: list[dict]) -> None:
@@ -392,18 +397,144 @@ def _register_table(alias: str, table: str, records: list[dict]) -> None:
     other, which is exactly what happened before this fix existed.
     """
     id_uuid = {r["id"]: r["uuid"] for r in records if r.get("id") is not None and r.get("uuid")}
-    with _alias_to_table_lock, _id_to_uuid_lock, v2v3._file_lock(ID_TO_UUID_FILE):
+    person = ({r["patient_uuid"]: r["id"] for r in records if r.get("id") is not None and r.get("patient_uuid")}
+              if alias in _PERSON_UUID_ALIASES else None)
+    with _alias_to_table_lock:
         _alias_to_table.setdefault(alias, table)
-        _id_to_uuid.setdefault(table, {}).update(id_uuid)   # page by page
+    _add_uuids(table, id_uuid, person)   # page by page, merged with what's on disk
+
+
+# ─── UUID-LINKED EXTRACTS (V2 uuid layer, 2026-10) ──────────────────────────
+# Since V2's uuid install, the extraction gateway returns every link as the
+# parent's uuid in `<column>_uuid` (trailing _id dropped: visit → visit_uuid,
+# store_id → store_uuid) and NULLS the integer column. Everything downstream
+# — FK remap via _id_to_uuid, the visit→patient / visit→admission side
+# channels, the vitals split, injected patient_ids, the parent-in-facility
+# check — keys on those integers, so restore_int_links() puts the parent's V2
+# id back from its uuid when the rows are read. Rows from older extracts (no
+# `_uuid` columns) pass through untouched.
+#
+# A row's `patient_uuid` is the PERSON (reception_patients.patient_uuid), not
+# the patient row's own uuid, so the patient table also registers
+# patient_uuid → V2 id (_PERSON_UUID_ALIASES).
+_uuid_to_id: dict[str, object] = {}          # any registered row uuid / person uuid → V2 id
+_PERSON_UUID_ALIASES = {"patient", "patients"}
+_uuids_loaded: set[str] = set()              # CLEAN tables whose id/uuid pairs this process has read
+# The only *_uuid columns V3 has; every other `<x>_uuid` is a V2 link, never posted.
+_V3_UUID_COLUMNS = {"batch_uuid"}
+# V2 0/1 flags its uuid layer mistakes for links: `invoiced` = 1 comes back
+# null with an invoiced_uuid (live, evaluation_investigations, 2026-10-10).
+_LINK_FLAG_COLUMNS = {"invoiced"}
+
+
+def _norm_uuid(u) -> str | None:
+    return str(u).strip().lower() if u not in (None, "") else None
+
+
+def _add_uuids(table: str, id_uuid: dict, person: dict | None = None) -> None:
+    """Record V2 id ↔ uuid pairs for a table (and person uuid → V2 id), in
+    memory and merged into ID_TO_UUID_FILE."""
+    with _id_to_uuid_lock, v2v3._file_lock(ID_TO_UUID_FILE):
+        _id_to_uuid.setdefault(table, {}).update(id_uuid)
+        for i, u in id_uuid.items():
+            _uuid_to_id[_norm_uuid(u)] = i
+        for u, i in (person or {}).items():
+            _uuid_to_id[_norm_uuid(u)] = i
         try:
             on_disk = json.loads(ID_TO_UUID_FILE.read_text()) if ID_TO_UUID_FILE.exists() else {}
         except Exception:
             on_disk = {}
-        merged_id_to_uuid = {**on_disk.get("id_to_uuid", {}), **_id_to_uuid}
-        merged_alias_to_table = {**on_disk.get("alias_to_table", {}), **_alias_to_table}
-        v2v3._atomic_write(ID_TO_UUID_FILE, json.dumps(
-            {"id_to_uuid": merged_id_to_uuid, "alias_to_table": merged_alias_to_table}, indent=2,
-        ))
+        persons = {**on_disk.get("person_uuid_to_id", {}), **{_norm_uuid(u): i for u, i in (person or {}).items()}}
+        v2v3._atomic_write(ID_TO_UUID_FILE, json.dumps({
+            **on_disk,
+            "id_to_uuid": {**on_disk.get("id_to_uuid", {}), **_id_to_uuid},
+            "alias_to_table": {**on_disk.get("alias_to_table", {}), **_alias_to_table},
+            "person_uuid_to_id": persons,
+        }, indent=2))
+
+
+def _parent_tables(transform_key: str, v3_namespace: str | None) -> set[str]:
+    """CLEAN tables whose uuids this table's links can point at: its FK
+    parents, plus patients / visits / admissions (side channels, injections,
+    the vitals split) and the parent-in-facility tables."""
+    fk = {**v2v3._NS_FK_REMAP.get(v3_namespace or "", {}), **v2v3._FK_REMAP.get(transform_key, {})}
+    tables = {_table_for_alias(a) for a in set(fk.values()) | {"patient", "visit", "admission"}}
+    tables |= {t for _, t, _ in _SKIP_IF_PARENT_NOT_IN_FACILITY.get(transform_key, [])}
+    return {t for t in tables if t}
+
+
+def ensure_uuids_loaded(facility: str, tables) -> None:
+    """Read id/uuid (and the patient table's person uuid) of each CLEAN table
+    not yet seen by this process. A parent whose job is already done never
+    re-registers its rows, so without this its children's `_uuid` links
+    could never be turned back into V2 ids."""
+    person_tables = {_alias_to_table.get(a) for a in _PERSON_UUID_ALIASES}
+    for table in sorted(set(tables) - _uuids_loaded):
+        _uuids_loaded.add(table)
+        src = f"{sf_schema(facility, 'CLEAN')}.{table.upper()}"
+        try:
+            with _snowflake_connect() as conn:
+                cur = conn.cursor()
+                cur.execute(f"SELECT * FROM {src} LIMIT 0")
+                cols = {d[0].lower() for d in cur.description}
+                if "uuid" not in cols:
+                    continue
+                person = "patient_uuid" in cols and table in person_tables
+                cur.execute(f"SELECT id, uuid{', patient_uuid' if person else ''} FROM {src} WHERE uuid IS NOT NULL")
+                rows = cur.fetchall()
+        except Exception as e:
+            log.warning("  couldn't read %s's uuids (%s) — its children's uuid links may stay unresolved", src, e)
+            continue
+        ids = {(int(r[0]) if str(r[0]).isdigit() else r[0]): r[1] for r in rows if r[0] is not None}
+        persons = {r[2]: ids_key for r in rows if person and r[2]
+                   for ids_key in [int(r[0]) if str(r[0]).isdigit() else r[0]]}
+        _add_uuids(table, ids, persons)
+        log.info("  %s: %d uuid(s) registered for link restore%s", table, len(ids),
+                 f" (+{len(persons)} person uuids)" if person else "")
+
+
+def _fk_name(transform_key: str, column: str) -> str:
+    """The transform's name for a V2 column (visit → visit_id …), to compare
+    with _CRITICAL_FK_FIELDS."""
+    renamed = v2v3._PER_KEY_RENAMES.get(transform_key, {}).get(column)
+    return renamed or (column if column.endswith("_id") else v2v3._GLOBAL_FK_RENAMES.get(column, column))
+
+
+def restore_int_links(rows: list[dict], transform_key: str, critical=None) -> tuple[list[dict], int, Counter]:
+    """Put each nulled V2 integer link back from its `<column>_uuid`.
+
+    Returns (rows to migrate, rows held back, unresolved count per column).
+    A row is held back — not posted without its link — when a critical FK
+    (_CRITICAL_FK_FIELDS, or `critical`) has a uuid that maps to no
+    registered V2 row; the job stays open and a later run retries it. Other
+    unresolved links stay null. An integer that is still set is left alone
+    (the gateway keeps the integer when it couldn't resolve the link)."""
+    critical = set(_CRITICAL_FK_FIELDS.get(transform_key, []) if critical is None else critical)
+    keep, held, unresolved = [], 0, Counter()
+    for r in rows:
+        missing_critical = False
+        for k, u in list(r.items()):
+            if not k.endswith("_uuid") or k == "uuid" or not u:
+                continue
+            base = k[:-5]
+            for col in (base, base + "_id"):
+                if col not in r or r[col] not in (None, ""):
+                    continue
+                if col in _LINK_FLAG_COLUMNS:
+                    r[col] = 1
+                    continue
+                v2 = _uuid_to_id.get(_norm_uuid(u))
+                if v2 is not None:
+                    r[col] = v2
+                else:
+                    unresolved[col] += 1
+                    if _fk_name(transform_key, col) in critical or col in critical:
+                        missing_critical = True
+        if missing_critical:
+            held += 1
+        else:
+            keep.append(r)
+    return keep, held, unresolved
 
 
 def _store_uuid_mapping(alias: str, uuid_or_id, v3_id) -> None:
@@ -631,8 +762,19 @@ def _model_has_uuid(alias: str, service: str | None) -> bool:
     return has
 
 
-def _with_stable_uuid(payload: dict, *, facility: str, alias: str, rec_key, transform_key: str) -> dict:
-    if payload.get("uuid") or rec_key is None or transform_key in _MATCH_ON_OVERRIDE:
+def _with_stable_uuid(payload: dict, *, facility: str, alias: str, rec_key, transform_key: str,
+                      v2_id=None) -> dict:
+    if transform_key in _MATCH_ON_OVERRIDE:
+        return payload
+    # A V3 row already matched to this V2 record (repair_v3_links /
+    # pair_v3_uuids.py) wins over the record's own uuid: rows migrated before
+    # V2 had uuids carry V3's uuid, and posting the new V2 uuid with
+    # match_on=uuid would insert a second copy instead of updating.
+    known = (_v3_uuid_for(alias, v2_id) if v2_id is not None else None) or \
+        (_v3_uuid_for(alias, rec_key) if rec_key is not None else None)
+    if known:
+        return {**payload, "uuid": known}
+    if payload.get("uuid") or rec_key is None:
         return payload
     if not _model_has_uuid(alias, _SERVICE_OVERRIDE.get(transform_key)):
         return payload
@@ -787,6 +929,17 @@ def _remap_fks_via_uuid(record: dict, transform_key: str, v3_namespace: str) -> 
 
 # ─── PER-TABLE JOB ───────────────────────────────────────────────────────────
 
+def _already_inserted(job_key: str, r: dict) -> bool:
+    """Inserted under its uuid — or, for a record migrated before V2 had
+    uuids (progress keyed by V2 id), under its id."""
+    if v2v3._record_inserted(job_key, r.get("uuid") or r.get("id")):
+        return True
+    i = r.get("id")
+    if not r.get("uuid") or i is None:
+        return False
+    return any(v2v3._record_inserted(job_key, k) for k in {i, str(i), int(i) if str(i).isdigit() else i})
+
+
 def post_table_to_v3(v3_namespace: str, org_cfg: dict, records: list[dict],
                      *, transform_key: str, alias: str, job_key: str, dry_run: bool) -> int:
     """Mirrors v2v3.post_to_v3()'s threading/resume/dead-letter behaviour,
@@ -807,8 +960,7 @@ def post_table_to_v3(v3_namespace: str, org_cfg: dict, records: list[dict],
         return 0
 
     pending = [r for r in records
-               if job_key in REPROCESS_JOB_KEYS
-               or not v2v3._record_inserted(job_key, r.get("uuid") or r.get("id"))]
+               if job_key in REPROCESS_JOB_KEYS or not _already_inserted(job_key, r)]
     skipped = len(records) - len(pending)
     if skipped:
         log.info("  Skipping %d already-migrated records, posting %d", skipped, len(pending))
@@ -854,7 +1006,9 @@ def post_table_to_v3(v3_namespace: str, org_cfg: dict, records: list[dict],
                    if alias in _NO_V2_ID_ON_POST else remapped)
         payload = _apply_v3_column_names(payload, transform_key)
         payload = _with_stable_uuid(payload, facility=job_key.split("|")[0], alias=alias,
-                                    rec_key=rec_key, transform_key=transform_key)
+                                    rec_key=rec_key, transform_key=transform_key, v2_id=record.get("id"))
+        # V2 link uuids (`<x>_uuid`) only serve restore_int_links — V3 has no such columns
+        payload = {k: v for k, v in payload.items() if not k.endswith("_uuid") or k in _V3_UUID_COLUMNS}
         garbled = payload.get(v2v3.GARBLED_KEY) or {}
         post_kwargs = dict(alias_override=_ALIAS_OVERRIDE.get(transform_key),
                            service_override=_SERVICE_OVERRIDE.get(transform_key),
@@ -1119,11 +1273,19 @@ def _run_table_job(entry: dict, facility: str, org_cfg: dict, dry_run: bool) -> 
 
     total = skipped = n_dropped = posted = failed = held = 0
     pages = 0
+    unresolved_links: Counter = Counter()
     try:
+        ensure_uuids_loaded(facility, _parent_tables(transform_key, v3_namespace))
         for rows in iter_clean_chunks(facility, table):
             pages += 1
             total += len(rows)
             _register_table(alias, table, rows)
+            # uuid-era extracts: nulled V2 integer links back from <x>_uuid;
+            # rows whose critical parent isn't known yet wait for a later run
+            rows, link_held, miss = restore_int_links(rows, transform_key,
+                                                      critical={"visit_id"} if vitals else None)
+            held += link_held
+            unresolved_links.update(miss)
 
             if vitals:
                 f, h = _run_vitals_split(entry, facility, rows, org_cfg, job_key, label, dry_run)
@@ -1165,6 +1327,9 @@ def _run_table_job(entry: dict, facility: str, org_cfg: dict, dry_run: bool) -> 
         return False
 
     elapsed = time.perf_counter() - t0
+    if unresolved_links:
+        log.warning("  %s — uuid links with no known V2 parent (left null, or held back if required): %s",
+                    label, dict(unresolved_links.most_common(10)))
     if skipped:
         log.info("  %s — skipped %d record(s) whose parent was never extracted for this facility",
                  label, skipped)
