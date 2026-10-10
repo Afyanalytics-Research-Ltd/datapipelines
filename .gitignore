@@ -94,4 +94,5 @@ rsa_key*
 *.BAK
 *.sql
 
-.migration_state/*/journey/journeys.ndjson.migration_state/*/journey/
+.migration_state/*/journey/journeys.ndjson
+.migration_state/*/journey/
