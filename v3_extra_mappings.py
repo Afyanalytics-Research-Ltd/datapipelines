@@ -234,6 +234,23 @@ DUPLICATES: dict[str, str] = {
     "theatre_theatre_before_leaving_theatres": "theatre_before_leaving_theatres",
 }
 
+# The same V2 table extracted twice under two names (an old-system-history
+# copy and a sheet copy). Each copy holds rows the other lacks (measured on
+# KISUMU_CLEAN 2026-10-11, e.g. admissions 573 only-here, investigations 1,929
+# here vs 82,543 only in the twin), so both are migrated: the table on the
+# left posts only the ids its twin doesn't have — no record is posted twice,
+# none is lost. Only applies when the twin exists in the facility's CLEAN.
+TWINS: dict[str, str] = {
+    "admissions":                      "inpatient_admissions",
+    "discharges":                      "inpatient_discharges",
+    "evaluation_doctor_notes":         "doctor_notes",
+    "evaluation_investigations":       "investigations",
+    "inventory_evaluation_dispensing": "evaluation_dispensing",
+    "reception_patients_nok":          "reception_next_of_kin",
+    "evaluation_visits":               "visits",
+    "reception_patients":              "patients",
+}
+
 # ─── tables that are not migrated, and why ──────────────────────────────────
 
 SHARED = "V3 keeps this as shared reference data for every organisation (no tenant column) — not copied per org"

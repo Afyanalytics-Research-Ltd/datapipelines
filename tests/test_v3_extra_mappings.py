@@ -186,3 +186,70 @@ class TestSkipping:
     def test_coverage_flags_unknown_tables(self):
         cov = xm.coverage([{"table": "a", "v3": "X", "transform": "x"}], ["a", "b", "users_roles"])
         assert cov == {"a": "migrated", "b": "UNACCOUNTED", "users_roles": f"not migrated: {xm.SETUP}"}
+
+
+# ─── twins / history / no-CLEAN-view ─────────────────────────────────────
+
+class TestTwins:
+    def test_pairs_are_clean_tables_with_one_fate(self):
+        for t, twin in xm.TWINS.items():
+            assert t in FIXTURE and twin in FIXTURE and t != twin, (t, twin)
+            assert t not in xm.DUPLICATES and t not in xm.NOT_MIGRATED, t
+            assert twin not in xm.TWINS, "a twin must be migrated whole"
+
+    def test_twins_are_both_migrated(self):
+        cov = xm.coverage(entries_from_fixture(), FIXTURE)
+        for t, twin in xm.TWINS.items():
+            assert cov[t] == "migrated" and cov[twin] == "migrated", (t, twin)
+
+    def test_reader_skips_ids_the_twin_has(self, monkeypatch):
+        monkeypatch.setattr(m, "clean_tables", lambda cur, f: ["admissions", "inpatient_admissions"])
+        monkeypatch.setattr(m, "sf_schema", lambda f, layer: "DB.K_CLEAN")
+        sql = m._without_twin_rows(None, "k", "admissions", "SELECT * FROM DB.K_CLEAN.admissions")
+        assert sql == ('SELECT * FROM (SELECT * FROM DB.K_CLEAN.admissions) WHERE TO_VARCHAR("ID") NOT IN '
+                       '(SELECT TO_VARCHAR("ID") FROM DB.K_CLEAN.INPATIENT_ADMISSIONS WHERE "ID" IS NOT NULL)')
+
+    def test_no_twin_in_this_facility_reads_everything(self, monkeypatch):
+        monkeypatch.setattr(m, "clean_tables", lambda cur, f: ["admissions"])
+        assert m._without_twin_rows(None, "k", "admissions", "BASE") == "BASE"
+        assert m._without_twin_rows(None, "k", "evaluation_prescriptions", "BASE") == "BASE"
+
+
+class TestSelection:
+    @pytest.fixture
+    def select(self, monkeypatch):
+        entries = [
+            {"table": "patients", "v3": r"App\Models\Patient", "transform": "reception_patient"},
+            {"table": "evaluation_prescriptions", "v3": r"App\Models\Prescription", "transform": "evaluation_prescription"},
+            {"table": "visit_purposes", "v3": None, "transform": None},
+            {"table": "mapped_but_no_view", "v3": r"App\Models\Unit", "transform": "inventory_unit"},
+        ]
+
+        class Conn:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def cursor(self):
+                return type("C", (), {"close": lambda s: None})()
+        monkeypatch.setattr(m, "_snowflake_connect", Conn)
+        monkeypatch.setattr(m, "discover_tables", lambda cur, f: [dict(e) for e in entries])
+        monkeypatch.setattr(m, "clean_tables", lambda cur, f: ["patients", "evaluation_prescriptions"])
+        monkeypatch.setattr(m, "OLD_SYSTEM_HISTORY_TABLES", {"evaluation_prescriptions": ("x", "y")})
+        return lambda **kw: m._select_entries("k", None, None, set(), **kw)
+
+    def test_history_left_out_by_default(self, select):
+        runnable, unmapped, _ = select()
+        assert [e["table"] for e in runnable] == ["patients"]
+
+    def test_include_history(self, select):
+        runnable, _, _ = select(include_history=True)
+        assert sorted(e["table"] for e in runnable) == ["evaluation_prescriptions", "patients"]
+
+    def test_no_clean_view_is_skipped_with_reason(self, select):
+        _, unmapped, _ = select()
+        reasons = {e["table"]: e.get("skipped") for e in unmapped}
+        assert reasons == {"visit_purposes": "no CLEAN view — nothing to migrate",
+                           "mapped_but_no_view": "no CLEAN view — nothing to migrate"}

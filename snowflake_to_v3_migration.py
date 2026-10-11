@@ -1197,6 +1197,20 @@ def ensure_departments_from_destinations(facility: str) -> None:
 CHUNK_ROWS = int(os.getenv("CHUNK_ROWS", "5000"))
 
 
+def _without_twin_rows(cur, facility: str, table: str, base: str) -> str:
+    """For a table in xm.TWINS: only the rows whose id its twin doesn't have
+    (the twin migrates the shared ones). Ids compared as text — the two
+    copies' views don't always type them alike. A facility without the twin
+    gets every row."""
+    twin = xm.TWINS.get(table.lower())
+    if not twin or twin not in clean_tables(cur, facility):
+        return base
+    log.info("  %s: skipping ids already in %s (migrated there)", table, twin)
+    twin_src = f"{sf_schema(facility, 'CLEAN')}.{twin.upper()}"
+    return (f'SELECT * FROM ({base}) WHERE TO_VARCHAR("ID") NOT IN '
+            f'(SELECT TO_VARCHAR("ID") FROM {twin_src} WHERE "ID" IS NOT NULL)')
+
+
 def iter_clean_chunks(facility: str, table: str, chunk_rows: int = CHUNK_ROWS):
     """Yield a table's CLEAN rows in pages of `chunk_rows`, so a task's memory
     stays flat however big the table is (loading evaluation_visit_destinations
@@ -1210,6 +1224,7 @@ def iter_clean_chunks(facility: str, table: str, chunk_rows: int = CHUNK_ROWS):
     base = sql.format(clean=clean_schema) if sql else f"SELECT * FROM {clean_schema}.{table}"
     with _snowflake_connect() as conn:
         cur = conn.cursor()
+        base = _without_twin_rows(cur, facility, table, base)
         cur.execute(f"SELECT * FROM ({base}) LIMIT 0")
         cols = {d[0].upper() for d in cur.description}
         key = ("COALESCE(TO_VARCHAR(\"UUID\"), 'id:' || TO_VARCHAR(\"ID\"))" if "UUID" in cols
@@ -1429,13 +1444,18 @@ def _start(facility: str) -> tuple[dict, set]:
 
 
 def _select_entries(facility: str, only_tables: list[str] | None, exclude_tables: list[str] | None,
-                    available_models: set) -> tuple[list[dict], list[dict], list[dict]]:
+                    available_models: set, *, include_history: bool = False) -> tuple[list[dict], list[dict], list[dict]]:
     """Discover this facility's Snowflake tables and pick the ones to run.
     Returns (runnable, unmapped, not insertable in the gateway)."""
     with _snowflake_connect() as conn:
         cur = conn.cursor()
         entries = discover_tables(cur, facility)
+        in_clean = set(clean_tables(cur, facility))
         cur.close()
+    # RAW tables that never got a CLEAN view (mostly empty extracts): nothing to read
+    for e in entries:
+        if e["table"].lower() not in in_clean:
+            e.update(v3=None, transform=None, skipped="no CLEAN view — nothing to migrate")
 
     if exclude_tables:
         log.info("Excluding %d table(s): %s", len(exclude_tables), ", ".join(sorted(exclude_tables)))
@@ -1447,12 +1467,20 @@ def _select_entries(facility: str, only_tables: list[str] | None, exclude_tables
             log.warning("Not in %s RAW, ignored: %s — check the spelling, or load them with "
                         "v2_facility_to_snowflake first", facility, ", ".join(unknown))
         entries = [e for e in entries if e["table"] in only_tables]
+    elif include_history:
+        # whole-schema migration: the history copies too. Where the same V2
+        # table is also loaded under another name, the copy in xm.TWINS posts
+        # only the ids its twin lacks (_without_twin_rows) — nothing twice.
+        history = sorted(e["table"] for e in entries if e["table"] in OLD_SYSTEM_HISTORY_TABLES)
+        if history:
+            log.info("Including %d old-system-history tables (include_history): %s",
+                     len(history), ", ".join(history))
     else:
         # The old-system-history tables are archive copies meant for
         # old_system_history, not per-table V3 inserts — several of them
         # (reception_patients, evaluation_prescriptions, ...) resolve to real
         # V3 models and would otherwise be loaded a second time. Only an
-        # explicit --table sends one of them through this path.
+        # explicit --table (or include_history) sends one of them through this path.
         history = [e for e in entries if e["table"] in OLD_SYSTEM_HISTORY_TABLES]
         if history:
             log.info("Skipping %d old-system-history tables (name one with --table to force): %s",
@@ -1490,16 +1518,19 @@ def _select_entries(facility: str, only_tables: list[str] | None, exclude_tables
 
 
 def plan_table_jobs(facility: str, only_tables: list[str] | None = None,
-                    exclude_tables: list[str] | None = None) -> dict:
+                    exclude_tables: list[str] | None = None, *, include_history: bool = False) -> dict:
     """What a run would migrate, one entry per table with its dependency
     tier — for drivers (the Airflow DAG) that run each table in its own
     process. Nothing is posted."""
     _, available_models = _start(facility)
-    runnable, unmapped, no_insert = _select_entries(facility, only_tables, exclude_tables, available_models)
+    runnable, unmapped, no_insert = _select_entries(facility, only_tables, exclude_tables, available_models,
+                                                    include_history=include_history)
     return {
         "jobs": [{"facility": facility, "table": e["table"], "tier": _tier(e)}
                  for e in sorted(runnable, key=lambda e: (_tier(e), e["table"]))],
         "unmapped": sorted(e["table"] for e in unmapped),
+        # why each unmapped table is not migrated (None = UNACCOUNTED)
+        "skip_reasons": {e["table"]: e.get("skipped") for e in unmapped},
         "not_insertable": sorted(e["table"] for e in no_insert),
     }
 
@@ -1514,7 +1545,7 @@ def run_one_table(facility: str, table: str, *, dry_run: bool) -> dict:
     org_cfg, available_models = _start(facility)
     runnable, unmapped, no_insert = _select_entries(facility, [table], None, available_models)
     if not runnable:
-        why = ("no NAMESPACE_MAP entry" if unmapped else
+        why = ((unmapped[0].get("skipped") or "no NAMESPACE_MAP entry") if unmapped else
                "not insertable in the gateway" if no_insert else f"not in {facility} RAW")
         return {"table": table, "status": "skipped", "detail": why}
     try:
@@ -1537,13 +1568,14 @@ def run_one_table(facility: str, table: str, *, dry_run: bool) -> dict:
 
 def run_migration(facility: str, only_tables: list[str] | None,
                   *, workers: int, dry_run: bool,
-                  exclude_tables: list[str] | None = None) -> list[str]:
+                  exclude_tables: list[str] | None = None, include_history: bool = False) -> list[str]:
     """All selected tables in one process, tier by tier (`workers` tables in
     parallel per tier). Returns the tables that FAILED (dead-lettered
     records, fetch/post errors); tables only waiting on parents are in
     _waiting."""
     org_cfg, available_models = _start(facility)
-    runnable, unmapped, no_insert = _select_entries(facility, only_tables, exclude_tables, available_models)
+    runnable, unmapped, no_insert = _select_entries(facility, only_tables, exclude_tables, available_models,
+                                                    include_history=include_history)
 
     tier_groups: dict[int, list] = defaultdict(list)
     for e in runnable:
@@ -1660,6 +1692,9 @@ def main() -> None:
                         help=f"Parallel tables per tier (default: {PIPELINE_WORKERS})")
     parser.add_argument("--dry-run", action="store_true",
                         help="Fetch + transform without posting to V3")
+    parser.add_argument("--include-history", action="store_true",
+                        help="Also migrate the old-system-history tables (whole-schema migration); a copy "
+                             "that duplicates another table posts only the ids that table lacks")
     parser.add_argument("--list-tables", action="store_true",
                         help="Print discovered tables, their tier and V3 mapping, and exit")
     parser.add_argument("--record-limit", type=int, default=RECORD_LIMIT, metavar="N",
@@ -1693,7 +1728,7 @@ def main() -> None:
         return
 
     run_migration(args.facility, args.table, workers=args.workers, dry_run=args.dry_run,
-                  exclude_tables=args.exclude)
+                  exclude_tables=args.exclude, include_history=args.include_history)
 
 
 if __name__ == "__main__":
