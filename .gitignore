@@ -65,6 +65,8 @@ failed_mapped_logs/*
 
 # But allow jsons inside this folder
 !dags/jsons/*.json
+# test fixtures (table snapshots, no patient data)
+!tests/fixtures/*.json
 
 # V3 migration state, committed so the online Airflow (which imports the
 # scripts from the repo root) starts from the same id maps / progress as the

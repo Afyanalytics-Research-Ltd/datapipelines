@@ -108,6 +108,7 @@ from dotenv import load_dotenv
 
 import v2_to_v3_api_migration as v2v3
 import v3_passthrough as v3pt
+import v3_extra_mappings as xm
 from facility_to_snowflake_fast_resume import (
     OLD_SYSTEM_HISTORY_TABLES, build_namespace, snake_to_pascal,
 )
@@ -297,6 +298,18 @@ def discover_tables(cur, facility: str) -> list[dict]:
             "v3":        mapping["v3"] if mapping else None,
             "transform": mapping["transform"] if mapping else None,
         })
+    return mark_skipped(entries)
+
+
+def mark_skipped(entries: list[dict]) -> list[dict]:
+    """Copies of a table migrated under another name are never posted (they'd
+    put the same records in twice); unmapped tables carry their recorded reason."""
+    for e in entries:
+        t = e["table"].lower()
+        if t in xm.DUPLICATES:
+            e.update(v3=None, transform=None, skipped=f"duplicate of {xm.DUPLICATES[t]}")
+        elif not e["v3"]:
+            e["skipped"] = xm.NOT_MIGRATED.get(t)
     return entries
 
 
@@ -1461,9 +1474,15 @@ def _select_entries(facility: str, only_tables: list[str] | None, exclude_tables
         "%d mapped but not insertable in gateway, %d with no NAMESPACE_MAP entry",
         facility, len(entries), len(runnable), len(no_insert), len(unmapped),
     )
-    if unmapped:
-        log.warning("SKIPPED — no NAMESPACE_MAP entry (%d): %s",
-                    len(unmapped), ", ".join(sorted(e["table"] for e in unmapped)))
+    explained = [e for e in unmapped if e.get("skipped")]
+    unaccounted = [e for e in unmapped if not e.get("skipped")]
+    if explained:
+        log.info("SKIPPED — not migrated, reason recorded in v3_extra_mappings (%d): %s",
+                 len(explained), ", ".join(sorted(e["table"] for e in explained)))
+    if unaccounted:
+        log.warning("SKIPPED — UNACCOUNTED: no mapping and no recorded reason (%d): %s — add a mapping "
+                    "or a NOT_MIGRATED / DUPLICATES entry in v3_extra_mappings.py",
+                    len(unaccounted), ", ".join(sorted(e["table"] for e in unaccounted)))
     if no_insert:
         log.warning("SKIPPED — mapped but not insertable per gateway (%d): %s",
                     len(no_insert), ", ".join(sorted(e["table"] for e in no_insert)))
@@ -1572,10 +1591,29 @@ def run_migration(facility: str, only_tables: list[str] | None,
     return failures
 
 
+def clean_tables(cur, facility: str) -> list[str]:
+    """Every table and view in the facility's CLEAN schema."""
+    db, schema = sf_schema(facility, "CLEAN").split(".")
+    cur.execute(f"SELECT LOWER(table_name) FROM {db}.INFORMATION_SCHEMA.TABLES WHERE table_schema = %s",
+                (schema,))
+    return [r[0] for r in cur.fetchall()]
+
+
+def mapping_coverage(facility: str) -> dict:
+    """Every CLEAN table/view → migrated | duplicate | not migrated (why) | UNACCOUNTED."""
+    with _snowflake_connect() as conn:
+        cur = conn.cursor()
+        entries = discover_tables(cur, facility)
+        tables = clean_tables(cur, facility)
+        cur.close()
+    return xm.coverage(entries, tables)
+
+
 def list_tables(facility: str) -> None:
     with _snowflake_connect() as conn:
         cur = conn.cursor()
         entries = discover_tables(cur, facility)
+        tables = clean_tables(cur, facility)
         cur.close()
     entries.sort(key=lambda e: (e["v3"] is None, _tier(e), e["table"]))
     print(f"{'table':<38} {'tier':<5} {'v3 target':<40} transform")
@@ -1585,7 +1623,20 @@ def list_tables(facility: str) -> None:
             tier = _tier(e)
             print(f"{e['table']:<38} {tier:<5} {e['v3']:<40} {e['transform']}")
         else:
-            print(f"{e['table']:<38} {'—':<5} {'(no NAMESPACE_MAP entry)':<40} —")
+            why = e.get("skipped") or ("no CLEAN view — nothing to migrate" if e["table"].lower() not in tables
+                                       else "UNACCOUNTED — no mapping")
+            print(f"{e['table']:<38} {'—':<5} {why[:60]}")
+    cov = xm.coverage(entries, tables)
+    gaps = sorted(t for t, s in cov.items() if s == "UNACCOUNTED")
+    counts = Counter(s.split(":")[0].split(" of ")[0] for s in cov.values())
+    print(f"\nCLEAN coverage ({len(cov)} tables/views): {dict(counts)}")
+    if gaps:
+        print(f"UNACCOUNTED ({len(gaps)}): {', '.join(gaps)}")
+
+
+# Mappings added for whole-schema migrations (v3_extra_mappings.py) — on top
+# of the hand-written ones above, never replacing them.
+xm.apply(v2v3, sys.modules[__name__])
 
 
 # ─── CLI ─────────────────────────────────────────────────────────────────────
