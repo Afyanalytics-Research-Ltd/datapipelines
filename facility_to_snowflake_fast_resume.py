@@ -679,7 +679,20 @@ def post_with_retry_and_fallback(
             except HTTPError:
                 raise
 
-    raise Exception("All fallback request bodies returned 404")
+    raise NamespaceNotFound("All fallback request bodies returned 404")
+
+
+class NamespaceNotFound(Exception):
+    """Every namespace spelling 404'd: this V2 site has no such model."""
+
+
+def _log_not_on_site(job: dict) -> None:
+    """A table whose model this V2 site doesn't have (every namespace spelling
+    404s on the first request) has nothing to extract — skipped, not failed.
+    Sheet table sets list some V3-style names a V2 site never had; the queue
+    table set (exact V2 names) avoids them."""
+    log.warning("    %s · %s — not on this V2 site (%s → 404 on every namespace variant) — skipped",
+                job.get("module"), job["table"], job["namespace"])
 
 def extract_all_pages(url, headers, body, singular_body,
                       double_namespace_body, double_namespace_singular_body,
@@ -1035,16 +1048,24 @@ def _extract_keyset(job: dict, run_id: str, dry_run: bool, sf: "SnowflakeClient 
             {**body, "namespace": double_namespace_model(namespace_to_singular_model(ns))})}.values())
 
     counted, error = 0, None
+    resolved = bool(state.get("namespace"))   # a namespace that answered before
     while state["batch"] < MAX_PAGES:
         try:
             r, used = post_with_retry_and_fallback(
                 url=url, headers=headers, session=session, timeout=60,
                 bodies=[{**b, "after_id": state["after_id"]} for b in variants],
             )
+        except NamespaceNotFound as e:
+            if not resolved and not state["batch"] and not counted:
+                _log_not_on_site(job)          # nothing fetched yet: the model isn't on this site
+                return None
+            error = e                          # a 404 mid-walk is a real failure
+            break
         except Exception as e:
             error = e
             break
-        if len(variants) > 1:
+        if not resolved:
+            resolved = True
             body["namespace"] = state["namespace"] = used["namespace"]
             variants = [body]
         payload = r.json()
@@ -1162,11 +1183,15 @@ def extract_one_model(job: dict, run_id: str, dry_run: bool = False,
     # accepts (fallback chain) and the page count. On resume both come from
     # the state file and page 1 is never requested again.
     if "chosen_body" not in state:
-        r, chosen = post_with_retry_and_fallback(
-            url=url, headers=headers, session=session, timeout=60,
-            bodies=[{**b, "page": 1} for b in (body, singular_body, double_namespace_body,
-                                               double_namespace_singular_body)],
-        )
+        try:
+            r, chosen = post_with_retry_and_fallback(
+                url=url, headers=headers, session=session, timeout=60,
+                bodies=[{**b, "page": 1} for b in (body, singular_body, double_namespace_body,
+                                                   double_namespace_singular_body)],
+            )
+        except NamespaceNotFound:
+            _log_not_on_site(job)
+            return None
         payload = r.json()
         pagination = payload.get("pagination") or {}
         last_page = pagination.get("last_page")

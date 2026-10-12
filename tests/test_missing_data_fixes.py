@@ -161,3 +161,71 @@ class TestVisitNeverExtracted:
 
     def test_not_for_mappings_without_a_required_visit(self):
         assert xm.transform_key("inpatient_notes") not in m._SKIP_IF_PARENT_NOT_IN_FACILITY
+
+
+class _Resp:
+    def __init__(self, body):
+        self.body = body
+
+    def json(self):
+        return self.body
+
+
+class TestModelNotOnThisSite:
+    """A sheet table the V2 site has no model for (e.g. inp_blood_transfusions
+    on level6) is skipped — not a failed task."""
+
+    @pytest.fixture
+    def job(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(loader, "PAGE_STATE_DIR", tmp_path)
+        return {"facility": "kisumu_v3", "module": "Inpatient", "table": "inp_blood_transfusions",
+                "namespace": r"Ignite\Inpatient\Entities\BloodTransfusions", "database": "db",
+                "updated_since": None, "limit": 500}
+
+    def test_keyset_all_404_on_first_request_is_skipped(self, job, monkeypatch, caplog):
+        def all_404(url, headers, bodies, **kw):
+            raise loader.NamespaceNotFound("All fallback request bodies returned 404")
+        monkeypatch.setattr(loader, "post_with_retry_and_fallback", all_404)
+        for dry in (True, False):
+            assert loader._extract_keyset(job, "run", dry, None, url="u", headers={}, session=None) is None
+        assert "not on this V2 site" in caplog.text
+
+    def test_keyset_404_mid_walk_still_fails(self, job, monkeypatch):
+        calls = {"n": 0}
+
+        def first_ok_then_404(url, headers, bodies, **kw):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return _Resp({"data": [{"id": 1}], "pagination": {"has_more_pages": True, "next_after_id": 1}}), bodies[0]
+            raise loader.NamespaceNotFound("All fallback request bodies returned 404")
+        monkeypatch.setattr(loader, "post_with_retry_and_fallback", first_ok_then_404)
+        monkeypatch.setattr(loader, "_flush_spool", lambda *a, **k: None)
+        with pytest.raises(RuntimeError, match="keyset fetch after id 1 failed"):
+            loader._extract_keyset(job, "run", False, None, url="u", headers={}, session=None)
+
+    def test_resumed_namespace_404_still_fails(self, job, monkeypatch):
+        state_path, _ = loader._page_state_paths(job)
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        state_path.write_text('{"mode": "keyset", "after_id": 0, "batch": 0, "loaded_pages": [], "s3_keys": [], '
+                              '"rows_loaded": 0, "namespace": "Ignite\\\\Inpatient\\\\Entities\\\\BloodTransfusion"}')
+
+        def all_404(url, headers, bodies, **kw):
+            raise loader.NamespaceNotFound("All fallback request bodies returned 404")
+        monkeypatch.setattr(loader, "post_with_retry_and_fallback", all_404)
+        monkeypatch.setattr(loader, "_flush_spool", lambda *a, **k: None)
+        with pytest.raises(RuntimeError):
+            loader._extract_keyset(job, "run", False, None, url="u", headers={}, session=None)
+
+    def test_page_mode_all_404_is_skipped(self, job, monkeypatch):
+        monkeypatch.setattr(loader, "KEYSET_TABLES", {"some_other_table"})
+        monkeypatch.setattr(loader, "facility_config", lambda f: {"base_url": "https://x", "db": "db"})
+        monkeypatch.setattr(loader, "_facility_session", lambda f: None)
+        monkeypatch.setattr(loader, "_facility_token", lambda f: "t")
+
+        def all_404(url, headers, bodies, **kw):
+            raise loader.NamespaceNotFound("All fallback request bodies returned 404")
+        monkeypatch.setattr(loader, "post_with_retry_and_fallback", all_404)
+        assert loader.extract_one_model(job, run_id="r", dry_run=False) is None
+
+    def test_still_an_exception_for_old_callers(self):
+        assert issubclass(loader.NamespaceNotFound, Exception)
