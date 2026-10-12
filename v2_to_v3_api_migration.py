@@ -955,6 +955,12 @@ _PER_KEY_KEEP_ONLY: dict[str, set[str]] = {
     # finance-service Receipt::$fillable that V2 can fill
     "finance_receipt": {"receipt_no", "receipt_type", "invoice_id", "patient_id", "amount", "receipt_date",
                         "payment_method", "status", "notes", "issued_by"},
+    # theatre-service Theatre::$fillable that V2 can fill. The theatre gateway
+    # hides SQL errors ("the database refused the row"), so the poster can't
+    # strip an unknown column (source_schema) — send only real columns.
+    # associated_procedures is left out: V3 wants procedure ids, V2 holds text.
+    "theatre_theatre": {"name", "number", "theatre_type_id", "facility_id", "description", "fee",
+                        "charging_cycle", "is_active"},
     # theatre_bookings: the agreed insert payload (Muniu, 2026-10-12: uuid,
     # patient_id, preferred_date, status_id, requested_by, is_emergency,
     # reason, timestamps) + the columns whose V2 ids are remapped to V3.
@@ -1101,6 +1107,8 @@ _V3_NULL_DEFAULTS: dict[str, Any] = {
     "appear_bold":          0,            # template_labs flag, null on some V2 rows
     "use_bio_ref_flagging": 0,            # procedures flag, null on some V2 rows
     "has_quick_results":    0,            # procedures flag
+    "queued":               0,            # samples flags
+    "tobe_contacted":       0,
     "exemption_amount":     0,            # invoices
     "is_walkin":            0,            # investigations flags, null on most V2 rows
     "preauth_approved":     0,
@@ -1724,6 +1732,9 @@ _PER_KEY_COERCIONS: dict[str, dict[str, Any]] = {
         # every kisumu_v3 V2 sample has an empty status — a V2 sample row exists
         # once the sample is taken, so "collected", not V3's default "pending"
         "status": lambda v: v if str(v or "").strip() else "collected",
+        # NOT NULL flags with a default (2026_02_03_000004 evaluation_samples)
+        "queued":         _null_to(0),
+        "tobe_contacted": _null_to(0),
     },
     "evaluation_prescription": {
         # V3 user ids; V2 holds the approver's / rejecter's name (all 9,401
@@ -1944,6 +1955,11 @@ def transform_record(record: dict, transform_key: str, org_cfg: dict, facility: 
     for field, fn in _PER_KEY_INJECT.get(tk, {}).items():
         if not out.get(field):
             out[field] = fn(out)
+
+    # 5d. facility_id is the DESTINATION facility for models whose gateway
+    # entry doesn't declare a facility column (V2 holds the old facility id)
+    if tk in _PER_KEY_DEST_FACILITY and org_cfg.get("facility_id") is not None:
+        out["facility_id"] = org_cfg["facility_id"]
 
     keep = _PER_KEY_KEEP_ONLY.get(tk)
     if keep is not None:
@@ -2656,7 +2672,7 @@ def _post_to_v3_batch(
     if not record.get(body["match_on"]):
         body.pop("match_on")
 
-    attempt, wait, _patched, _code_suffixed = 0, default_retry_wait, False, False
+    attempt, wait, _patched = 0, default_retry_wait, False
     gw_attempt, gw_wait = 0, V3_RETRY_WAIT
     while True:
         attempt += 1
@@ -2737,17 +2753,12 @@ def _post_to_v3_batch(
                     _write_dead_letter(v3_namespace, record, err_body)
                     raise RecordDeadLettered()
 
-                # Category 1.5 — a code another record already holds (V2 has
-                # products sharing a code, e.g. two "ITM000321"): a different
-                # record, not this one again — retry once with its V2 id appended.
-                if (re.search(r"Duplicate entry '[^']*' for key '[^']*code_unique'", debug_msg)
-                        and body["data"].get("code") and not _code_suffixed):
-                    new_code = f"{body['data']['code']}-{rec_id}"
-                    log.warning("  V3 %s id=%-6s code %r already taken — retrying as %r",
-                                r.status_code, rec_id, body["data"]["code"], new_code)
-                    body["data"] = {**body["data"], "code": new_code}
-                    _code_suffixed = True
-                    continue
+                # NOTE: a duplicate unique value is NOT retried with the V2 id
+                # appended. That retry (2026-10-12) re-created 1,763 procedures
+                # that were already in V3 (ADMIN-00001 → ADMIN-00001-29552): the
+                # taken code was the SAME record. Codes V2 itself duplicates are
+                # made unique before posting instead (snowflake_to_v3_migration
+                # ._dedupe_v2_codes), so a duplicate here means "already exists".
 
                 # Category 2 — Duplicate entry: record already exists in V3, skip silently
                 if "Duplicate entry" in debug_msg:
@@ -3378,6 +3389,10 @@ _FK_REMAP: dict[str, dict[str, str]] = {
     "reception_patient_dependant": {
         "patient_id": "patient",
     },
+    # theatres.theatre_type_id → theatre_types (FK-constrained; V2 type ids differ)
+    "theatre_theatre": {
+        "theatre_type_id": "theatre_type",
+    },
     # theatre chain: booking → schedule → operation (each FK-constrained to
     # its parent in theatre-service); visit / patient / users are other services
     "theatre_booking": {
@@ -3731,7 +3746,10 @@ def sync_id_map(alias: str, v2_namespace: str, facility: str, match_field: str =
     # migrated before uuids were carried across.
     v3_by_uuid: dict[str, int] = {}
     v3_by_key: dict[str, int] = {}
-    for rec in v3_records:
+    # Oldest row first, and the first row per name wins: when V3 holds copies of
+    # a record (1,763 procedures re-created on 2026-10-12), children must link
+    # to the original, never to the copy.
+    for rec in sorted(v3_records, key=lambda x: int(x["id"]) if str(x.get("id") or "").isdigit() else 0):
         v3_id = rec.get("id")
         if not v3_id:
             continue
@@ -3739,7 +3757,7 @@ def sync_id_map(alias: str, v2_namespace: str, facility: str, match_field: str =
             v3_by_uuid[str(rec["uuid"]).strip().lower()] = v3_id
         key = rec.get(match_field)
         if key:
-            v3_by_key[str(key).strip().lower()] = v3_id
+            v3_by_key.setdefault(str(key).strip().lower(), v3_id)
 
     # Extract V2 records
     cfg = v2_facility_config(facility)
@@ -3775,6 +3793,10 @@ def sync_id_map(alias: str, v2_namespace: str, facility: str, match_field: str =
                 by_field += 1
         if v3_id:
             _store_id_mapping(alias, v2_id, v3_id)
+            # uuid-era maps are keyed by the V2 uuid and looked up by it first —
+            # repoint that key too, or a stale entry (e.g. to a duplicate) wins
+            if u:
+                _store_id_mapping(alias, u, v3_id)
 
     matched = by_uuid + by_field
     log.info("sync_id_map %s [%s]: matched %d / %d V2 records to V3 ids (%d on uuid, %d on %s)",
@@ -3783,7 +3805,11 @@ def sync_id_map(alias: str, v2_namespace: str, facility: str, match_field: str =
 
 
 _RESYNC_MAX_ROWS = 5000            # only reference-sized tables are re-synced when partial
+
+# transform keys whose payload carries facility_id that must be the destination facility
+_PER_KEY_DEST_FACILITY: set[str] = {"theatre_theatre"}
 _v3_total_cache: dict[str, int | None] = {}
+_resynced: set[str] = set()       # aliases whose id map was rebuilt in this process
 
 
 def _v3_total(alias: str, facility: str) -> int | None:
@@ -3814,6 +3840,8 @@ def _ensure_id_maps(transform_key: str, facility: str) -> None:
 
     for alias, known_v3_ns in aliases:
         have = len(_id_map.get(alias) or {})
+        if have and alias in _resynced:
+            continue                       # once per process — not again on every page
         if have:
             # a partial map never rebuilt itself (e.g. 3 procedures mapped by a
             # canary, 1,674 in V3 → every procedure FK stayed unmapped). For
@@ -3833,6 +3861,7 @@ def _ensure_id_maps(transform_key: str, facility: str) -> None:
              or _ALIAS_FOR_TRANSFORM.get(m["transform"]) in variants),
             None,
         )
+        _resynced.add(alias)
         if v2_ns:
             match_field = _SYNC_MATCH_FIELD_BY_NS.get(NAMESPACE_MAP[v2_ns]["v3"], "name")
             sync_id_map(alias, v2_ns, facility, match_field=match_field)

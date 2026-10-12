@@ -598,6 +598,7 @@ _CRITICAL_FK_FIELDS: dict[str, list] = {
     "finance_receipt":               ["issued_by"],
     # inp_beds: ward + bed type are FK-constrained — wait for them, never post V2 ids
     "inpatient_bed":                 ["ward_id", "bed_type_id"],
+    "theatre_theatre":   ["theatre_type_id"],
     # theatre chain — NOT NULL / FK-constrained, so a row waits for its parent
     "theatre_booking":   ["visit_id", "patient_id", "status_id", "requested_by"],
     "theatre_schedule":  ["booking_id", "theatre_id", "scheduled_by"],
@@ -1235,6 +1236,43 @@ def _run_vitals_split(entry: dict, facility: str, rows: list[dict], org_cfg: dic
     return failed, held   # held = waiting on a parent / user that isn't in V3 yet
 
 
+def _v2_duplicate_codes(facility: str, table: str) -> dict[str, int]:
+    """Codes V2 itself gives to more than one row of this table (e.g. two
+    products coded ITM000321) → the lowest V2 id holding each. V3 codes are
+    unique, so only these get the V2 id appended (_dedupe_v2_codes). A code
+    V3 already holds for the SAME record is never re-coded — that re-created
+    1,763 procedures on 2026-10-12."""
+    src = f"{sf_schema(facility, 'CLEAN')}.{table.upper()}"
+    try:
+        with _snowflake_connect() as conn:
+            cur = conn.cursor()
+            cur.execute(f"SELECT * FROM {src} LIMIT 0")
+            if "CODE" not in {d[0].upper() for d in cur.description}:
+                return {}
+            rows = cur.execute(
+                f'SELECT LOWER(TRIM(TO_VARCHAR("CODE"))), MIN("ID") FROM {src} '
+                f"WHERE NULLIF(TRIM(TO_VARCHAR(\"CODE\")), '') IS NOT NULL GROUP BY 1 HAVING COUNT(*) > 1"
+            ).fetchall()
+    except Exception as e:
+        log.warning("  couldn't check %s for duplicate codes (%s)", src, e)
+        return {}
+    if rows:
+        log.info("  %s: %d code(s) shared by several V2 rows — later rows get '-<V2 id>'", table, len(rows))
+    return {k: (int(v) if str(v).isdigit() else v) for k, v in rows}
+
+
+def _dedupe_v2_codes(records: list[dict], dup_codes: dict) -> list[dict]:
+    if not dup_codes:
+        return records
+    out = []
+    for r in records:
+        code = str(r.get("code") or "").strip()
+        first = dup_codes.get(code.lower()) if code else None
+        rid = int(r["id"]) if str(r.get("id") or "").isdigit() else r.get("id")
+        out.append({**r, "code": f"{code}-{rid}"} if first is not None and rid != first else r)
+    return out
+
+
 def _department_code(name: str) -> str:
     return re.sub(r"[^a-z0-9]+", "_", name.lower()).strip("_")[:50] or "department"
 
@@ -1382,6 +1420,7 @@ def _run_table_job(entry: dict, facility: str, org_cfg: dict, dry_run: bool) -> 
     vitals = transform_key == "inpatient_vital"
     # once per table, not per page
     parent_sets = []
+    dup_codes = _v2_duplicate_codes(facility, table)
     try:
         for field, parent_table, parent_col in _SKIP_IF_PARENT_NOT_IN_FACILITY.get(transform_key, []):
             with _snowflake_connect() as conn:
@@ -1436,6 +1475,7 @@ def _run_table_job(entry: dict, facility: str, org_cfg: dict, dry_run: bool) -> 
                     skipped += before - len(pairs)
                 transformed = [t for _, t in pairs if t is not None]
                 n_dropped += len(pairs) - len(transformed)
+                transformed = _dedupe_v2_codes(transformed, dup_codes)
                 if transformed:
                     problems = post_table_to_v3(v3_namespace, org_cfg, transformed,
                                                 transform_key=transform_key, alias=alias,

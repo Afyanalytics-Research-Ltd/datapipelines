@@ -206,15 +206,34 @@ def test_422_insert_rejected_null_column_gets_default(monkeypatch):
     assert sent[1]["appear_bold"] == 0
 
 
-def test_422_duplicate_code_retries_with_v2_id(monkeypatch):
+def test_422_duplicate_code_is_already_there_never_a_copy(monkeypatch):
+    # the old retry-with-V2-id re-created 1,763 procedures that V3 already had
     sent = _post(monkeypatch, [
-        _R(422, {"success": False, "message": "insert rejected: Duplicate entry '4-ITM000321' for key "
-                                              "'inv_products.inv_products_org_code_unique'"}),
-        _R(201, {"success": True, "data": {"id": 99}}),
+        _R(422, {"success": False, "message": "insert rejected: Duplicate entry '4-ADMIN-00001' for key "
+                                              "'procedures.procedures_org_code_unique'"}),
     ])
-    v2v3._post_to_v3_batch(r"App\Models\Product", ORG, {"id": 37466, "code": "ITM000321"},
-                           alias_override="product", service_override="inventory")
-    assert [s["code"] for s in sent] == ["ITM000321", "ITM000321-37466"]
+    v2v3._post_to_v3_batch(r"App\Models\Procedure", ORG, {"id": 29552, "code": "ADMIN-00001"},
+                           alias_override="procedures", service_override="evaluation")
+    assert [s["code"] for s in sent] == ["ADMIN-00001"]          # one request, no suffixed copy
+
+
+def test_only_codes_v2_itself_repeats_get_the_v2_id():
+    recs = [{"id": 37460, "code": "ITM000321"}, {"id": 37466, "code": "ITM000321"}, {"id": 5, "code": "ADMIN-00001"}]
+    out = m._dedupe_v2_codes(recs, {"itm000321": 37460})
+    assert [r["code"] for r in out] == ["ITM000321", "ITM000321-37466", "ADMIN-00001"]
+
+
+def test_id_map_rebuild_prefers_the_original_row(monkeypatch):
+    monkeypatch.setattr(v2v3, "facility_v3_config", lambda f: ORG)
+    monkeypatch.setattr(v2v3, "_fetch_v3_records", lambda *a, **k: [
+        {"id": 14585, "name": "Medical Rotation Fees"}, {"id": 179, "name": "Medical Rotation Fees"}])
+    monkeypatch.setattr(v2v3, "v2_facility_config", lambda f: {"db": "x"})
+    monkeypatch.setattr(v2v3, "extract_v2_records", lambda job: ([{"id": 29552, "name": "Medical Rotation Fees",
+                                                                   "uuid": "u-1"}], []))
+    stored = {}
+    monkeypatch.setattr(v2v3, "_store_id_mapping", lambda a, k, val: stored.__setitem__(k, val))
+    v2v3.sync_id_map("procedures", r"Ignite\Evaluation\Entities\Procedures", "kisumu_v3")
+    assert stored == {29552: 179, "u-1": 179}
 
 
 def test_422_other_validation_still_dead_letters(monkeypatch):
