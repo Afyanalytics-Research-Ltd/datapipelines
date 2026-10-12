@@ -522,8 +522,8 @@ NAMESPACE_MAP: dict[str, dict] = {
     r"Ignite\Reception\Entities\PatientNextOfKin":           {"v3": r"App\Models\PatientNextOfKin",            "transform": "generic"},
     r"Ignite\Reception\Entities\PatientDocuments":           {"v3": r"App\Models\PatientDocument",             "transform": "reception_patient_document"},
     r"Ignite\Reception\Entities\PatientDocument":            {"v3": r"App\Models\PatientDocument",             "transform": "reception_patient_document"},
-    r"Ignite\Reception\Entities\PatientDependants":          {"v3": r"App\Models\PatientDependant",            "transform": "generic"},
-    r"Ignite\Reception\Entities\PatientDependant":           {"v3": r"App\Models\PatientDependant",            "transform": "generic"},
+    r"Ignite\Reception\Entities\PatientDependants":          {"v3": r"App\Models\PatientDependant",            "transform": "reception_patient_dependant"},
+    r"Ignite\Reception\Entities\PatientDependant":           {"v3": r"App\Models\PatientDependant",            "transform": "reception_patient_dependant"},
     r"Ignite\Reception\Entities\PatientGuarantors":          {"v3": r"App\Models\PatientGuarantor",            "transform": "generic"},
     r"Ignite\Reception\Entities\PatientGuarantor":           {"v3": r"App\Models\PatientGuarantor",            "transform": "generic"},
     r"Ignite\Reception\Entities\PatientFollowups":           {"v3": r"App\Models\PatientFollowup",             "transform": "generic"},
@@ -721,6 +721,8 @@ _PER_KEY_RENAMES: dict[str, dict[str, str]] = {
     # V2 ICD-10 categories/subcategories are ranges (code_from..code_to);
     # V3 needs a code (see _PER_KEY_INJECT)
     "eval_icd10_range": {},
+    # the dependant's details are joined in as dependant_* (v3_extra_mappings.FETCH_SQL)
+    "reception_patient_dependant": {},
     # V2's group → type link is a bare `type` (1 Profit & Loss, 2 Balance Sheet …)
     "finance_gl_account_group": {"type": "account_type_id"},
     "inventory_unit": {},
@@ -942,6 +944,9 @@ _PER_KEY_KEEP_ONLY: dict[str, set[str]] = {
     "settings_clinic": {"name", "code", "type", "address", "city", "phone", "email",
                         "status", "region_id", "created_at", "updated_at"},
     # columns of reception-service's patient documents (gateway describe) + the FK
+    # reception-service PatientDependant::$fillable that V2 can fill
+    "reception_patient_dependant": {"patient_id", "full_name", "relationship", "dob", "gender", "id_no",
+                                    "mobile", "email"},
     "reception_patient_document": {"patient_id", "title", "document_type", "description", "file_name",
                                    "file_path", "file_type", "file_extension", "file_size", "document_date",
                                    "notes"},
@@ -1045,6 +1050,8 @@ _PER_KEY_REQUIRED_FIELDS: dict[str, list] = {
     "eval_procedure_category": ["name"],
     # V2 has blank unit rows (no name, symbol or description) — nothing to migrate
     "inventory_unit":          ["name"],
+    # the dependant's patient record wasn't extracted — no name to give V3
+    "reception_patient_dependant": ["full_name"],
     "settings_user":           ["email"],
     "evaluation_inv_result":   ["investigation_id", "patient_id"],
     "outpatient_vital":        ["patient_id"],
@@ -1336,8 +1343,24 @@ _OUTPATIENT_VITAL_NUMBERS = ("temperature", "pulse", "weight", "height", "bmi", 
                              "bone_mass", "metabolic_age", "body_water", "visceral_fat", "length_percentile",
                              "weight_percentile", "bmi_percentile", "intracular_pressure")
 
+def _flag_with_message(flag: str, note_field: str):
+    """Pre-coercion hook for a V2 flag column that sometimes holds a message
+    instead of 0/1 — prescriptions' moved_from_chargesheet is 'Item removed
+    from chargesheet by Mr. X on Sep 23, 2024 12:11:15 pm' on 2,718
+    kisumu_v3 rows. The message means the flag is set: 1, and the message is
+    kept in the notes."""
+    def fix(out: dict) -> None:
+        v = out.get(flag)
+        if isinstance(v, str) and v.strip() and v.strip().lower() not in ("0", "1", "true", "false"):
+            msg = " ".join(v.split())
+            out[note_field] = f"{out[note_field]}\n{msg}" if _blank_to_none(out.get(note_field)) else msg
+            out[flag] = 1
+    return fix
+
+
 # run before the per-key coercions, on the renamed record
 _PER_KEY_PRE_COERCE: dict[str, Any] = {
+    "evaluation_prescription": _flag_with_message("moved_from_chargesheet", "notes"),
     "inpatient_vital":  _note_multiple_readings("notes", _INPATIENT_VITAL_NUMBERS),
     "outpatient_vital": _note_multiple_readings("nurse_notes", _OUTPATIENT_VITAL_NUMBERS),
 }
@@ -1477,6 +1500,21 @@ _PER_KEY_INJECT: dict[str, dict[str, Any]] = {
         "document_date":  lambda r: r.get("created_at"),
         # NOT NULL in V3 (bytes); V2 never recorded the size
         "file_size":      lambda r: 0,
+    },
+    # patient_dependants: full_name + relationship NOT NULL; V2 rows only link
+    # the dependant's own patient record (joined in as dependant_*)
+    "reception_patient_dependant": {
+        "full_name": lambda r: " ".join(" ".join(str(r.get(f"dependant_{c}") or "").split())
+                                        for c in ("first_name", "middle_name", "last_name")
+                                        if str(r.get(f"dependant_{c}") or "").strip()) or None,
+        "relationship": lambda r: _NOT_RECORDED,    # V2 relationship ids have no lookup table in the extract
+        "dob":          lambda r: _blank_to_none(r.get("dependant_dob")),
+        "gender":       lambda r: (str(r.get("dependant_sex") or "").strip().lower()
+                                   if str(r.get("dependant_sex") or "").strip().lower() in ("male", "female", "other")
+                                   else None),
+        "mobile":       lambda r: _blank_to_none(r.get("dependant_mobile")),
+        "id_no":        lambda r: _blank_to_none(r.get("dependant_id_no")),
+        "email":        lambda r: _blank_to_none(r.get("dependant_email")),
     },
     # theatre_bookings / theatre_operations: patient_id NOT NULL; V2 rows only
     # link the visit (V2 patient id here, remapped to V3 at post time)
@@ -3249,6 +3287,10 @@ _FK_REMAP: dict[str, dict[str, str]] = {
     # doctor_notes.visit_id → visits.id  (patient_id is injected via _PER_KEY_INJECT)
     "evaluation_doctor_note": {
         "visit_id": "visit",
+    },
+    # patient_dependants.patient_id → patients (the account holder, FK-constrained)
+    "reception_patient_dependant": {
+        "patient_id": "patient",
     },
     # theatre chain: booking → schedule → operation (each FK-constrained to
     # its parent in theatre-service); visit / patient / users are other services

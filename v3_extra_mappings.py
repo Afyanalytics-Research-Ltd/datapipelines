@@ -609,9 +609,32 @@ def _icd10_notes_sql(clean: str, cols_of, clean_set: set[str]) -> str | None:
             f'FROM {clean}.EVALUATION_ICD10_NOTES n LEFT JOIN {clean}.{var.upper()} v ON ' + " OR ".join(on))
 
 
+def _patient_dependants_sql(table: str):
+    """V2 dependant rows only link two patients (patient_id = the holder,
+    patient_dependant_id = the dependant, also a V2 patient); V3 needs the
+    dependant's own name (full_name NOT NULL) — joined from the patient
+    tables (both extracts, first match wins)."""
+    def build(clean: str, cols_of, clean_set: set[str]) -> str | None:
+        want = ("first_name", "middle_name", "last_name", "dob", "sex", "mobile", "id_no", "email")
+        sources = [t for t in ("patients", "reception_patients")
+                   if t in clean_set and {"id", "first_name"} <= cols_of(t)]
+        if not sources or "patient_dependant_id" not in cols_of(table):
+            return None
+        joins = " ".join(f'LEFT JOIN {clean}.{t.upper()} p{i} ON TO_VARCHAR(p{i}."ID") = '
+                         f'TO_VARCHAR(d."PATIENT_DEPENDANT_ID")' for i, t in enumerate(sources))
+        picks = ", ".join(
+            "COALESCE(" + ", ".join(f'p{i}."{c.upper()}"' for i, t in enumerate(sources) if c in cols_of(t))
+            + f') AS "DEPENDANT_{c.upper()}"'
+            for c in want if any(c in cols_of(t) for t in sources))
+        return f"SELECT d.*, {picks} FROM {clean}.{table.upper()} d {joins}"
+    return build
+
+
 # table → builder(clean schema, cols_of(table) → lower-case column names, CLEAN
 # object names) → SQL, or None to read the table as is
-FETCH_SQL = {"evaluation_icd10_notes": _icd10_notes_sql}
+FETCH_SQL = {"evaluation_icd10_notes": _icd10_notes_sql,
+             "patient_dependants": _patient_dependants_sql("patient_dependants"),
+             "reception_patient_dependants": _patient_dependants_sql("reception_patient_dependants")}
 
 
 def duplicate_of(table: str, clean_set=None) -> str | None:

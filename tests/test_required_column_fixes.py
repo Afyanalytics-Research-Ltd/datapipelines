@@ -371,3 +371,45 @@ def test_petty_cash_seed_row_is_not_posted():
     out = {e["table"]: e for e in m.mark_skipped(entries)}
     assert out["petty_cash"]["v3"] is None and "2017 setup row" in out["petty_cash"]["skipped"]
     assert out["finance_invoice_dispatches"]["v3"] == r"App\Models\X"      # mapped tables untouched
+
+
+class TestPatientDependants:
+    def test_name_from_the_dependants_patient_record(self):
+        out = v2v3.transform_record({"id": 1, "patient_id": 117685, "patient_dependant_id": 117469,
+                                     "relationship_id": 254, "dependant_first_name": "Jane",
+                                     "dependant_middle_name": "", "dependant_last_name": "Achieng ",
+                                     "dependant_dob": "2015-03-01", "dependant_sex": "Female",
+                                     "dependant_mobile": ""}, "reception_patient_dependant", ORG, "kisumu_v3")
+        assert out == {"id": 1, "patient_id": 117685, "full_name": "Jane Achieng",
+                       "relationship": v2v3._NOT_RECORDED, "dob": "2015-03-01", "gender": "female",
+                       "mobile": None, "id_no": None, "email": None}
+
+    def test_dependant_not_extracted_is_held_back(self):
+        assert v2v3.transform_record({"id": 1, "patient_id": 117685, "patient_dependant_id": 117469},
+                                     "reception_patient_dependant", ORG, "kisumu_v3") is None
+
+    def test_fetch_sql_joins_both_patient_tables(self):
+        import v3_extra_mappings as xm
+        cols = {"patient_dependants": {"id", "patient_id", "patient_dependant_id"},
+                "patients": {"id", "first_name", "last_name", "sex"},
+                "reception_patients": {"id", "first_name", "middle_name", "last_name"}}
+        sql = xm.FETCH_SQL["patient_dependants"]("C", lambda t: cols[t], set(cols))
+        assert 'COALESCE(p0."FIRST_NAME", p1."FIRST_NAME") AS "DEPENDANT_FIRST_NAME"' in sql
+        assert 'COALESCE(p1."MIDDLE_NAME") AS "DEPENDANT_MIDDLE_NAME"' in sql
+        assert "LEFT JOIN C.PATIENTS p0" in sql and "LEFT JOIN C.RECEPTION_PATIENTS p1" in sql
+
+
+def test_prescription_moved_from_chargesheet_message():
+    msg = "Item removed from chargesheet by Mr. Charles  Byron on Sep 23, 2024 12:11:15 pm"
+    out = v2v3.transform_record({"id": 846593, "visit": 1, "moved_from_chargesheet": msg, "notes": "BD x 5/7"},
+                                "evaluation_prescription", ORG, "kisumu_v3")
+    assert out["moved_from_chargesheet"] == 1
+    assert out["notes"] == "BD x 5/7\nItem removed from chargesheet by Mr. Charles Byron on Sep 23, 2024 12:11:15 pm"
+    plain = v2v3.transform_record({"id": 2, "visit": 1, "moved_from_chargesheet": "0"},
+                                  "evaluation_prescription", ORG, "kisumu_v3")
+    assert plain["moved_from_chargesheet"] == "0" and "notes" not in plain
+
+
+def test_orphan_beds_are_skipped_not_posted():
+    assert ("ward_id", "inpatient_wards", "id") in m._SKIP_IF_PARENT_NOT_IN_FACILITY["inpatient_bed"]
+    assert m._CRITICAL_FK_FIELDS["inpatient_bed"] == ["ward_id", "bed_type_id"]

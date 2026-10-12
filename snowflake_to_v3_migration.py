@@ -594,6 +594,9 @@ _CRITICAL_FK_FIELDS: dict[str, list] = {
     "finance_gl_account_group":      ["account_type_id"],
     # wait for the supplier, store and creating user rather than post V2 ids
     "inventory_purchase_order":      ["supplier_id", "store_id", "created_by"],
+    "reception_patient_dependant": ["patient_id"],
+    # inp_beds: ward + bed type are FK-constrained — wait for them, never post V2 ids
+    "inpatient_bed":                 ["ward_id", "bed_type_id"],
     # theatre chain — NOT NULL / FK-constrained, so a row waits for its parent
     "theatre_booking":   ["visit_id", "patient_id", "status_id", "requested_by"],
     "theatre_schedule":  ["booking_id", "theatre_id", "scheduled_by"],
@@ -640,6 +643,10 @@ _SKIP_IF_PARENT_NOT_IN_FACILITY: dict[str, list[tuple[str, str, str]]] = {
     # 56 dispensings have no store (their prescription is missing / store 0)
     "inventory_dispensing":         [("store_id", "inventory_stores", "id"),
                                      ("visit_id", "visits", "id")],
+    # 96 of 160 kisumu_v3 bed rows hang off wards / bed types deleted in V2
+    # (e.g. bed 53 → ward 33, bed type 1) — inp_beds FK-constrains both
+    "inpatient_bed":                [("ward_id", "inpatient_wards", "id"),
+                                     ("bed_type_id", "inpatient_bed_types", "id")],
 }
 
 # Source tables read with their own query instead of SELECT *. V2 discharges
