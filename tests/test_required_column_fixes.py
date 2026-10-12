@@ -413,3 +413,8 @@ def test_prescription_moved_from_chargesheet_message():
 def test_orphan_beds_are_skipped_not_posted():
     assert ("ward_id", "inpatient_wards", "id") in m._SKIP_IF_PARENT_NOT_IN_FACILITY["inpatient_bed"]
     assert m._CRITICAL_FK_FIELDS["inpatient_bed"] == ["ward_id", "bed_type_id"]
+
+
+def test_rebates_wait_for_the_v3_backend():
+    out = m.mark_skipped([{"table": "settings_rebates", "v3": r"App\Models\Rebate", "transform": "settings_rebate"}])
+    assert out[0]["v3"] is None and out[0]["skipped"].startswith("BLOCKED ON V3 BACKEND")

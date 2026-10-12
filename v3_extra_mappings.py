@@ -405,6 +405,10 @@ NOT_MIGRATED: dict[str, str] = {
     "petty_cash": "one 2017 setup row (amount 0.00, no fund name or custodian) — V3 petty cash is a named fund "
                   "with a custodian; the org sets up its own",
     "finance_petty_cash": "same single 2017 setup row as petty_cash",
+    "settings_rebates": "BLOCKED ON V3 BACKEND — the gateway's `rebates` model is core_rebates, which has no "
+                        "organization_id column although the gateway stamps one (every insert fails), and "
+                        "core_rebates wants code + percentage while V2 rebates are name + amount; they belong in "
+                        "inpatient inp_rebates (name, amount), which no gateway alias exposes",
     # inpatient (checked against the V3 models + migrations 2026-10-12)
     "inpatient_administer_drugs": "V3 drug_administration needs drug_name, dosage, route, frequency and "
                                   "scheduled_time (NOT NULL); V2 rows carry only prescription_id + an administered "
@@ -498,7 +502,7 @@ NOT_MIGRATED: dict[str, str] = {
 # Tables a hand-written mapping would post, but whose rows aren't real data —
 # their NOT_MIGRATED reason wins over the mapping (an explicit list, so a table
 # that is both mapped and in NOT_MIGRATED isn't silently switched off).
-NOT_MIGRATED_DESPITE_MAPPING: frozenset[str] = frozenset({"petty_cash", "finance_petty_cash"})
+NOT_MIGRATED_DESPITE_MAPPING: frozenset[str] = frozenset({"petty_cash", "finance_petty_cash", "settings_rebates"})
 
 
 # ─── applying the mappings ──────────────────────────────────────────────────
