@@ -708,9 +708,22 @@ def _visit_destinations_sql(clean: str, cols_of, clean_set: set[str]) -> str | N
             f'LEFT JOIN {clean}.SETTINGS_DESTINATIONS s ON TO_VARCHAR(s."ID") = TO_VARCHAR(d."DESTINATION_ID")')
 
 
+def _goods_received_sql(clean: str, cols_of, clean_set: set[str]) -> str | None:
+    """V2 goods-received rows link only the purchase order; V3 GRNs need the
+    store and supplier (NOT NULL, FK) — taken from that purchase order."""
+    if "inventory_purchase_orders" not in clean_set or "purchase_order_id" not in cols_of("inventory_goods_received"):
+        return None
+    if not {"id", "store_id", "supplier_id"} <= cols_of("inventory_purchase_orders"):
+        return None
+    return (f'SELECT g.*, p."STORE_ID" AS "STORE_ID", p."SUPPLIER_ID" AS "SUPPLIER_ID" '
+            f'FROM {clean}.INVENTORY_GOODS_RECEIVED g LEFT JOIN {clean}.INVENTORY_PURCHASE_ORDERS p '
+            f'ON TO_VARCHAR(p."ID") = TO_VARCHAR(g."PURCHASE_ORDER_ID")')
+
+
 # table → builder(clean schema, cols_of(table) → lower-case column names, CLEAN
 # object names) → SQL, or None to read the table as is
 FETCH_SQL = {"evaluation_icd10_notes": _icd10_notes_sql,
+             "inventory_goods_received": _goods_received_sql,
              "evaluation_visit_destinations": _visit_destinations_sql,
              "patient_dependants": _patient_dependants_sql("patient_dependants"),
              "reception_patient_dependants": _patient_dependants_sql("reception_patient_dependants")}

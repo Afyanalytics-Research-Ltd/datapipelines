@@ -822,6 +822,7 @@ _PER_KEY_RENAMES: dict[str, dict[str, str]] = {
         "requestor_id":     "requested_by",
         "approver_id":      "approved_by",
         "approval_weight":  "approval_level",
+        "store_id":         "requesting_store_id",    # NOT NULL + FK in V3
     },
     "inventory_category": {
         "parent_id": "parent_category_id",
@@ -880,7 +881,11 @@ _PER_KEY_RENAMES: dict[str, dict[str, str]] = {
     "inpatient_bed": {},                 # ward_id / bed_type_id FK remapped via _FK_REMAP
     "inpatient_admission": {},           # admission_type_id FK remapped via _FK_REMAP
     "inpatient_admission_type": {},
-    "inpatient_admission_request": {},   # preferred_ward_id / preferred_bed_type_id via _FK_REMAP
+    # preferred_ward_id / preferred_bed_type_id via _FK_REMAP
+    "inpatient_admission_request": {
+        "user_id": "requested_by",              # after the global user → user_id rename
+        "reason":  "reason_for_admission",      # NOT NULL text in V3
+    },
     "evaluation_prescription": {},       # prescribed_by dropped+reinjected as V3 user id below
     "evaluation_sample": {},             # V2 Sample columns match V3 samples' fillable 1:1
     "inpatient_discharge_type": {},
@@ -1141,6 +1146,10 @@ _RECEIPT_METHODS = (("cash_amount", "cash"), ("mpesa_amount", "mpesa"), ("card_a
                     ("pesa_pal_card_amount", "card"), ("jambopay_amount", "jambopay"),
                     ("patientaccount_amount", "patient_account"), ("giftcard_amount", "gift_card"),
                     ("voucher_amount", "voucher"), ("loyalty_amount", "loyalty"), ("points_amount", "points"))
+
+
+_REQUISITION_STATUS = {s: s for s in ("draft", "submitted", "pending_approval", "approved", "partially_fulfilled",
+                                       "fulfilled", "rejected", "cancelled")} | {"pending": "pending_approval"}
 
 
 def _user_id_or_none(v) -> Any:
@@ -1586,6 +1595,18 @@ _PER_KEY_INJECT: dict[str, dict[str, Any]] = {
         # have none. Same pattern as schemes' SCH-<facility>-<id>.
         "code": lambda r: f"INS-{r.get('source_schema') or 'v2'}-{r.get('id')}",
     },
+    "inventory_requisition": {
+        # inv_requisitions: requisition_number (unique per org) and request_date are NOT NULL
+        "requisition_number": lambda r: f"REQ-{r.get('source_schema') or 'v2'}-{r.get('id')}",
+        "request_date":       lambda r: str(r.get("created_at") or "")[:10] or None,
+    },
+    "inventory_grn": {
+        # inv_goods_received_notes: grn_number (unique) and received_date are
+        # NOT NULL; store / supplier come from the purchase order (FETCH_SQL)
+        "grn_number":    lambda r: f"GRN-{r.get('source_schema') or 'v2'}-{r.get('id')}",
+        "received_date": lambda r: str(r.get("created_at") or "")[:10] or None,
+        "status":        lambda r: "received",
+    },
     "inventory_purchase_order": {
         # inv_purchase_orders: po_number (unique per org) and order_date are
         # NOT NULL; V2 orders have neither
@@ -1619,6 +1640,9 @@ _PER_KEY_INJECT: dict[str, dict[str, Any]] = {
     "inpatient_admission_request": {
         # V3 inp_admission_requests requires a unique request_number; V2 had none.
         "request_number": lambda r: f"REQ-{r.get('id', 'unknown')}",
+        # NOT NULL (2025_12_03_000007): when the request was made, and why
+        "requested_at":   lambda r: r.get("created_at") or r.get("updated_at"),
+        "reason_for_admission": lambda r: _blank_to_none(r.get("diagnosis")) or _NOT_RECORDED,
     },
     "inpatient_admission": {
         # V2 doctor (embedded, flattened as doctor_email) -> V3 user by email.
@@ -1726,6 +1750,15 @@ _PER_KEY_COERCIONS: dict[str, dict[str, Any]] = {
     },
     "finance_receipt": {
         "receipt_date": lambda v: str(v)[:10] if _blank_to_none(v) else None,   # a DATE column
+    },
+    # inv_requisitions.status is an enum without V2's "pending" ("Data truncated
+    # for column 'status'"): pending → pending_approval, unknown → submitted
+    "inventory_requisition": {
+        "status": lambda v: _REQUISITION_STATUS.get(str(v or "").strip().lower(), "submitted"),
+        # NOT NULL with defaults (2025_11_25_000010)
+        "approval_level":          _null_to(0),
+        "required_approval_level": _null_to(1),
+        "priority":                _null_to("normal"),
     },
     "evaluation_sample": {
         # V3 status (pending / collected / processing / completed) is NOT NULL;
@@ -3340,6 +3373,11 @@ _FK_REMAP: dict[str, dict[str, str]] = {
     "inpatient_admission_request": {
         "preferred_ward_id":     "ward",
         "preferred_bed_type_id": "bed_type",
+        # sent as raw V2 ids before
+        "patient_id":            "patient",
+        "visit_id":              "visit",
+        "requested_by":          "users",
+        "admission_type_id":     "admission_type",
     },
     # admissions.admission_type_id → admission_types.id
     # admissions.admission_request_id → admission_requests.id
@@ -3416,6 +3454,18 @@ _FK_REMAP: dict[str, dict[str, str]] = {
         "schedule_id": "theatre_schedule",
         "visit_id":    "visit",
         "patient_id":  "patient",
+    },
+    "inventory_requisition": {
+        "requesting_store_id": "store",
+        "requested_by":        "users",
+        "approved_by":         "users",
+    },
+    # inv_goods_received_notes: PO / store / supplier FK-constrained
+    "inventory_grn": {
+        "purchase_order_id": "purchase_order",
+        "store_id":          "store",
+        "supplier_id":       "supplier",
+        "received_by":       "users",
     },
     # inv_purchase_orders: supplier / store FK-constrained, created_by NOT NULL
     "inventory_purchase_order": {

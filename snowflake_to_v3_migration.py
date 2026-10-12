@@ -594,6 +594,12 @@ _CRITICAL_FK_FIELDS: dict[str, list] = {
     "finance_gl_account_group":      ["account_type_id"],
     # wait for the supplier, store and creating user rather than post V2 ids
     "inventory_purchase_order":      ["supplier_id", "store_id", "created_by"],
+    "inventory_grn":                 ["purchase_order_id", "store_id", "supplier_id"],
+    "inventory_requisition":         ["requesting_store_id"],
+    # inp_admission_requests: patient + requesting doctor NOT NULL
+    "inpatient_admission_request":   ["patient_id", "requested_by"],
+    # inv_products.category_id is FK-constrained: wait for the category
+    "inventory_product":             ["category_id"],
     "reception_patient_dependant": ["patient_id"],
     "finance_receipt":               ["issued_by"],
     # inp_beds: ward + bed type are FK-constrained — wait for them, never post V2 ids
@@ -624,6 +630,8 @@ _NULL_IF_UNRESOLVED: dict[str, set[str]] = {
     # stores are posted in parallel, so a parent may not be in V3 yet
     "inventory_store":             {"parent_store_id"},
     "inventory_purchase_order":    {"approved_by"},     # nullable in V3
+    "inventory_grn":               {"received_by"},
+    "inventory_requisition":       {"requested_by", "approved_by"},
     "evaluation_prescription":     {"return_approved_by", "return_rejected_by"},
     "finance_receipt":             {"patient_id", "invoice_id"},     # both nullable on receipts
     "theatre_booking":             {"theatre_deposit_id", "operation_procedure_id", "approved_by",
@@ -646,6 +654,13 @@ _SKIP_IF_PARENT_NOT_IN_FACILITY: dict[str, list[tuple[str, str, str]]] = {
     # 56 dispensings have no store (their prescription is missing / store 0)
     "inventory_dispensing":         [("store_id", "inventory_stores", "id"),
                                      ("visit_id", "visits", "id")],
+    # orders whose store isn't in V2's stores (kisumu_v3: stores 1 and 2) can never link
+    "inventory_purchase_order":     [("store_id", "inventory_stores", "id")],
+    "inventory_grn":                [("store_id", "inventory_stores", "id")],
+    # all 4 kisumu_v3 requisitions have store_id 0 (no store) — V3 requires one
+    "inventory_requisition":        [("requesting_store_id", "inventory_stores", "id")],
+    "gen_inventory_internal_order": [("requesting_store_id", "inventory_stores", "id"),
+                                     ("supplying_store_id", "inventory_stores", "id")],
     # 96 of 160 kisumu_v3 bed rows hang off wards / bed types deleted in V2
     # (e.g. bed 53 → ward 33, bed type 1) — inp_beds FK-constrains both
     "inpatient_bed":                [("ward_id", "inpatient_wards", "id"),
