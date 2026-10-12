@@ -177,7 +177,7 @@ class TestSkipping:
         es = m.mark_skipped([
             {"table": "reception_patient_insurance", "v3": "App\\Models\\PatientInsurance", "transform": "t"},
             {"table": "patient_insurance", "v3": "App\\Models\\PatientInsurance", "transform": "t"},
-            {"table": "users_roles", "v3": None, "transform": None},
+            {"table": "users_permissions", "v3": None, "transform": None},
             {"table": "brand_new_table", "v3": None, "transform": None},
         ])
         assert es[0]["v3"] is None and es[0]["skipped"] == "duplicate of patient_insurance"
@@ -186,8 +186,8 @@ class TestSkipping:
         assert es[3]["skipped"] is None                     # → UNACCOUNTED in the listing
 
     def test_coverage_flags_unknown_tables(self):
-        cov = xm.coverage([{"table": "a", "v3": "X", "transform": "x"}], ["a", "b", "users_roles"])
-        assert cov == {"a": "migrated", "b": "UNACCOUNTED", "users_roles": f"not migrated: {xm.SETUP}"}
+        cov = xm.coverage([{"table": "a", "v3": "X", "transform": "x"}], ["a", "b", "users_permissions"])
+        assert cov == {"a": "migrated", "b": "UNACCOUNTED", "users_permissions": f"not migrated: {xm.SETUP}"}
 
 
 # ─── twins / history / no-CLEAN-view ─────────────────────────────────────

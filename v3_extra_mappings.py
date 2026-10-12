@@ -111,6 +111,19 @@ MAPPINGS: dict[str, dict] = {
         "fk": {"result_detail_id": "investigation_result_details"},
         "critical": ["result_detail_id"],
     },
+    # ── core-service: roles ──────────────────────────────────────────────
+    # Role definitions only (Spatie roles: unique per name + guard + org; the
+    # org's own roles use guard "api"). V2's extract has no user↔role table,
+    # so assignments and permissions are set up in V3. A name the org already
+    # has (doctor, nurse …) is a duplicate → left as is.
+    "users_roles": {
+        "namespace": r"Ignite\Users\Entities\Role",
+        "namespaces": [r"Ignite\Users\Entities\Roles"],              # the older extract's name
+        "v3": r"App\Models\Role", "alias": "roles", "service": "core",
+        "keep": ["name", "guard_name", "description"],
+        "inject": {"guard_name": ("const", "api"),
+                   "description": ("join_or", ["description"], "display_name")},
+    },
     # ── inventory-service: current stock balances ────────────────────────
     # V2 store_products is one row per product + store with its on-hand
     # quantity and unit cost — exactly V3 inv_stocks (unique product + store +
@@ -398,7 +411,7 @@ NOT_MIGRATED: dict[str, str] = {
     # V3 model exists, but it isn't this data's place
     "evaluation_icd10_variations": SHARED, "symptoms": SHARED, "evaluation_tags": SHARED,
     "evaluation_reference_range": SHARED, "evaluation_investigation_approval_statuses": SHARED,
-    "users_roles": SETUP, "users_permissions": SETUP, "activations": SETUP,
+    "users_permissions": SETUP, "activations": SETUP,
     "finance_account_groups": SETUP, "finance_account_types": SETUP,
     "settings_options": SETUP, "settings_settings": SETUP,
     "inventory_inventory_stocks": "V3 stock is per product + store (+ batch); V2 rows carry the product only",
