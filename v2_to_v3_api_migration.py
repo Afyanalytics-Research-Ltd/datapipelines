@@ -424,10 +424,10 @@ NAMESPACE_MAP: dict[str, dict] = {
     r"Ignite\Evaluation\Entities\CriticalValue":             {"v3": r"App\Models\CriticalValue",               "transform": "generic"},
     r"Ignite\Evaluation\Entities\Icd10Types":                {"v3": r"App\Models\Icd10Type",                   "transform": "generic"},
     r"Ignite\Evaluation\Entities\Icd10Type":                 {"v3": r"App\Models\Icd10Type",                   "transform": "generic"},
-    r"Ignite\Evaluation\Entities\Icd10Categories":           {"v3": r"App\Models\Icd10Category",               "transform": "generic"},
-    r"Ignite\Evaluation\Entities\Icd10Category":             {"v3": r"App\Models\Icd10Category",               "transform": "generic"},
-    r"Ignite\Evaluation\Entities\Icd10Subcategories":        {"v3": r"App\Models\Icd10Subcategory",            "transform": "generic"},
-    r"Ignite\Evaluation\Entities\Icd10Subcategory":          {"v3": r"App\Models\Icd10Subcategory",            "transform": "generic"},
+    r"Ignite\Evaluation\Entities\Icd10Categories":           {"v3": r"App\Models\Icd10Category",               "transform": "eval_icd10_range"},
+    r"Ignite\Evaluation\Entities\Icd10Category":             {"v3": r"App\Models\Icd10Category",               "transform": "eval_icd10_range"},
+    r"Ignite\Evaluation\Entities\Icd10Subcategories":        {"v3": r"App\Models\Icd10Subcategory",            "transform": "eval_icd10_range"},
+    r"Ignite\Evaluation\Entities\Icd10Subcategory":          {"v3": r"App\Models\Icd10Subcategory",            "transform": "eval_icd10_range"},
     r"Ignite\Evaluation\Entities\BioReferenceRanges":        {"v3": r"App\Models\BioReferenceRange",           "transform": "generic"},
     r"Ignite\Evaluation\Entities\BioReferenceRange":         {"v3": r"App\Models\BioReferenceRange",           "transform": "generic"},
     r"Ignite\Evaluation\Entities\LabTestCategories":         {"v3": r"App\Models\LabTestCategory",             "transform": "generic"},
@@ -675,6 +675,14 @@ def _namespace_tier(ns: str) -> int:
 
 # ─── FIELD TRANSFORMS ────────────────────────────────────────────────────────
 
+# Layer 0: values inside an embedded relation blob worth keeping — lifted to a
+# flat field (only if that field is empty) before step 0 strips the blob.
+_PER_KEY_LIFT_NESTED: dict[str, dict[str, tuple[str, str]]] = {
+    # the CLEAN view carries the destination as an object ({"id": 9, "name":
+    # "Pharmacy", …}) rather than a flattened destination_name
+    "evaluation_visit_destination": {"destination_name": ("destination", "name")},
+}
+
 # Layer 1: global boolean renames (apply to every record)
 _GLOBAL_BOOL_RENAMES: dict[str, str] = {
     "active":     "is_active",
@@ -709,6 +717,9 @@ _PER_KEY_RENAMES: dict[str, dict[str, str]] = {
         "finish_at":        "completed_at",
     },
     "reception_patient_nok": {},
+    # V2 ICD-10 categories/subcategories are ranges (code_from..code_to);
+    # V3 needs a code (see _PER_KEY_INJECT)
+    "eval_icd10_range": {},
     "reception_patient_document": {
         "filename": "file_name",
         "document": "file_path",
@@ -1355,9 +1366,26 @@ _PER_KEY_INJECT: dict[str, dict[str, Any]] = {
     },
     "evaluation_visit_destination": {
         "arrived_at": lambda r: r.get("begin_at") or r.get("created_at"),
+        # the destination's name (lifted from the destination object); on
+        # rows without one, V2's free-text department ("Pharmacy", "Nursing")
+        "department_name": lambda r: str(r.get("department") or "").strip() or None,
         # V2 has no departments; one V3 department per V2 destination is
         # created before this job runs (ensure_departments_from_destinations)
         "department_id": lambda r: _v3_department_id_by_name(r.get("department_name")),
+    },
+    "reception_patient_nok": {
+        # NOT NULL in V3; V2 next of kin carry neither relationship nor relationship_id
+        "relationship": lambda r: _NOT_RECORDED,
+    },
+    "eval_icd10_range": {
+        # V3 code is NOT NULL + unique; V2 has the range: A00..B99 → "A00-B99"
+        "code": lambda r: "-".join(dict.fromkeys(
+            c for c in (str(r.get("code_from") or "").strip(), str(r.get("code_to") or "").strip()) if c)) or None,
+    },
+    "settings_scheme": {
+        # V3 code is NOT NULL, unique per org; every V2 scheme's code is empty.
+        # source_schema keeps two facilities' scheme #12 apart.
+        "code": lambda r: f"SCH-{r.get('source_schema') or 'v2'}-{r.get('id')}",
     },
     "reception_patient_document": {
         # V2 stores the literal string "null" (or "2") as document_type and
@@ -1542,6 +1570,9 @@ def transform_record(record: dict, transform_key: str, org_cfg: dict, facility: 
     # FIRST, before any per-key coercion constructs its own intentional
     # nested value (e.g. eye_exam's right_eye_data/left_eye_data), so those
     # survive untouched.
+    for field, (parent, key) in _PER_KEY_LIFT_NESTED.get(tk, {}).items():
+        if not out.get(field) and isinstance(out.get(parent), dict):
+            out[field] = out[parent].get(key)
     for field in list(out.keys()):
         v = out[field]
         if isinstance(v, dict) or (isinstance(v, list) and v and isinstance(v[0], dict)):

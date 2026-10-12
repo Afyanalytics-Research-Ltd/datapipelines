@@ -583,6 +583,9 @@ _CRITICAL_FK_FIELDS: dict[str, list] = {
     # going out with the V2 investigation id
     "evaluation_inv_result":  ["investigation_id", "visit_id"],
     "evaluation_investigation": ["visit_id"],
+    # schemes wait for their insurance company (settings_insurance) rather
+    # than going out with the V2 company id
+    "settings_scheme":        ["company_id"],
     "evaluation_prescription":  ["visit_id"],
     # an unresolved patient went out as the raw V2 id → FK 500 on every record
     "reception_patient_nok":      ["patient_id"],
@@ -1203,8 +1206,18 @@ def ensure_departments_from_destinations(facility: str) -> None:
     if it doesn't exist yet (matched by name, so re-runs create nothing)."""
     view = f"{sf_schema(facility, 'CLEAN')}.EVALUATION_VISIT_DESTINATIONS"
     with _snowflake_connect() as conn:
-        names = sorted({" ".join(str(r[0]).split()) for r in conn.cursor().execute(
-            f"SELECT DISTINCT destination_name FROM {view} WHERE NULLIF(TRIM(destination_name), '') IS NOT NULL"
+        cur = conn.cursor()
+        cur.execute(f"SELECT * FROM {view} LIMIT 0")
+        cols = {d[0].lower() for d in cur.description}
+        # the same names transform_record gives department_name: a flattened
+        # destination_name, the destination object's name, else V2's department
+        exprs = [e for c, e in (("destination_name", "destination_name::STRING"),
+                                ("destination", "TRY_PARSE_JSON(destination::STRING):name::STRING"),
+                                ("department", "department::STRING")) if c in cols]
+        if not exprs:
+            raise RuntimeError(f"{view} has none of destination_name / destination / department")
+        names = sorted({" ".join(str(r[0]).split()) for e in exprs for r in cur.execute(
+            f"SELECT DISTINCT {e} FROM {view} WHERE NULLIF(TRIM({e}), '') IS NOT NULL"
         ).fetchall()})
     v2v3.reset_v3_department_cache()
     missing = [n for n in names if v2v3._v3_department_id_by_name(n) is None]
