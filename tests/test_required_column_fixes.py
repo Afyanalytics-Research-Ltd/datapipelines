@@ -117,3 +117,109 @@ def test_scheme_code_and_company_is_critical():
     assert "company_id" in m._CRITICAL_FK_FIELDS["settings_scheme"]
     real = v2v3.transform_record({"id": 1, "code": "NHIF-01", "company": 366}, "settings_scheme", ORG, "kisumu_v3")
     assert real["code"] == "NHIF-01"
+
+
+# ── second pass (2026-10-12 afternoon run) ────────────────────────────────────
+
+def test_icd10_description_from_name():
+    out = v2v3.transform_record({"id": 6, "name": "Neoplasms", "code_from": "C00", "code_to": "D49"},
+                                "eval_icd10_range", ORG, "kisumu_v3")
+    assert out["description"] == "Neoplasms"
+
+
+def test_text_flags_become_integers():
+    out = v2v3.transform_record({"id": 841109, "allow_substitution": "false", "for_discharge": "TRUE"},
+                                "evaluation_prescription", ORG, "kisumu_v3")
+    assert {k: out[k] for k in ("allow_substitution", "for_discharge") if k in out} in (
+        {"allow_substitution": 0, "for_discharge": 1}, {"allow_substitution": 0}, {"for_discharge": 1}, {})
+    assert "false" not in out.values() and "TRUE" not in out.values()
+    bed = v2v3.transform_record({"id": 15, "is_available": "true", "number": "B1"}, "inpatient_bed", ORG, "kisumu_v3")
+    assert bed["is_available"] == 1
+    gen = v2v3.transform_record({"id": 1, "flag": "false", "note": "true story"}, "generic", ORG, "kisumu_v3")
+    assert gen == {"id": 1, "flag": 0, "note": "true story"}
+
+
+def test_active_flag_text_false_is_inactive():
+    # "false" used to be truthy → status "active"
+    out = v2v3.transform_record({"id": 1, "name": "x", "active": "false"}, "settings_scheme", ORG, "kisumu_v3")
+    assert out["status"] == "inactive"
+
+
+def test_blank_unit_is_skipped():
+    t = ns(r"Ignite\Inventory\Entities\Units")
+    assert v2v3.transform_record({"id": 34696, "name": "", "symbol": ""}, t, ORG, "kisumu_v3") is None
+    assert v2v3.transform_record({"id": 1, "name": "Tablet"}, t, ORG, "kisumu_v3")["name"] == "Tablet"
+
+
+def test_gl_account_group_type_and_code():
+    t = ns(r"Ignite\Finance\Entities\GlAccountGroups")
+    out = v2v3.transform_record({"id": 5, "name": "Costs and Expenses", "type": 1}, t, ORG, "kisumu_v3")
+    assert out["account_type_id"] == 1 and "type" not in out
+    assert out["code"] == "COSTS_AND_EXPENSES"
+    assert v2v3._FK_REMAP[t] == {"account_type_id": "gl_account_type"}
+    assert m._CRITICAL_FK_FIELDS[t] == ["account_type_id"]
+
+
+def test_examination_review_visit_is_remapped_and_critical():
+    t = ns(r"Ignite\Evaluation\Entities\ExaminationReviews")
+    assert v2v3._FK_REMAP[t] == {"visit_id": "visit"}
+    assert m._CRITICAL_FK_FIELDS[t] == ["visit_id"]
+
+
+def test_null_flag_defaults():
+    assert v2v3._V3_NULL_DEFAULTS["appear_bold"] == 0
+    assert v2v3._V3_NULL_DEFAULTS["use_bio_ref_flagging"] == 0
+
+
+class _R:
+    def __init__(self, status, body):
+        import json
+        self.status_code, self._b, self.text = status, body, json.dumps(body)
+        self.ok = status < 400
+
+    def json(self):
+        return self._b
+
+    def raise_for_status(self):
+        pass
+
+
+def _post(monkeypatch, responses):
+    sent = []
+
+    def fake(service, body, timeout=None):
+        sent.append(dict(body["data"]))
+        return responses.pop(0)
+    monkeypatch.setattr(v2v3, "_gateway_post", fake)
+    monkeypatch.setattr(v2v3, "_write_dead_letter", lambda *a, **k: None)
+    monkeypatch.setattr(v2v3, "V3_POST_THROTTLE", 0)
+    return sent
+
+
+def test_422_insert_rejected_null_column_gets_default(monkeypatch):
+    sent = _post(monkeypatch, [
+        _R(422, {"success": False, "message": "insert rejected: Column 'appear_bold' cannot be null"}),
+        _R(201, {"success": True, "data": {"id": 99}}),
+    ])
+    v2v3._post_to_v3_batch(r"App\Models\TemplateLab", ORG, {"id": 1534, "appear_bold": None},
+                           alias_override="template_labs", service_override="evaluation")
+    assert sent[1]["appear_bold"] == 0
+
+
+def test_422_duplicate_code_retries_with_v2_id(monkeypatch):
+    sent = _post(monkeypatch, [
+        _R(422, {"success": False, "message": "insert rejected: Duplicate entry '4-ITM000321' for key "
+                                              "'inv_products.inv_products_org_code_unique'"}),
+        _R(201, {"success": True, "data": {"id": 99}}),
+    ])
+    v2v3._post_to_v3_batch(r"App\Models\Product", ORG, {"id": 37466, "code": "ITM000321"},
+                           alias_override="product", service_override="inventory")
+    assert [s["code"] for s in sent] == ["ITM000321", "ITM000321-37466"]
+
+
+def test_422_other_validation_still_dead_letters(monkeypatch):
+    import pytest
+    _post(monkeypatch, [_R(422, {"success": False, "message": "The name field is required."})])
+    with pytest.raises(v2v3.RecordDeadLettered):
+        v2v3._post_to_v3_batch(r"App\Models\Unit", ORG, {"id": 1}, alias_override="unit",
+                               service_override="inventory")

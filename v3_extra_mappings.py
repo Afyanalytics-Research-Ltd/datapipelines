@@ -62,6 +62,63 @@ MAPPINGS: dict[str, dict] = {
         "critical": ["visit_id", "patient_id"],
         "null_if_unresolved": ["user_id"],
     },
+    "ophthalmology_notes": {
+        "namespace": r"Ignite\Evaluation\Entities\OphthalmologyNotes",
+        "v3": r"App\Models\OphthalmologyNotes", "alias": "ophthalmology_notes", "service": "evaluation",
+        "keep": ["visit_id", "patient_id", "user_id", "ocular_history", "presenting_complaints",
+                 "past_medical_history", "systems_review", "examination", "investigations", "applanation",
+                 "diagnosis", "treatment_plan", "comments", "additional_examination", "recorded_date"],
+        "inject": {"patient_id": ("patient_for_visit",), "recorded_date": ("copy", "created_at")},
+        "fk": {"visit_id": "visit", "patient_id": "patient", "user_id": "users"},
+        "critical": ["visit_id"],
+        "null_if_unresolved": ["patient_id", "user_id"],
+    },
+    "immunization_notes": {
+        "namespace": r"Ignite\Evaluation\Entities\ImmunizationNote",
+        "v3": r"App\Models\ImmunizationNote", "alias": "immunization_notes", "service": "evaluation",
+        "renames": {"lot_number": "vaccine_batch_no", "dose": "dose_number", "date_given": "administration_date"},
+        "keep": ["visit_id", "patient_id", "vaccine_name", "vaccine_batch_no", "dose_number",
+                 "administration_date", "notes"],
+        "inject": {"patient_id": ("patient_for_visit",), "notes": ("prefix", "Manufacturer: ", "manufacturer")},
+        "fk": {"visit_id": "visit", "patient_id": "patient"},
+        "critical": ["visit_id"],
+        "null_if_unresolved": ["patient_id"],
+    },
+    # ── inpatient-service ────────────────────────────────────────────────
+    "inpatient_daily_charges_verifications": {
+        "namespace": r"Ignite\Inpatient\Entities\DailyChargesVerifications",
+        "v3": r"App\Models\DailyChargesVerification", "alias": "daily_charges_verification", "service": "inpatient",
+        # V2 links the visit, V3 the admission (admission_id + user_id NOT NULL, unique(admission_id, date))
+        "keep": ["admission_id", "date", "user_id"],
+        "inject": {"admission_id": ("admission_for_visit",)},
+        "fk": {"admission_id": "admission", "user_id": "users"},
+        "critical": ["admission_id", "user_id"],
+    },
+    "inpatient_blood_transfusion": {
+        "namespace": r"Ignite\Inpatient\Entities\BloodTransfusion",
+        "v3": r"App\Models\BloodTransfusion", "alias": "blood_transfusion", "service": "inpatient",
+        # every V2 row has date_recorded '0000-00-00' and time_recorded '' — moved aside (not posted);
+        # the date comes from created_at instead
+        "renames": {"date_recorded": "v2_date_recorded", "time_recorded": "v2_time_recorded"},
+        "keep": ["admission_id", "visit_id", "user_id", "bp_systolic", "bp_diastolic", "temperature",
+                 "respiration", "remarks", "transfusion_time", "date_recorded"],
+        "inject": {"date_recorded": ("copy", "created_at")},
+        "fk": {"admission_id": "admission", "visit_id": "visit", "user_id": "users"},
+        "critical": ["admission_id", "visit_id", "user_id"],      # all NOT NULL
+    },
+    "inpatient_fluid_balances": {
+        "namespace": r"Ignite\Inpatient\Entities\FluidBalance",
+        "v3": r"App\Models\FluidBalance", "alias": "fluid_balance", "service": "inpatient",
+        # V2 `type` is the fluid ('normal saline', 'DNS'); V3 `type` is an enum (iv/urine/…) — the fluid
+        # and its route (IV/PO/NGT) go into remarks, V3 type stays null
+        "renames": {"type": "v2_fluid", "remarks": "v2_remarks"},
+        "keep": ["admission_id", "patient_id", "recorded_at", "io_type", "amount", "remarks"],
+        "inject": {"io_type": ("const", "input"), "recorded_at": ("copy", "created_at"),
+                   "remarks": ("join", "input_type", "v2_fluid", "v2_remarks")},
+        "fk": {"admission_id": "admission", "patient_id": "patient"},
+        "critical": ["admission_id"],
+        "null_if_unresolved": ["patient_id"],
+    },
     "evaluation_age_groups": {
         "namespace": r"Ignite\Evaluation\Entities\AgeGroups",
         "v3": r"App\Models\AgeGroup", "alias": "age_groups", "service": "evaluation",
@@ -288,6 +345,8 @@ SETUP = "organisation setup — the destination org uses its own"
 NO_MODEL = "no V3 model for this data — needs a decision from the V3 backend team"
 LOG = "audit / view log or system bookkeeping — not part of the clinical or financial record"
 PENDING_KEY = "theatre / dialysis model — gateway not reachable without MODEL_GATEWAY_MIGRATION_KEY"
+DYNAMICS = "Microsoft Dynamics sync bookkeeping (what V2 sent to / failed to send to Dynamics) — not part of the record"
+REPORT = "MOH register / report rows derived from the clinical and billing records — V3 builds its reports from its own data"
 
 NOT_MIGRATED: dict[str, str] = {
     # V3 model exists, but it isn't this data's place
@@ -330,6 +389,90 @@ NOT_MIGRATED: dict[str, str] = {
     "inpatient_prescriptions_view_logs": LOG, "out_patient_notes_history_view_log": LOG,
     "inpatient_investigation_result_view_logs": LOG, "inpatient_history_view_logs": LOG,
     "doctor_notes_view_logs": LOG, "core_notifications": LOG, "system_logs": LOG,
+    "inpatient_doctor_note_view_logs": LOG, "inpatient_nurse_notes_logs": LOG, "inpatient_prescription_logs": LOG,
+    "outpatient_notes_history_views": LOG, "core_approval_action_logs": LOG,
+    "dynamic_item_sents": DYNAMICS, "dynamics_failures": DYNAMICS, "dynamics_invoice_receipt_sents": DYNAMICS,
+    "dynamics_invoices_sent": DYNAMICS, "dynamics_unsent_data_items": DYNAMICS,
+    # MOH registers / report dumps
+    "moh204as": REPORT, "moh204_bs": REPORT, "moh717_outpatients": REPORT, "evaluation_register_notes705s": REPORT,
+    "registers_705_diseases": REPORT, "invoice_whole_dumps": REPORT, "revenue_dumps": REPORT,
+    # organisation setup
+    "settings_organization_table": SETUP, "settings_practice": SETUP, "settings_registration_field_settings": SETUP,
+    "core_approval_categories": SETUP, "core_email_groups": SETUP,
+    # payments: no V3 model, like the other finance_payments_* tables
+    "finance_payments_cheque": NO_MODEL, "finance_payments_pesapal_card": NO_MODEL,
+    "finance_payments_pesapal_mpesa": NO_MODEL, "payments_cheque": NO_MODEL,
+    # inpatient (checked against the V3 models + migrations 2026-10-12)
+    "inpatient_administer_drugs": "V3 drug_administration needs drug_name, dosage, route, frequency and "
+                                  "scheduled_time (NOT NULL); V2 rows carry only prescription_id + an administered "
+                                  "flag — and V3's model table doesn't match its migration (gateway reads 500)",
+    "inpatient_blood_pressures": "V3 keeps BP in inp_vitals, which needs recorded_by (NOT NULL); V2 rows carry no user",
+    "inpatient_feedings": "V2 rows are feeding-chart observations (temp, resp, urine, stool …) with no V3 column; "
+                          "V3 feeding_plan is a diet plan",
+    "partograph_vitals": "V3 PartographVitals has no migration (no table) — gateway reads 500",
+    "report_on_labour": NO_MODEL, "summary_of_labour": NO_MODEL,
+    "deposits": SETUP + " (V3 keeps the deposit on admission types)",
+    "inpatient_insurance_maximum_amounts": NO_MODEL,
+    "settings_evaluation_wards": SETUP,
+    "inpatient_visit_charges": "V3 VisitCharge (inp_visit_charges) matches V2 almost 1:1 but no gateway alias "
+                               "exposes it — needs one from the V3 backend",
+    # inventory (checked against the V3 models + migrations 2026-10-12)
+    "inventory_stocks": "V3 stock is per product + store (+ batch); V2 rows carry the product only",
+    "inventory_batch": "V3 batch needs batch_no, store_id and cost_price; V2 rows have no store (0/1333) and a "
+                       "batch number on only 113",
+    "inventory_stock_movements": "V3 stock_movement needs a type enum, a direction, from/to store and a NOT NULL "
+                                 "user_id; V2 has 20 free-text actions and signed quantities — history only, no "
+                                 "V3 stock rows to match",
+    "inventory_stock_adjustments": NO_MODEL,
+    "inventory_store_stock_adjustments": "product_id and store_id empty on all 9,250 rows (only store_product_id, "
+                                         "and store_products isn't migrated); same adjustments as the stock movements",
+    "inventory_store_knock_offs": "one 2023 write-off with no store — a stock_movement in V3, follows inventory_stock_movements",
+    "inventory_product_price": "V2 price history; V3 keeps the price on the product (carried from inventory_products) "
+                               "and has no price-history model",
+    "inventory_dispensing": "POS sale lines → V3 inv_sale_items, which the gateway doesn't expose",
+    "inventory_evaluation_dispensing_details": "dispensing lines → V3 inv_sale_items, which the gateway doesn't "
+                                              "expose (only the sale header is migrated)",
+    "inventory_store_dispatched_orders": "V3 records dispatch as quantity_dispatched on the store order item — an "
+                                         "update to that row, not a new one",
+    "inventory_store_received_orders": "V3 records receipt as quantity_received on the store order item — an "
+                                       "update to that row, not a new one",
+    "inventory_store_prescriptions": "V2 pharmacy queue (prescription routed to a store); V3 has no store-prescription "
+                                     "model — dispensing becomes a sale",
+    "inventory_stock_takes": "3 abandoned 2023-24 stock takes (never completed); V3 stock_take has no tenant "
+                             "column on the gateway",
+    "inventory_stock_take_details": "the 1 line of an abandoned V2 stock take (see inventory_stock_takes)",
+    # evaluation (checked against the V3 models + migrations 2026-10-12)
+    "evaluation_procedure_tags": SHARED, "hemogram_titles": SHARED,
+    "evaluation_subprocedures": "V3 SubProcedure's $fillable is only organization_id and its gateway alias has "
+                                "no tenant column — shared lab config",
+    "evaluation_result_details_ranges": "V3 result_detail_id is a NOT NULL FK to investigation result details, "
+                                        "which aren't migrated (NO_MODEL) — no parent to link to",
+    "visit_symptoms": "V2 rows are IDSR case records (disease, county, list of V2 symptom ids); V3 visit_symptoms is "
+                      "one row per symptom needing a V3 symptom_id from the shared symptoms table — no id map",
+    "settings_evaluation_actions": SETUP,
+    "evaluation_investigation_analytics_groups": "V3 result analytics groups have no gateway model; V2 holds one test row",
+    "blocks": NO_MODEL, "sub_blocks": NO_MODEL,
+    "own_prescriptions": "patient's own (brought-in) drugs — V3 prescriptions has no own-drug flag, so they would "
+                         "become dispensable / billable prescriptions sharing the prescriptions id map; needs a decision",
+    # finance / settings / users (checked against the V3 models + migrations 2026-10-12)
+    "finance_credit_notes": "V3 credit_note needs total_amount (NOT NULL) and created_by; V2 notes carry no "
+                            "amount (only 6 of 52 have a detail row) and point at receipts, which aren't migrated",
+    "finance_credit_note_details": "child of finance_credit_notes, which isn't migrated (V3 credit_note_id is a required FK)",
+    "finance_service_charges": "V3 service_charges needs service_name + a service_type enum; the 2 V2 rows (2019) "
+                               "are an opaque service_code + amount, and cycle 'hours' isn't in V3's enum",
+    "finance_patient_account_transactions": "V3 needs balance_before / balance_after (NOT NULL) and an enum "
+                                            "transaction_type; V2 rows have neither and link V2 payments, which aren't migrated",
+    "finance_change_insurances": NO_MODEL,
+    "finance_client_payment_transactions": "V3 mpesa_transactions has no gateway model; V2 rows are M-Pesa prompts "
+                                           "tied to invoices / payments, which aren't migrated",
+    "finance_item_ledgers": "external ERP item-ledger import keyed by item no / location code text — not a V2 record",
+    "split_bills": "V3 split_bills has no gateway model and no visit, amount or user columns",
+    "settings_scheme_types": "no V3 table — V3 keeps the scheme type name on core_insurance_schemes.type",
+    "settings_rooms": "no V3 room model; consultation rooms would be core service_destinations (see settings_destinations)",
+    "settings_pos": SETUP + " (pos_configs is facility-specific — the gateway marks it 'no safe copy')",
+    "user_specialities": SETUP + " (2 V2 rows, one a test entry; only users link to them)",
+    "users_user_profiles": "profiles belong to the user accounts the V3 backend creates; user_profiles has no "
+                           "gateway model and needs user_id, which waits for users",
     # theatre / dialysis
     "theatre_medic": PENDING_KEY, "theatre_operation_procedures": PENDING_KEY,
     "theatre_operation_investigations": PENDING_KEY, "theatre_before_leaving_theatres": PENDING_KEY,
@@ -337,6 +480,11 @@ NOT_MIGRATED: dict[str, str] = {
     "theatre_theatre_payments": PENDING_KEY, "theatre_theatre_operation_pulses": PENDING_KEY,
     "theatre_theatre_operation_fluids": PENDING_KEY, "theatre_theatre_deposits": PENDING_KEY,
     "theatre_consumable_requirements": PENDING_KEY,
+    "theatre_anaesthetist_checks": PENDING_KEY, "theatre_before_anaesthesias": PENDING_KEY,
+    "theatre_before_skin_incisions": PENDING_KEY, "theatre_deposits": PENDING_KEY,
+    "theatre_doctor_checks": PENDING_KEY, "theatre_nurse_check": PENDING_KEY, "theatre_nurse_checks": PENDING_KEY,
+    "theatre_operation_fluids": PENDING_KEY, "theatre_operation_medics": PENDING_KEY,
+    "theatre_operation_pulses": PENDING_KEY, "theatre_payments": PENDING_KEY,
     "dialysis_patients": PENDING_KEY, "dialysis_chairs": PENDING_KEY, "dialysis_schedules": PENDING_KEY,
     "dialysis_machines": PENDING_KEY, "dialysis_wards": PENDING_KEY, "dialysis_ward_types": PENDING_KEY,
     "dialysis_sessions": PENDING_KEY, "dialysis_plants": PENDING_KEY, "dialysis_vascular_accesses": PENDING_KEY,

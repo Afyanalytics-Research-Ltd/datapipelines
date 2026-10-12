@@ -466,14 +466,14 @@ NAMESPACE_MAP: dict[str, dict] = {
     r"Ignite\Finance\Entities\TaxCategory":                  {"v3": r"App\Models\TaxCategory",                 "transform": "generic"},
     r"Ignite\Finance\Entities\GlAccountTypes":               {"v3": r"App\Models\GlAccountType",               "transform": "generic"},
     r"Ignite\Finance\Entities\GlAccountType":                {"v3": r"App\Models\GlAccountType",               "transform": "generic"},
-    r"Ignite\Finance\Entities\GlAccountGroups":              {"v3": r"App\Models\GlAccountGroup",              "transform": "generic"},
-    r"Ignite\Finance\Entities\GlAccountGroup":               {"v3": r"App\Models\GlAccountGroup",              "transform": "generic"},
+    r"Ignite\Finance\Entities\GlAccountGroups":              {"v3": r"App\Models\GlAccountGroup",              "transform": "finance_gl_account_group"},
+    r"Ignite\Finance\Entities\GlAccountGroup":               {"v3": r"App\Models\GlAccountGroup",              "transform": "finance_gl_account_group"},
     r"Ignite\Finance\Entities\Charges":                      {"v3": r"App\Models\Charge",                      "transform": "generic"},
     r"Ignite\Finance\Entities\Charge":                       {"v3": r"App\Models\Charge",                      "transform": "generic"},
 
     # Inventory config: units → categories (self-ref) → suppliers → stores
-    r"Ignite\Inventory\Entities\Units":                      {"v3": r"App\Models\Unit",                        "transform": "generic"},
-    r"Ignite\Inventory\Entities\Unit":                       {"v3": r"App\Models\Unit",                        "transform": "generic"},
+    r"Ignite\Inventory\Entities\Units":                      {"v3": r"App\Models\Unit",                        "transform": "inventory_unit"},
+    r"Ignite\Inventory\Entities\Unit":                       {"v3": r"App\Models\Unit",                        "transform": "inventory_unit"},
     r"Ignite\Inventory\Entities\Categories":                 {"v3": r"App\Models\ProductCategory",             "transform": "inventory_category"},
     r"Ignite\Inventory\Entities\Category":                   {"v3": r"App\Models\ProductCategory",             "transform": "inventory_category"},
     r"Ignite\Inventory\Entities\Suppliers":                  {"v3": r"App\Models\Supplier",                    "transform": "generic"},
@@ -589,8 +589,8 @@ NAMESPACE_MAP: dict[str, dict] = {
     r"Ignite\Evaluation\Entities\DoctorNote":                {"v3": r"App\Models\DoctorNote",                  "transform": "evaluation_doctor_note"},
     r"Ignite\Evaluation\Entities\Prescriptions":             {"v3": r"App\Models\Prescription",                "transform": "evaluation_prescription"},
     r"Ignite\Evaluation\Entities\Prescription":              {"v3": r"App\Models\Prescription",                "transform": "evaluation_prescription"},
-    r"Ignite\Evaluation\Entities\ExaminationReviews":        {"v3": r"App\Models\ExaminationReview",           "transform": "generic"},
-    r"Ignite\Evaluation\Entities\ExaminationReview":         {"v3": r"App\Models\ExaminationReview",           "transform": "generic"},
+    r"Ignite\Evaluation\Entities\ExaminationReviews":        {"v3": r"App\Models\ExaminationReview",           "transform": "evaluation_examination_review"},
+    r"Ignite\Evaluation\Entities\ExaminationReview":         {"v3": r"App\Models\ExaminationReview",           "transform": "evaluation_examination_review"},
     r"Ignite\Evaluation\Entities\EyeExams":                  {"v3": r"App\Models\EyeExam",                     "transform": "evaluation_eye_exam"},
     r"Ignite\Evaluation\Entities\EyeExam":                   {"v3": r"App\Models\EyeExam",                     "transform": "evaluation_eye_exam"},
     # Investigations before results (result.investigation_id → investigations.id)
@@ -720,6 +720,10 @@ _PER_KEY_RENAMES: dict[str, dict[str, str]] = {
     # V2 ICD-10 categories/subcategories are ranges (code_from..code_to);
     # V3 needs a code (see _PER_KEY_INJECT)
     "eval_icd10_range": {},
+    # V2's group → type link is a bare `type` (1 Profit & Loss, 2 Balance Sheet …)
+    "finance_gl_account_group": {"type": "account_type_id"},
+    "inventory_unit": {},
+    "evaluation_examination_review": {},
     "reception_patient_document": {
         "filename": "file_name",
         "document": "file_path",
@@ -1033,6 +1037,8 @@ _PER_KEY_REQUIRED_FIELDS: dict[str, list] = {
     "evaluation_visit_destination": ["department_id"],
     "settings_insurance":      ["name"],
     "eval_procedure_category": ["name"],
+    # V2 has blank unit rows (no name, symbol or description) — nothing to migrate
+    "inventory_unit":          ["name"],
     "settings_user":           ["email"],
     "evaluation_inv_result":   ["investigation_id", "patient_id"],
     "outpatient_vital":        ["patient_id"],
@@ -1059,6 +1065,8 @@ _V3_NULL_DEFAULTS: dict[str, Any] = {
     "admitting_doctor_id":  1,
     "admission_diagnosis":  "Not specified",
     "is_a_split":           0,            # V2 had no split-prescription concept
+    "appear_bold":          0,            # template_labs flag, null on some V2 rows
+    "use_bio_ref_flagging": 0,            # procedures flag, null on some V2 rows
 }
 
 # Layer 2: coercions — value-level transforms applied after renaming.
@@ -1381,6 +1389,12 @@ _PER_KEY_INJECT: dict[str, dict[str, Any]] = {
         # V3 code is NOT NULL + unique; V2 has the range: A00..B99 → "A00-B99"
         "code": lambda r: "-".join(dict.fromkeys(
             c for c in (str(r.get("code_from") or "").strip(), str(r.get("code_to") or "").strip()) if c)) or None,
+        # NOT NULL in V3; V2 has only the name
+        "description": lambda r: r.get("name"),
+    },
+    "finance_gl_account_group": {
+        # gl_account_groups.code is NOT NULL, varchar(20), unique per org; V2 groups only have a name
+        "code": lambda r: "_".join(str(r.get("name") or f"GROUP {r.get('id')}").upper().split())[:20],
     },
     "settings_scheme": {
         # V3 code is NOT NULL, unique per org; every V2 scheme's code is empty.
@@ -1602,6 +1616,13 @@ def transform_record(record: dict, transform_key: str, org_cfg: dict, facility: 
     for field, v in out.items():
         if field.endswith("_id") and field not in _ZERO_IS_NOT_NULL and v in (0, "0"):
             out[field] = None
+
+    # 3c. A V2 flag column holding both 0/1 and true/false is flattened as
+    # text, so it arrives as 'true'/'false' — V3's tinyint columns reject
+    # that ("Incorrect integer value: 'false' for column 'for_discharge'").
+    for field, v in out.items():
+        if isinstance(v, str) and v.lower() in ("true", "false"):
+            out[field] = int(v.lower() == "true")
 
     # 4. Per-key drops (fields that cannot be mapped in API-to-API)
     for field in _PER_KEY_DROP_FIELDS.get(tk, []):
@@ -2404,7 +2425,7 @@ def _post_to_v3_batch(
     if not record.get(body["match_on"]):
         body.pop("match_on")
 
-    attempt, wait, _patched = 0, default_retry_wait, False
+    attempt, wait, _patched, _code_suffixed = 0, default_retry_wait, False, False
     gw_attempt, gw_wait = 0, V3_RETRY_WAIT
     while True:
         attempt += 1
@@ -2434,7 +2455,10 @@ def _post_to_v3_batch(
                 time.sleep(retry_after)
                 continue
 
-            if r.status_code == 500:
+            # The gateway now answers a rejected insert with 422 "insert
+            # rejected: <SQL error>" where it used to 500 — same errors, same
+            # recovery (NULL default, unknown column, duplicate).
+            if r.status_code == 500 or (r.status_code == 422 and "insert rejected" in r.text):
                 try:
                     err_body = r.json()
                 except Exception:
@@ -2468,25 +2492,37 @@ def _post_to_v3_batch(
                     default = _V3_NULL_DEFAULTS.get(col)
                     if default is not None and body["data"].get(col) is None:
                         log.warning(
-                            "  V3 500 id=%-6s NULL constraint on '%s' — injecting default %r and retrying",
-                            rec_id, col, default,
+                            "  V3 %s id=%-6s NULL constraint on '%s' — injecting default %r and retrying",
+                            r.status_code, rec_id, col, default,
                         )
                         body["data"] = {**body["data"], col: default}
                         _patched = True
                         continue  # one retry with the patched record
                     log.error(
-                        "  V3 500 id=%-6s NULL constraint on '%s' — no default in _V3_NULL_DEFAULTS "
+                        "  V3 %s id=%-6s NULL constraint on '%s' — no default in _V3_NULL_DEFAULTS "
                         "→ dead-letter  |  reason: %s",
-                        rec_id, col, reason,
+                        r.status_code, rec_id, col, reason,
                     )
                     _write_dead_letter(v3_namespace, record, err_body)
                     raise RecordDeadLettered()
 
+                # Category 1.5 — a code another record already holds (V2 has
+                # products sharing a code, e.g. two "ITM000321"): a different
+                # record, not this one again — retry once with its V2 id appended.
+                if (re.search(r"Duplicate entry '[^']*' for key '[^']*code_unique'", debug_msg)
+                        and body["data"].get("code") and not _code_suffixed):
+                    new_code = f"{body['data']['code']}-{rec_id}"
+                    log.warning("  V3 %s id=%-6s code %r already taken — retrying as %r",
+                                r.status_code, rec_id, body["data"]["code"], new_code)
+                    body["data"] = {**body["data"], "code": new_code}
+                    _code_suffixed = True
+                    continue
+
                 # Category 2 — Duplicate entry: record already exists in V3, skip silently
                 if "Duplicate entry" in debug_msg:
                     log.info(
-                        "  V3 500 id=%-6s duplicate — already exists in V3, skipping  |  reason: %s",
-                        rec_id, reason,
+                        "  V3 %s id=%-6s duplicate — already exists in V3, skipping  |  reason: %s",
+                        r.status_code, rec_id, reason,
                     )
                     return
 
@@ -2497,15 +2533,15 @@ def _post_to_v3_batch(
                     col = unknown_col.group(1)
                     if col in body["data"]:
                         log.warning(
-                            "  V3 500 id=%-6s Unknown column '%s' — dropping and retrying",
-                            rec_id, col,
+                            "  V3 %s id=%-6s Unknown column '%s' — dropping and retrying",
+                            r.status_code, rec_id, col,
                         )
                         body["data"] = {k: v for k, v in body["data"].items() if k != col}
                         continue
                     # Column isn't in our payload (computed by SQL) — nothing to strip
                     log.error(
-                        "  V3 500 id=%-6s Unknown column '%s' not in payload → dead-letter",
-                        rec_id, col,
+                        "  V3 %s id=%-6s Unknown column '%s' not in payload → dead-letter",
+                        r.status_code, rec_id, col,
                     )
                     _write_dead_letter(v3_namespace, record, err_body)
                     raise RecordDeadLettered()
@@ -2513,8 +2549,8 @@ def _post_to_v3_batch(
                 # Category 3 — Generic server fault: dead-letter immediately, no retry.
                 # 500s on insert are almost always data issues, not transient faults.
                 log.error(
-                    "  V3 500 id=%-6s server fault → dead-letter  |  reason: %s",
-                    rec_id, reason,
+                    "  V3 %s id=%-6s server fault → dead-letter  |  reason: %s",
+                    r.status_code, rec_id, reason,
                 )
                 # import pdb;pdb.set_trace()
                 _write_dead_letter(v3_namespace, record, err_body)
@@ -3094,6 +3130,15 @@ _FK_REMAP: dict[str, dict[str, str]] = {
     # doctor_notes.visit_id → visits.id  (patient_id is injected via _PER_KEY_INJECT)
     "evaluation_doctor_note": {
         "visit_id": "visit",
+    },
+    # evaluation_examination_reviews.visit_id → visits.id (FK-constrained)
+    "evaluation_examination_review": {
+        "visit_id": "visit",
+    },
+    # gl_account_groups.account_type_id → gl_account_types (here, not only in
+    # _NS_FK_REMAP, so _ensure_id_maps matches the types by name when the map is empty)
+    "finance_gl_account_group": {
+        "account_type_id": "gl_account_type",
     },
     # patient-evaluation vitals.visit_id → visits.id  (patient_id is injected via _PER_KEY_INJECT)
     "outpatient_vital": {

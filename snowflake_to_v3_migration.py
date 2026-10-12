@@ -586,6 +586,10 @@ _CRITICAL_FK_FIELDS: dict[str, list] = {
     # schemes wait for their insurance company (settings_insurance) rather
     # than going out with the V2 company id
     "settings_scheme":        ["company_id"],
+    # V3 FK-constrains both: wait for the visit / account type instead of
+    # posting the V2 id
+    "evaluation_examination_review": ["visit_id"],
+    "finance_gl_account_group":      ["account_type_id"],
     "evaluation_prescription":  ["visit_id"],
     # an unresolved patient went out as the raw V2 id → FK 500 on every record
     "reception_patient_nok":      ["patient_id"],
