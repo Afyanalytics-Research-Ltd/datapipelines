@@ -1,4 +1,5 @@
 from collections import defaultdict
+from datetime import datetime, timezone
 import os
 from pathlib import Path
 
@@ -215,7 +216,12 @@ def expand_objects(cursor, raw_schema, table,
 
 # Build the final SQL statement to create or replace the flattened view for a given table, based on the discovered and expanded fields. 
 # This function constructs a dynamic SELECT list that extracts the appropriate JSON paths and casts them to the inferred types
-def build_flatten_sql(raw_schema: str, clean_schema: str, table: str, expanded_fields: list[tuple[str, str, str]]) -> str:
+def build_flatten_sql(raw_schema: str, clean_schema: str, table: str, expanded_fields: list[tuple[str, str, str]],
+                      materialize: str = "view") -> str:
+    """CREATE OR REPLACE VIEW (default — always as fresh as RAW) or TABLE (a
+    snapshot of the same query, refreshed each time this runs)."""
+    if materialize not in ("view", "table"):
+        raise ValueError(f"materialize must be view or table, not {materialize!r}")
     # 3. Build the dynamic SELECT list
     select_parts = []
     for name, json_path, dtype in expanded_fields:
@@ -231,9 +237,9 @@ def build_flatten_sql(raw_schema: str, clean_schema: str, table: str, expanded_f
             )
     select_list = ",\n".join(select_parts)
 
-    # 4. Construct the final CREATE OR REPLACE TABLE statement
+    # 4. Construct the final CREATE OR REPLACE VIEW / TABLE statement
     create_table_query = f"""
-    CREATE OR REPLACE VIEW {clean_schema}.{table} AS
+    CREATE OR REPLACE {materialize.upper()} {clean_schema}.{table} AS
     WITH deduped AS (
         SELECT
             DISTINCT facility_id,
@@ -249,7 +255,58 @@ def build_flatten_sql(raw_schema: str, clean_schema: str, table: str, expanded_f
     """
     return create_table_query
 
-# Main function to orchestrate the flattening process for all tables in all schema pairs. 
+MATERIALIZE_MODES = ("auto", "view", "table")
+
+
+def existing_object_type(cursor, clean_schema: str, table: str) -> str | None:
+    """'view', 'table' or None — what <clean_schema>.<table> is now."""
+    db, schema = clean_schema.split(".") if "." in clean_schema else (None, clean_schema)
+    info = f"{db}.INFORMATION_SCHEMA.TABLES" if db else "INFORMATION_SCHEMA.TABLES"
+    cursor.execute(f"SELECT table_type FROM {info} WHERE table_schema = %s AND LOWER(table_name) = %s",
+                   (schema.upper(), table.lower()))
+    row = cursor.fetchone()
+    if not row:
+        return None
+    return "view" if "VIEW" in str(row[0]).upper() else "table"
+
+
+def backup_table(cursor, clean_schema: str, table: str) -> str:
+    """Zero-copy clone of a CLEAN table into <clean_schema>_BACKUP before it's
+    replaced — kept out of CLEAN so it never looks like source data. One per
+    table per day, and never overwritten: a second run the same day keeps the
+    day's first (pre-refresh) copy."""
+    backup_schema = f"{clean_schema}_BACKUP"
+    target = f"{backup_schema}.{table.upper()}__{datetime.now(timezone.utc).strftime('%Y%m%d')}"
+    cursor.execute(f"CREATE SCHEMA IF NOT EXISTS {backup_schema}")
+    cursor.execute(f"CREATE TABLE IF NOT EXISTS {target} CLONE {clean_schema}.{table}")
+    return target
+
+
+def flatten_table(cursor, raw_schema: str, clean_schema: str, table: str, expanded_fields,
+                  materialize: str = "auto") -> dict:
+    """Flatten one RAW source table into CLEAN.
+
+      auto   keep what's there: an existing TABLE is refreshed in place
+             (CREATE OR REPLACE TABLE … AS the flatten query); otherwise a VIEW
+      view   always a view — an existing table is backed up, dropped, replaced
+      table  always a table, refreshed from RAW on every run
+
+    A table is cloned to <clean_schema>_BACKUP before it's replaced. Returns
+    {"object": view|table, "was": view|table|None, "backup": name|None}."""
+    if materialize not in MATERIALIZE_MODES:
+        raise ValueError(f"materialize must be one of {MATERIALIZE_MODES}, not {materialize!r}")
+    was = existing_object_type(cursor, clean_schema, table)
+    target = materialize if materialize != "auto" else ("table" if was == "table" else "view")
+    backup = backup_table(cursor, clean_schema, table) if was == "table" else None
+    if was == "table" and target == "view":
+        cursor.execute(f"DROP TABLE {clean_schema}.{table}")
+    elif was == "view" and target == "table":
+        cursor.execute(f"DROP VIEW {clean_schema}.{table}")
+    cursor.execute(build_flatten_sql(raw_schema, clean_schema, table, expanded_fields, materialize=target))
+    return {"object": target, "was": was, "backup": backup}
+
+
+# Main function to orchestrate the flattening process for all tables in all schema pairs.
 # It iterates through each raw/clean schema pair, discovers tables, fields, expands objects, builds SQL, and executes it to create the flattened views. 
 # It also keeps track of successes and failures for reporting.
 def flatten_all(conn):
@@ -265,9 +322,9 @@ def flatten_all(conn):
                 try:
                     fields = discover_fields(cursor, raw_schema, table)
                     expanded = expand_objects(cursor, raw_schema, table, fields)
-                    sql = build_flatten_sql(raw_schema, clean_schema, table, expanded)
-                    cursor.execute(sql)
-                    print(f"  ✓ {table} ({len(expanded)} cols)")
+                    done = flatten_table(cursor, raw_schema, clean_schema, table, expanded)
+                    print(f"  ✓ {table} ({len(expanded)} cols, {done['object']}"
+                          f"{', backup ' + done['backup'] if done['backup'] else ''})")
                     ok += 1
                 except Exception as e:
                     print(f"  ✗ {table}: {e}")

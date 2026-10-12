@@ -16,6 +16,14 @@ Trigger form options (all optional):
   trigger_v3  on success, trigger snowflake_to_v3_migration for the same
               facilities/tables. Old-system-history tables are never passed
               on — they aren't meant to be inserted table-by-table into V3.
+  materialize auto  (default) keep what's there: a CLEAN object that is a
+                    TABLE is refreshed in place from RAW (fresh records,
+                    still a table); anything else is (re)made a VIEW
+              view  always a view — always as fresh as RAW; a leftover
+                    table is replaced
+              table always a table — a snapshot refreshed on every run
+              A table is cloned to {FAC}_CLEAN_BACKUP.<TABLE>__<date> before
+              it is replaced (zero-copy), so nothing is lost.
 
 v2_facility_to_snowflake triggers this DAG with {"facilities", "tables"} conf.
 
@@ -60,6 +68,10 @@ FACILITIES = facility_keys()
                             description="Facility keys, one per line — any {NAME}_RAW schema, e.g. silverwood."),
         "tables": Param([], type="array", items={"type": "string"}, title="Tables",
                         description="Only these source tables (one per line). Empty = all in EVENTS_RAW."),
+        "materialize": Param("auto", type="string", enum=["auto", "view", "table"], title="Materialize as",
+                             description="auto = keep each object's type (a table is refreshed from RAW, "
+                                         "otherwise a view); view = always views; table = always tables. "
+                                         "Tables are backed up to {FAC}_CLEAN_BACKUP before being replaced."),
         "trigger_v3": Param(False, type="boolean", title="Trigger V3 migration after flatten",
                             description="Writes to V3. Old-system-history tables are excluded."),
     },
@@ -122,11 +134,14 @@ def snowflake_flatten_clean():
             if not fields:
                 raise AirflowFailException(f"No JSON fields found for {raw}.{item['table']}")
             expanded = fl.expand_objects(cur, raw, item["table"], fields)
-            cur.execute(fl.build_flatten_sql(raw, clean, item["table"], expanded))
+            done = fl.flatten_table(cur, raw, clean, item["table"], expanded,
+                                    materialize=ctx["params"].get("materialize") or "auto")
         finally:
             conn.close()
-        log.info("✓ %s.%s — %d columns", clean, item["table"], len(expanded))
-        return {**item, "columns": len(expanded)}
+        log.info("✓ %s.%s — %d columns, %s%s%s", clean, item["table"], len(expanded), done["object"],
+                 f" (was a {done['was']})" if done["was"] and done["was"] != done["object"] else "",
+                 f" — previous table backed up to {done['backup']}" if done["backup"] else "")
+        return {**item, "columns": len(expanded), "object": done["object"], "backup": done["backup"]}
 
     @task(trigger_rule=TriggerRule.ALL_DONE)
     def summarize(items: list[dict], results) -> dict:
