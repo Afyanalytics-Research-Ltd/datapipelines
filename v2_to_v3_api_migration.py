@@ -629,8 +629,10 @@ NAMESPACE_MAP: dict[str, dict] = {
     r"Ignite\Finance\Entities\Waiver":                       {"v3": r"App\Models\Waiver",                      "transform": "generic"},
     r"Ignite\Finance\Entities\Copays":                       {"v3": r"App\Models\Copay",                       "transform": "finance_copay"},
     r"Ignite\Finance\Entities\Copay":                        {"v3": r"App\Models\Copay",                       "transform": "finance_copay"},
-    r"Ignite\Finance\Entities\EvaluationPayments":           {"v3": r"App\Models\EvaluationPayment",           "transform": "finance_eval_payment"},
-    r"Ignite\Finance\Entities\EvaluationPayment":            {"v3": r"App\Models\EvaluationPayment",           "transform": "finance_eval_payment"},
+    # V2 evaluation payments are the receipts (receipt no, amount, date, cashier);
+    # V3 has no EvaluationPayment model — they go to finance-service receipts
+    r"Ignite\Finance\Entities\EvaluationPayments":           {"v3": r"App\Models\Receipt",                     "transform": "finance_receipt"},
+    r"Ignite\Finance\Entities\EvaluationPayment":            {"v3": r"App\Models\Receipt",                     "transform": "finance_receipt"},
     r"Ignite\Finance\Entities\InvoicePayments":              {"v3": r"App\Models\InvoicePayment",              "transform": "generic"},
     r"Ignite\Finance\Entities\InvoicePayment":               {"v3": r"App\Models\InvoicePayment",              "transform": "generic"},
     r"Ignite\Finance\Entities\Vouchers":                     {"v3": r"App\Models\Voucher",                     "transform": "finance_voucher"},
@@ -746,6 +748,12 @@ _PER_KEY_RENAMES: dict[str, dict[str, str]] = {
         "visit":   "visit_id",
         "sale":    "sale_id",
         "user":    "user_id",
+    },
+    # V2 evaluation payments → finance receipts (after the global user → user_id …)
+    "finance_receipt": {
+        "receipt": "receipt_no",       # V2's full receipt number, e.g. COLCOL220425132629 (unique)
+        "user_id": "issued_by",        # the cashier
+        "status":  "v2_status",        # credit-note states, kept in notes
     },
     "finance_copay": {},
     "finance_voucher": {
@@ -944,6 +952,18 @@ _PER_KEY_KEEP_ONLY: dict[str, set[str]] = {
     "settings_clinic": {"name", "code", "type", "address", "city", "phone", "email",
                         "status", "region_id", "created_at", "updated_at"},
     # columns of reception-service's patient documents (gateway describe) + the FK
+    # finance-service Receipt::$fillable that V2 can fill
+    "finance_receipt": {"receipt_no", "receipt_type", "invoice_id", "patient_id", "amount", "receipt_date",
+                        "payment_method", "status", "notes", "issued_by"},
+    # theatre_bookings: the agreed insert payload (Muniu, 2026-10-12: uuid,
+    # patient_id, preferred_date, status_id, requested_by, is_emergency,
+    # reason, timestamps) + the columns whose V2 ids are remapped to V3.
+    # Left out: package_id / requested_facility_id — V2 ids with no V3 mapping.
+    "theatre_booking": {"visit_id", "patient_id", "preferred_date", "status_id", "requested_by", "is_emergency",
+                        "reason", "theatre_deposit_id", "operation_procedure_id", "procedure_cash_price",
+                        "procedure_insurance_price", "authorized_amount", "approved_by", "cancelled_by",
+                        "rejected_by", "authorized_by", "cancellation_reason", "rejection_reason",
+                        "created_at", "updated_at"},
     # reception-service PatientDependant::$fillable that V2 can fill
     "reception_patient_dependant": {"patient_id", "full_name", "relationship", "dob", "gender", "id_no",
                                     "mobile", "email"},
@@ -1080,6 +1100,8 @@ _V3_NULL_DEFAULTS: dict[str, Any] = {
     "is_a_split":           0,            # V2 had no split-prescription concept
     "appear_bold":          0,            # template_labs flag, null on some V2 rows
     "use_bio_ref_flagging": 0,            # procedures flag, null on some V2 rows
+    "has_quick_results":    0,            # procedures flag
+    "exemption_amount":     0,            # invoices
     "is_walkin":            0,            # investigations flags, null on most V2 rows
     "preauth_approved":     0,
     "requires_preauth":     0,
@@ -1096,6 +1118,21 @@ def _active_flag_to_status(v) -> str:
 def _null_to(default):
     """Coercion: a null / blank value becomes the V3 column's default."""
     return lambda v: default if v is None or (isinstance(v, str) and not v.strip()) else v
+
+
+def _as_float(v) -> float:
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+# V2 evaluation payment amount column → V3 receipts.payment_method (first non-zero wins)
+_RECEIPT_METHODS = (("cash_amount", "cash"), ("mpesa_amount", "mpesa"), ("card_amount", "card"),
+                    ("cheque_amount", "cheque"), ("pesa_pal_mpesa_amount", "mpesa"),
+                    ("pesa_pal_card_amount", "card"), ("jambopay_amount", "jambopay"),
+                    ("patientaccount_amount", "patient_account"), ("giftcard_amount", "gift_card"),
+                    ("voucher_amount", "voucher"), ("loyalty_amount", "loyalty"), ("points_amount", "points"))
 
 
 def _user_id_or_none(v) -> Any:
@@ -1464,8 +1501,11 @@ _PER_KEY_INJECT: dict[str, dict[str, Any]] = {
     "evaluation_visit_destination": {
         "arrived_at": lambda r: r.get("begin_at") or r.get("created_at"),
         # the destination's name (lifted from the destination object); on
-        # rows without one, V2's free-text department ("Pharmacy", "Nursing")
-        "department_name": lambda r: str(r.get("department") or "").strip() or None,
+        # rows without one, the name of its destination_id in V2's
+        # settings_destinations (joined in — 137k rows have only that), then
+        # V2's free-text department ("Pharmacy", "Nursing")
+        "department_name": lambda r: (" ".join(str(r.get("destination_setting_name") or "").split())
+                                      or str(r.get("department") or "").strip() or None),
         # V2 has no departments; one V3 department per V2 destination is
         # created before this job runs (ensure_departments_from_destinations)
         "department_id": lambda r: _v3_department_id_by_name(r.get("department_name")),
@@ -1523,6 +1563,20 @@ _PER_KEY_INJECT: dict[str, dict[str, Any]] = {
     },
     "theatre_operation": {
         "patient_id": lambda r: _v2_patient_for_visit(r.get("visit_id")),
+    },
+    "finance_receipt": {
+        "receipt_type":   lambda r: "payment",
+        "status":         lambda r: "valid",
+        # V2 splits a payment across per-method amount columns
+        "payment_method": lambda r: next((m for col, m in _RECEIPT_METHODS
+                                          if _as_float(r.get(col)) > 0), None),
+        "receipt_date":   lambda r: str(r.get("created_at") or "")[:10] or None,     # only if V2 has none
+        "notes":          lambda r: (f"V2 status: {r['v2_status']}" if _blank_to_none(r.get("v2_status")) else None),
+    },
+    "settings_insurance": {
+        # finance insurance_companies.code is NOT NULL + unique; V2 companies
+        # have none. Same pattern as schemes' SCH-<facility>-<id>.
+        "code": lambda r: f"INS-{r.get('source_schema') or 'v2'}-{r.get('id')}",
     },
     "inventory_purchase_order": {
         # inv_purchase_orders: po_number (unique per org) and order_date are
@@ -1662,6 +1716,9 @@ _PER_KEY_COERCIONS: dict[str, dict[str, Any]] = {
     "settings_scheme": {
         "__active_to_status__": True,
     },
+    "finance_receipt": {
+        "receipt_date": lambda v: str(v)[:10] if _blank_to_none(v) else None,   # a DATE column
+    },
     "evaluation_sample": {
         # V3 status (pending / collected / processing / completed) is NOT NULL;
         # every kisumu_v3 V2 sample has an empty status — a V2 sample row exists
@@ -1673,6 +1730,23 @@ _PER_KEY_COERCIONS: dict[str, dict[str, Any]] = {
         # filled kisumu_v3 rows) — sent as null, the *_at dates are kept
         "return_approved_by": _user_id_or_none,
         "return_rejected_by": _user_id_or_none,
+    },
+    # procedures (2026_03_10_000005): NOT NULL flags with defaults
+    "eval_procedure": {
+        "use_bio_ref_flagging": _null_to(0), "has_quick_results": _null_to(0), "active": _null_to(1),
+    },
+    # finance invoices (2025_11_20_140007 + 2026_03_15 + 2026_08_15): every
+    # NOT NULL column with a default — a V2 null overrides it ("Column
+    # 'exemption_amount' cannot be null"), so send the default instead
+    "finance_invoice": {
+        **{c: _null_to(0) for c in (
+            "subtotal", "discount_amount", "tax_amount", "total_amount", "paid_amount", "balance_amount",
+            "waiver_amount", "copay_amount", "credit_note_amount", "amount", "paid", "exemption_amount",
+            "is_interim", "is_manual", "auto_cancelled", "for_cash", "is_exempted")},
+        "invoice_type":       _null_to("cash"),
+        "status":             _null_to("pending"),
+        "payment_status":     _null_to("unpaid"),
+        "credit_note_status": _null_to("none"),
     },
     # investigations' boolean flags are NOT NULL with a default in V3
     # (2026_03_10_000002_recreate_investigations_table…); V2 leaves them null
@@ -2694,6 +2768,10 @@ def _post_to_v3_batch(
                             r.status_code, rec_id, col,
                         )
                         body["data"] = {k: v for k, v in body["data"].items() if k != col}
+                        if body.get("match_on") == col:
+                            # never match on a value we no longer send — the
+                            # gateway would overwrite an existing row instead
+                            body.pop("match_on")
                         continue
                     # Column isn't in our payload (computed by SQL) — nothing to strip
                     log.error(
@@ -3217,9 +3295,11 @@ def _write_int_map(path: Path, mapping: dict) -> None:
 
 # Which FK fields to remap, and which model alias holds their ID map.
 _FK_REMAP: dict[str, dict[str, str]] = {
-    # insurance_schemes.company_id → insurance_companies V3 id
+    # insurance_schemes.company_id → the insurance company's V3 id. Companies
+    # post as finance `insurance_company` (the class's own alias); naming that
+    # alias here lets an empty / partial company map be rebuilt by name.
     "settings_scheme": {
-        "company_id": "insurance_companies",
+        "company_id": "insurance_company",
     },
     # rebates.scheme_id → insurance_schemes V3 id
     "settings_rebate": {
@@ -3287,6 +3367,12 @@ _FK_REMAP: dict[str, dict[str, str]] = {
     # doctor_notes.visit_id → visits.id  (patient_id is injected via _PER_KEY_INJECT)
     "evaluation_doctor_note": {
         "visit_id": "visit",
+    },
+    # receipts: issued_by NOT NULL (the cashier, a V3 user); patient / invoice optional
+    "finance_receipt": {
+        "issued_by":  "users",
+        "patient_id": "patient",
+        "invoice_id": "invoice",
     },
     # patient_dependants.patient_id → patients (the account holder, FK-constrained)
     "reception_patient_dependant": {
@@ -3614,6 +3700,16 @@ _PER_KEY_EXTRA_ID_DEPS: dict[str, list[str]] = {
 }
 
 
+# Filled by snowflake_to_v3_migration from its _ALIAS_OVERRIDE / _SERVICE_OVERRIDE:
+# a model posted under an overridden alias (eval_procedure → `procedures` in
+# evaluation-service, not the core / inpatient model the class name resolves
+# to) must also be found — and read from the right service — when its empty id
+# map is rebuilt, or every child FK to it stays unmapped ("Cannot find V2
+# namespace for alias procedures").
+_ALIAS_FOR_TRANSFORM: dict[str, str] = {}
+_SERVICE_FOR_ALIAS: dict[str, str] = {}
+
+
 def sync_id_map(alias: str, v2_namespace: str, facility: str, match_field: str = "name") -> int:
     """Match existing V3 records to V2 records by match_field and populate the ID map.
 
@@ -3625,7 +3721,7 @@ def sync_id_map(alias: str, v2_namespace: str, facility: str, match_field: str =
     """
     org_cfg = facility_v3_config(facility)
 
-    v3_records = _fetch_v3_records(alias, org_cfg)
+    v3_records = _fetch_v3_records(alias, org_cfg, service_name=_SERVICE_FOR_ALIAS.get(alias))
     if not v3_records:
         log.warning("sync_id_map: no V3 records found for %s — cannot build map", alias)
         return 0
@@ -3686,6 +3782,24 @@ def sync_id_map(alias: str, v2_namespace: str, facility: str, match_field: str =
     return matched
 
 
+_RESYNC_MAX_ROWS = 5000            # only reference-sized tables are re-synced when partial
+_v3_total_cache: dict[str, int | None] = {}
+
+
+def _v3_total(alias: str, facility: str) -> int | None:
+    """Rows this org has for a gateway model (one 1-row read, cached per process)."""
+    if alias not in _v3_total_cache:
+        org_cfg = facility_v3_config(facility)
+        try:
+            r = _gateway_post(_SERVICE_FOR_ALIAS.get(alias) or _alias_to_service.get(alias, "core"),
+                              {"action": "read", "model": alias, "source_tenant_id": org_cfg.get("organization_id"),
+                               "per_page": 1, "page": 1}, timeout=60)
+            _v3_total_cache[alias] = ((r.json().get("meta") or {}).get("total") if r.ok else None)
+        except Exception:
+            _v3_total_cache[alias] = None
+    return _v3_total_cache[alias]
+
+
 def _ensure_id_maps(transform_key: str, facility: str) -> None:
     """Auto-sync any FK dependency maps that are empty before a job runs."""
     # (alias, v3_namespace) pairs from _FK_REMAP (alias already resolved at
@@ -3699,13 +3813,24 @@ def _ensure_id_maps(transform_key: str, facility: str) -> None:
         aliases.append((_v3_alias(v3_ns), v3_ns))
 
     for alias, known_v3_ns in aliases:
-        if _id_map.get(alias):
-            continue
-        log.info("ID map for %s is empty — auto-syncing from V3 before %s job",
-                 alias, transform_key)
+        have = len(_id_map.get(alias) or {})
+        if have:
+            # a partial map never rebuilt itself (e.g. 3 procedures mapped by a
+            # canary, 1,674 in V3 → every procedure FK stayed unmapped). For
+            # small reference tables, re-sync when V3 holds more than we know.
+            total = _v3_total(alias, facility)
+            if total is None or total <= have or total > _RESYNC_MAX_ROWS:
+                continue
+            log.info("ID map for %s knows %d of %d V3 rows — re-syncing before %s job",
+                     alias, have, total, transform_key)
+        else:
+            log.info("ID map for %s is empty — auto-syncing from V3 before %s job",
+                     alias, transform_key)
+        variants = {alias, alias[:-1] if alias.endswith("s") else alias + "s"}
         v2_ns = next(
             (ns for ns, m in NAMESPACE_MAP.items()
-             if (known_v3_ns and m["v3"] == known_v3_ns) or _v3_alias(m["v3"]) == alias),
+             if (known_v3_ns and m["v3"] == known_v3_ns) or _v3_alias(m["v3"]) == alias
+             or _ALIAS_FOR_TRANSFORM.get(m["transform"]) in variants),
             None,
         )
         if v2_ns:

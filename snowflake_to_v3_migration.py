@@ -595,6 +595,7 @@ _CRITICAL_FK_FIELDS: dict[str, list] = {
     # wait for the supplier, store and creating user rather than post V2 ids
     "inventory_purchase_order":      ["supplier_id", "store_id", "created_by"],
     "reception_patient_dependant": ["patient_id"],
+    "finance_receipt":               ["issued_by"],
     # inp_beds: ward + bed type are FK-constrained — wait for them, never post V2 ids
     "inpatient_bed":                 ["ward_id", "bed_type_id"],
     # theatre chain — NOT NULL / FK-constrained, so a row waits for its parent
@@ -623,6 +624,7 @@ _NULL_IF_UNRESOLVED: dict[str, set[str]] = {
     "inventory_store":             {"parent_store_id"},
     "inventory_purchase_order":    {"approved_by"},     # nullable in V3
     "evaluation_prescription":     {"return_approved_by", "return_rejected_by"},
+    "finance_receipt":             {"patient_id", "invoice_id"},     # both nullable on receipts
     "theatre_booking":             {"theatre_deposit_id", "operation_procedure_id", "approved_by",
                                     "cancelled_by", "rejected_by", "authorized_by"},
     "theatre_operation":           {"visit_id"},
@@ -686,8 +688,14 @@ _FETCH_SQL: dict[str, str] = {
 # leave the job open (not marked done), so the next run carries on. 0 = no limit.
 RECORD_LIMIT = int(os.getenv("RECORD_LIMIT", "0"))
 
-# records sent so far in this table under a RECORD_LIMIT canary (reset per table)
-_canary_sent = 0
+# records sent so far per table under a RECORD_LIMIT canary, keyed by the
+# table's job key — tables run in parallel threads, so one shared counter let
+# the first table use up every other table's allowance (they posted 0)
+_canary_sent: dict[str, int] = {}
+
+
+def _canary_key(job_key: str) -> str:
+    return job_key.split("::")[0]          # vitals' ::inpatient / ::outpatient share their table's limit
 
 # job_key -> records held back (parent not in V3 yet) by the last post of that job
 _held_back: dict[str, int] = {}
@@ -715,10 +723,10 @@ _held_back: dict[str, int] = {}
 # evaluation-service's `vitals`.
 _ALIAS_OVERRIDE: dict[str, str] = {"reception_visit": "visits", "settings_clinic": "facilities",
                                    "eval_procedure": "procedures", "outpatient_vital": "vitals",
-                                   "inpatient_vital": "vital"}
+                                   "inpatient_vital": "vital", "finance_receipt": "receipt"}
 _SERVICE_OVERRIDE: dict[str, str] = {"reception_visit": "evaluation", "settings_clinic": "core",
                                      "eval_procedure": "evaluation", "outpatient_vital": "evaluation",
-                                     "inpatient_vital": "inpatient"}
+                                     "inpatient_vital": "inpatient", "finance_receipt": "finance"}
 # Upsert column per transform when it isn't uuid. kisumu patients have no
 # uuid; patient_no ("kisumu_v3-org4-<no>-<v2 id>") is unique per patient and
 # enabled as a match_on column for `patient`, so a re-post updates in place.
@@ -798,6 +806,14 @@ def _model_has_uuid(alias: str, service: str | None) -> bool:
         r = v2v3._gateway_post(svc, {"action": "read", "model": alias, "source_tenant_id": org, "per_page": 1},
                                timeout=60)
         rows = r.json().get("data") or [] if r.ok else []
+        if r.ok and not rows:
+            # An empty table shows no columns. Concluding "no uuid" posted the
+            # first record of every fresh table with a random uuid, so a re-run
+            # duplicated it. Assume a uuid (the poster strips it — and match_on
+            # with it — if V3 says the column is unknown) and don't cache the
+            # guess: the next record re-checks once a row exists.
+            log.info("  %s: table empty — assuming a uuid column until a row shows otherwise", alias)
+            return True
         has = bool(rows) and "uuid" in rows[0]
     except Exception as e:
         log.warning("  couldn't check %s for a uuid column (%s) — posting without one", alias, e)
@@ -1040,14 +1056,14 @@ def post_table_to_v3(v3_namespace: str, org_cfg: dict, records: list[dict],
     skipped = len(records) - len(pending)
     if skipped:
         log.info("  Skipping %d already-migrated records, posting %d", skipped, len(pending))
-    global _canary_sent
     if RECORD_LIMIT:
-        room = max(RECORD_LIMIT - _canary_sent, 0)
+        ck = _canary_key(job_key)
+        room = max(RECORD_LIMIT - _canary_sent.get(ck, 0), 0)
         if len(pending) > room:
             log.info("  Canary — posting %d of %d pending records (limit %d per table)",
                      room, len(pending), RECORD_LIMIT)
             pending = pending[:room]
-        _canary_sent += len(pending)
+        _canary_sent[ck] = _canary_sent.get(ck, 0) + len(pending)
 
     done_count = 0
     dead_letter_count = 0
@@ -1240,9 +1256,18 @@ def ensure_departments_from_destinations(facility: str) -> None:
                                 ("department", "department::STRING")) if c in cols]
         if not exprs:
             raise RuntimeError(f"{view} has none of destination_name / destination / department")
-        names = sorted({" ".join(str(r[0]).split()) for e in exprs for r in cur.execute(
+        names = {" ".join(str(r[0]).split()) for e in exprs for r in cur.execute(
             f"SELECT DISTINCT {e} FROM {view} WHERE NULLIF(TRIM({e}), '') IS NOT NULL"
-        ).fetchall()})
+        ).fetchall()}
+        # rows with only a destination_id take its name from settings_destinations
+        # (v3_extra_mappings._visit_destinations_sql) — those need departments too
+        settings = f"{sf_schema(facility, 'CLEAN')}.SETTINGS_DESTINATIONS"
+        if "destination_id" in cols and "settings_destinations" in set(clean_tables(cur, facility)):
+            names |= {" ".join(str(r[0]).split()) for r in cur.execute(
+                f"SELECT DISTINCT s.name FROM {settings} s WHERE NULLIF(TRIM(s.name), '') IS NOT NULL "
+                f"AND TO_VARCHAR(s.id) IN (SELECT DISTINCT TO_VARCHAR(destination_id) FROM {view})"
+            ).fetchall()}
+        names = sorted(names)
     v2v3.reset_v3_department_cache()
     missing = [n for n in names if v2v3._v3_department_id_by_name(n) is None]
     log.info("Departments: %d destination names, %d already in V3, %d to create",
@@ -1353,8 +1378,7 @@ def _run_table_job(entry: dict, facility: str, org_cfg: dict, dry_run: bool) -> 
         log.info("⊘ %s — already migrated in a previous run", label)
         return True
 
-    global _canary_sent
-    _canary_sent = 0
+    _canary_sent[_canary_key(job_key)] = 0
     vitals = transform_key == "inpatient_vital"
     # once per table, not per page
     parent_sets = []
@@ -1422,7 +1446,7 @@ def _run_table_job(entry: dict, facility: str, org_cfg: dict, dry_run: bool) -> 
                     posted += len(transformed) - problems
             log.info("  %s — page %d: %d rows read so far (%d posted, %d skipped, %d held, %d failed)",
                      label, pages, total, posted, skipped, held + n_dropped, failed)
-            if RECORD_LIMIT and _canary_sent >= RECORD_LIMIT:
+            if RECORD_LIMIT and _canary_sent.get(_canary_key(job_key), 0) >= RECORD_LIMIT:
                 break
     except v2v3.GatewayModelNotRegistered as e:
         log.warning("⊘ %s — model not registered in gateway: %s", label, e)
@@ -1754,6 +1778,11 @@ def list_tables(facility: str) -> None:
 # Mappings added for whole-schema migrations (v3_extra_mappings.py) — on top
 # of the hand-written ones above, never replacing them.
 xm.apply(v2v3, sys.modules[__name__])
+# let v2v3's empty-id-map rebuild find (and read from the right service) models
+# posted under an overridden alias — procedures, receipts, the gen_* mappings
+v2v3._ALIAS_FOR_TRANSFORM.update(_ALIAS_OVERRIDE)
+v2v3._SERVICE_FOR_ALIAS.update({_ALIAS_OVERRIDE[tk]: svc for tk, svc in _SERVICE_OVERRIDE.items()
+                                if tk in _ALIAS_OVERRIDE})
 
 
 # ─── CLI ─────────────────────────────────────────────────────────────────────

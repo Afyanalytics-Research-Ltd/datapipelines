@@ -432,3 +432,69 @@ def test_stock_from_store_products():
     neg = v2v3.transform_record({**base, "quantity": -5}, tk, ORG, "kisumu_v3")
     assert (neg["quantity"], neg["available_quantity"], neg["total_value"]) == (0, 0, 0)
     assert m._CRITICAL_FK_FIELDS[tk] == ["product_id", "store_id"]
+
+
+def test_theatre_booking_payload_matches_the_agreed_shape(monkeypatch):
+    monkeypatch.setattr(v2v3, "_visit_patient_map", {555: 777})
+    out = v2v3.transform_record({"id": 99, "visit_id": 555, "preferred_date": "2026-09-22 09:30:00", "status_id": 1,
+                                 "requested_by": 1, "emergency": 0, "reason": "Migrated booking",
+                                 "package_id": 4, "requested_facility_id": 1, "created_at": "2019-04-17 08:15:00",
+                                 "updated_at": "2020-01-02 11:00:00"}, "theatre_booking", ORG, "kisumu_v3")
+    assert "package_id" not in out and "requested_facility_id" not in out
+    assert {"patient_id", "preferred_date", "status_id", "requested_by", "is_emergency", "reason",
+            "created_at", "updated_at"} <= set(out)
+    assert out["patient_id"] == 777 and out["is_emergency"] == 0
+
+
+def test_invoice_null_defaults_and_insurance_code():
+    co = v2v3._PER_KEY_COERCIONS["finance_invoice"]
+    assert (co["exemption_amount"](None), co["status"](None), co["status"]("paid")) == (0, "pending", "paid")
+    out = v2v3.transform_record({"id": 366, "name": "NHIF", "source_schema": "kisumu_v3"},
+                                "settings_insurance", ORG, "kisumu_v3")
+    assert out["code"] == "INS-kisumu_v3-366"
+
+
+def test_evaluation_payments_become_receipts():
+    assert v2v3.NAMESPACE_MAP[r"Ignite\Finance\Entities\EvaluationPayments"]["v3"] == r"App\Models\Receipt"
+    out = v2v3.transform_record({"id": 5, "receipt": "COLCOL220425132629", "user": 12, "patient": 99,
+                                 "invoice_id": None, "amount": 1500, "cash_amount": 0, "mpesa_amount": 1500,
+                                 "receipt_date": "2022-04-25 13:26:29", "status": "issued credit note",
+                                 "patient_name": "X"}, "finance_receipt", ORG, "kisumu_v3")
+    assert out == {"id": 5, "receipt_no": "COLCOL220425132629", "issued_by": 12, "patient_id": 99,
+                   "invoice_id": None, "amount": 1500, "receipt_date": "2022-04-25", "receipt_type": "payment",
+                   "status": "valid", "payment_method": "mpesa", "notes": "V2 status: issued credit note"}
+    assert m._CRITICAL_FK_FIELDS["finance_receipt"] == ["issued_by"]
+    assert m._ALIAS_OVERRIDE["finance_receipt"] == "receipt" and m._SERVICE_OVERRIDE["finance_receipt"] == "finance"
+
+
+def test_visit_destination_name_from_settings_destinations(monkeypatch):
+    monkeypatch.setattr(v2v3, "_v3_department_id_by_name", lambda n: {"triage": 3}.get(str(n or "").lower()))
+    out = v2v3.transform_record({"id": 1, "visit": 5, "created_at": "2024-01-01", "destination": None,
+                                 "department": "", "destination_id": 16, "destination_setting_name": "Triage"},
+                                "evaluation_visit_destination", ORG, "kisumu_v3")
+    assert out["department_name"] == "Triage" and out["department_id"] == 3
+
+
+def test_unknown_uuid_column_also_drops_match_on(monkeypatch):
+    bodies = []
+    responses = [_R(422, {"success": False, "message": "insert rejected: Unknown column 'uuid' in 'field list'"}),
+                 _R(201, {"success": True, "data": {"id": 7}})]
+
+    def fake(service, body, timeout=None):
+        bodies.append({"match_on": body.get("match_on"), "data": dict(body["data"])})
+        return responses.pop(0)
+    monkeypatch.setattr(v2v3, "_gateway_post", fake)
+    monkeypatch.setattr(v2v3, "_write_dead_letter", lambda *a, **k: None)
+    monkeypatch.setattr(v2v3, "V3_POST_THROTTLE", 0)
+    v2v3._post_to_v3_batch(r"App\Models\Stock", ORG, {"id": 1, "uuid": "u-1", "quantity": 3},
+                           alias_override="stock", service_override="inventory", match_on="uuid")
+    assert bodies[0]["match_on"] == "uuid"
+    assert bodies[1]["match_on"] is None and "uuid" not in bodies[1]["data"]
+
+
+def test_empty_v3_table_assumes_uuid_without_caching(monkeypatch):
+    monkeypatch.setattr(v2v3, "_gateway_post", lambda *a, **k: _R(200, {"data": [], "meta": {"total": 0}}))
+    monkeypatch.setattr(v2v3, "v3_login_org_cfg", lambda: ORG)
+    m._alias_has_uuid.pop("zz_empty", None)
+    assert m._model_has_uuid("zz_empty", "inventory") is True
+    assert "zz_empty" not in m._alias_has_uuid

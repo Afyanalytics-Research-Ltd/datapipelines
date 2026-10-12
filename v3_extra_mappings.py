@@ -84,6 +84,33 @@ MAPPINGS: dict[str, dict] = {
         "critical": ["visit_id"],
         "null_if_unresolved": ["patient_id"],
     },
+    # ── evaluation-service: lab result values ────────────────────────────
+    # V3 investigation_results carry no values (result_value / unit null on
+    # migrated rows) — the values are V2's result details: one row per test
+    # line (test, result, unit, flag, reference range). The gateway now
+    # exposes both tables (no tenant column: children of a tenant-scoped
+    # result) under V2's own table names; columns posted as V2 has them, and a
+    # column V3 lacks is dropped by the poster's unknown-column retry.
+    "evaluation_investigation_result_details": {
+        "namespace": r"Ignite\Evaluation\Entities\InvestigationResultDetails",
+        "v3": r"App\Models\InvestigationResultDetails", "alias": "investigation_result_details",
+        "service": "evaluation",
+        "keep": ["investigation_result_id", "visit_id", "test", "sub_test_id", "result", "result_value_type",
+                 "unit", "flag", "reference_ranges", "title", "sub_title", "title_sub_text", "type_wysiwg",
+                 "appear_bold"],
+        # appear_bold is NOT NULL; sub_test_id is an FK to V3 procedures (probe 2026-10-12)
+        "inject": {"appear_bold": ("const", 0)},
+        "fk": {"investigation_result_id": "investigation_results", "visit_id": "visit", "sub_test_id": "procedures"},
+        "critical": ["investigation_result_id"],
+        "null_if_unresolved": ["visit_id", "sub_test_id"],
+    },
+    "evaluation_result_details_ranges": {
+        "namespace": r"Ignite\Evaluation\Entities\ResultDetailsReferenceRanges",
+        "v3": r"App\Models\ResultDetailsReferenceRanges", "alias": "result_detail_ranges", "service": "evaluation",
+        "keep": ["result_detail_id", "type", "lower", "upper", "flag", "bio_reference", "lg_type", "lg_value"],
+        "fk": {"result_detail_id": "investigation_result_details"},
+        "critical": ["result_detail_id"],
+    },
     # ── inventory-service: current stock balances ────────────────────────
     # V2 store_products is one row per product + store with its on-hand
     # quantity and unit cost — exactly V3 inv_stocks (unique product + store +
@@ -219,8 +246,9 @@ MAPPINGS: dict[str, dict] = {
         "v3": r"App\Models\VisitConsultant", "alias": "visit_consultant", "service": "reception",
         "keep": ["visit_id", "patient_id", "consultant_id", "consultant_name"],
         "fk": {"visit_id": "visit", "patient_id": "patient", "consultant_id": "users"},
-        "critical": ["visit_id"],
-        "null_if_unresolved": ["consultant_id", "patient_id"],
+        # all three NOT NULL in reception visit_consultants — a row waits for its
+        # consultant (a V3 user) rather than being sent with null and refused
+        "critical": ["visit_id", "patient_id", "consultant_id"],
     },
     # ── inventory-service ─────────────────────────────────────────────────
     "inventory_inventory_payment_terms": {
@@ -381,11 +409,14 @@ NOT_MIGRATED: dict[str, str] = {
     "credit_notes": "V3 credit_note needs invoice_id, total_amount, reason; V2 notes are receipt-linked",
     "inpatient_visit_wards": "V2 rows are ward charges on a visit; V3 visit_ward is a bed allocation on an admission",
     "evaluation_sub_procedures": "no column in common with V3 subprocedures",
-    "settings_scheme_exclusions": "V3 needs exclusion_type + exclusion_name; V2 holds only procedure / product ids",
+    "settings_scheme_exclusions": "NEEDS A DECISION — the rows are per-scheme procedure prices (2,639 priced, 3 "
+                                  "excluded) → V3 core scheme_pricing, whose scheme_id is an FK to CORE "
+                                  "insurance schemes, while V2 schemes migrate to FINANCE insurance_scheme; "
+                                  "which insurance tables are canonical must be settled first",
     "finance_payments_mpesa": NO_MODEL, "finance_payments_cash": NO_MODEL, "finance_payments_card": NO_MODEL,
     "finance_payments_pesa_pal_mpesa": NO_MODEL, "finance_payments_pesa_pal_card": NO_MODEL,
     # no V3 model at all
-    "evaluation_investigation_result_details": NO_MODEL, "finance_invoice_items": NO_MODEL,
+    "finance_invoice_items": NO_MODEL,
     "evaluation_result_details_reference_ranges": NO_MODEL, "evaluation_consumables": NO_MODEL,
     "evaluation_prescription_payments": NO_MODEL, "evaluation_dispensing_details": NO_MODEL,
     "inventory_inventory_stock_adjustments": NO_MODEL, "evaluation_investigation_approvals": NO_MODEL,
@@ -470,8 +501,6 @@ NOT_MIGRATED: dict[str, str] = {
     "evaluation_procedure_tags": SHARED, "hemogram_titles": SHARED,
     "evaluation_subprocedures": "V3 SubProcedure's $fillable is only organization_id and its gateway alias has "
                                 "no tenant column — shared lab config",
-    "evaluation_result_details_ranges": "V3 result_detail_id is a NOT NULL FK to investigation result details, "
-                                        "which aren't migrated (NO_MODEL) — no parent to link to",
     "visit_symptoms": "V2 rows are IDSR case records (disease, county, list of V2 symptom ids); V3 visit_symptoms is "
                       "one row per symptom needing a V3 symptom_id from the shared symptoms table — no id map",
     "settings_evaluation_actions": SETUP,
@@ -666,9 +695,23 @@ def _patient_dependants_sql(table: str):
     return build
 
 
+def _visit_destinations_sql(clean: str, cols_of, clean_set: set[str]) -> str | None:
+    """137,031 kisumu_v3 destination rows carry neither the embedded
+    destination object nor a department — only destination_id. Its name (the
+    V3 department) is in V2's own settings_destinations: joined in as
+    DESTINATION_SETTING_NAME."""
+    if "settings_destinations" not in clean_set or "destination_id" not in cols_of("evaluation_visit_destinations"):
+        return None
+    if not {"id", "name"} <= cols_of("settings_destinations"):
+        return None
+    return (f'SELECT d.*, s."NAME" AS "DESTINATION_SETTING_NAME" FROM {clean}.EVALUATION_VISIT_DESTINATIONS d '
+            f'LEFT JOIN {clean}.SETTINGS_DESTINATIONS s ON TO_VARCHAR(s."ID") = TO_VARCHAR(d."DESTINATION_ID")')
+
+
 # table → builder(clean schema, cols_of(table) → lower-case column names, CLEAN
 # object names) → SQL, or None to read the table as is
 FETCH_SQL = {"evaluation_icd10_notes": _icd10_notes_sql,
+             "evaluation_visit_destinations": _visit_destinations_sql,
              "patient_dependants": _patient_dependants_sql("patient_dependants"),
              "reception_patient_dependants": _patient_dependants_sql("reception_patient_dependants")}
 
