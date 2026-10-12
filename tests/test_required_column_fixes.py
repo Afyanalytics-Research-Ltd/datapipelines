@@ -223,3 +223,17 @@ def test_422_other_validation_still_dead_letters(monkeypatch):
     with pytest.raises(v2v3.RecordDeadLettered):
         v2v3._post_to_v3_batch(r"App\Models\Unit", ORG, {"id": 1}, alias_override="unit",
                                service_override="inventory")
+
+
+def test_user_keeps_username_and_email():
+    out = v2v3.transform_record({"id": 1445, "username": "NYAMOHANGA", "email": "nyamopat@yahoo.com"},
+                                "settings_user", ORG, "kisumu_v3")
+    assert out["username"] == "NYAMOHANGA" and out["email"] == "nyamopat@yahoo.com"
+    no_email = v2v3.transform_record({"id": 2, "username": "jdoe", "email": ""}, "settings_user", ORG, "kisumu_v3")
+    assert no_email["email"] == "jdoe" and no_email["username"] == "jdoe"
+
+
+def test_patient_document_file_size():
+    out = v2v3.transform_record({"id": 7, "patient": 1, "file_name": "scan.pdf"},
+                                "reception_patient_document", ORG, "kisumu_v3")
+    assert out["file_size"] == 0

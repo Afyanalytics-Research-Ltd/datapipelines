@@ -885,11 +885,9 @@ _PER_KEY_RENAMES: dict[str, dict[str, str]] = {
     "inventory_dispensing": {
         "user_id": "served_by",   # after the global user → user_id rename
     },
-    "settings_user": {
-        "username":   "email",
-        "first_name": "first_name",
-        "last_name":  "last_name",
-    },
+    # username stays username (NOT NULL, unique per org in V3). It used to be
+    # renamed to email — which, with email already set, dropped it.
+    "settings_user": {},
 }
 
 # Fields to drop entirely per transform key (cannot be mapped in API-to-API)
@@ -938,7 +936,8 @@ _PER_KEY_KEEP_ONLY: dict[str, set[str]] = {
                         "status", "region_id", "created_at", "updated_at"},
     # columns of reception-service's patient documents (gateway describe) + the FK
     "reception_patient_document": {"patient_id", "title", "document_type", "description", "file_name",
-                                   "file_path", "file_type", "file_extension", "document_date", "notes"},
+                                   "file_path", "file_type", "file_extension", "file_size", "document_date",
+                                   "notes"},
     # V2 admissions arrive with the embedded doctor/ward/bed/bed_type records
     # flattened into ~90 extra columns (doctor_profile_mpdb, ward_cash_cost …)
     # that inp_admissions doesn't have. Keep the admission's own fields only.
@@ -1409,6 +1408,12 @@ _PER_KEY_INJECT: dict[str, dict[str, Any]] = {
         "file_extension": lambda r: (Path(str(r.get("file_name") or "")).suffix.lstrip(".").lower() or None),
         "file_type":      lambda r: mimetypes.guess_type(str(r.get("file_name") or ""))[0],
         "document_date":  lambda r: r.get("created_at"),
+        # NOT NULL in V3 (bytes); V2 never recorded the size
+        "file_size":      lambda r: 0,
+    },
+    "settings_user": {
+        # email is required; a V2 user without one falls back to its username
+        "email": lambda r: r.get("username"),
     },
     "inpatient_admission_type": {
         # inp_admission_types needs a code; V2 types only have a name
