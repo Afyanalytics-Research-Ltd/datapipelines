@@ -3755,6 +3755,11 @@ def _fetch_v3_records(alias: str, org_cfg: dict, service_name: str | None = None
 _SYNC_MATCH_FIELD_BY_NS: dict[str, str] = {
     r"App\Models\User": "email",
 }
+# further fields tried (in order) when the match field finds nothing, per alias.
+# Usernames are unique per org in V3; 18 kisumu_v3 staff had placeholder emails.
+_SYNC_FALLBACK_FIELDS: dict[str, tuple[str, ...]] = {
+    "users": ("username",),
+}
 
 # Extra id-map dependencies (by v3 namespace) a transform's _PER_KEY_INJECT
 # relies on, beyond what _FK_REMAP already declares. _remap_fks never touches
@@ -3796,6 +3801,8 @@ def sync_id_map(alias: str, v2_namespace: str, facility: str, match_field: str =
     # migrated before uuids were carried across.
     v3_by_uuid: dict[str, int] = {}
     v3_by_key: dict[str, int] = {}
+    v3_by_fallback: dict[tuple[str, str], int] = {}
+    v3_by_v2_id: dict[int, int] = {}
     # Oldest row first, and the first row per name wins: when V3 holds copies of
     # a record (1,763 procedures re-created on 2026-10-12), children must link
     # to the original, never to the copy.
@@ -3808,6 +3815,14 @@ def sync_id_map(alias: str, v2_namespace: str, facility: str, match_field: str =
         key = rec.get(match_field)
         if key:
             v3_by_key.setdefault(str(key).strip().lower(), v3_id)
+        for fb in _SYNC_FALLBACK_FIELDS.get(alias, ()):
+            if rec.get(fb):
+                v3_by_fallback.setdefault((fb, str(rec[fb]).strip().lower()), v3_id)
+        # users the V3 backend created from V2 carry the V2 id in a placeholder
+        # email (miteigyn@gmail.com.v2-1533.invalid) — the surest match there is
+        m = _V2_PLACEHOLDER_EMAIL.match(str(rec.get("email") or "").strip())
+        if m:
+            v3_by_v2_id.setdefault(int(m["v2_id"]), v3_id)
 
     # Extract V2 records
     cfg = v2_facility_config(facility)
@@ -3837,8 +3852,15 @@ def sync_id_map(alias: str, v2_namespace: str, facility: str, match_field: str =
         if v3_id:
             by_uuid += 1
         else:
-            key = str(rec.get(match_field) or "").strip().lower()
-            v3_id = v3_by_key.get(key) if key else None
+            v3_id = v3_by_v2_id.get(int(v2_id)) if str(v2_id).isdigit() else None
+            if not v3_id:
+                key = str(rec.get(match_field) or "").strip().lower()
+                v3_id = v3_by_key.get(key) if key else None
+            for fb in _SYNC_FALLBACK_FIELDS.get(alias, ()):
+                if v3_id:
+                    break
+                val = str(rec.get(fb) or "").strip().lower()
+                v3_id = v3_by_fallback.get((fb, val)) if val else None
             if v3_id:
                 by_field += 1
         if v3_id:
