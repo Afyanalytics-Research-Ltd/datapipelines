@@ -310,6 +310,8 @@ def mark_skipped(entries: list[dict], clean_set: set | None = None) -> list[dict
         canonical = xm.duplicate_of(t, clean_set)
         if canonical:
             e.update(v3=None, transform=None, skipped=f"duplicate of {canonical}")
+        elif t in xm.NOT_MIGRATED_DESPITE_MAPPING:
+            e.update(v3=None, transform=None, skipped=xm.NOT_MIGRATED[t])
         elif not e["v3"]:
             e["skipped"] = xm.NOT_MIGRATED.get(t)
     return entries
@@ -590,6 +592,12 @@ _CRITICAL_FK_FIELDS: dict[str, list] = {
     # posting the V2 id
     "evaluation_examination_review": ["visit_id"],
     "finance_gl_account_group":      ["account_type_id"],
+    # wait for the supplier, store and creating user rather than post V2 ids
+    "inventory_purchase_order":      ["supplier_id", "store_id", "created_by"],
+    # theatre chain — NOT NULL / FK-constrained, so a row waits for its parent
+    "theatre_booking":   ["visit_id", "patient_id", "status_id", "requested_by"],
+    "theatre_schedule":  ["booking_id", "theatre_id", "scheduled_by"],
+    "theatre_operation": ["schedule_id", "patient_id"],
     "evaluation_prescription":  ["visit_id"],
     # an unresolved patient went out as the raw V2 id → FK 500 on every record
     "reception_patient_nok":      ["patient_id"],
@@ -610,6 +618,11 @@ _NULL_IF_UNRESOLVED: dict[str, set[str]] = {
     "inpatient_discharge_request": {"visit_id"},
     # stores are posted in parallel, so a parent may not be in V3 yet
     "inventory_store":             {"parent_store_id"},
+    "inventory_purchase_order":    {"approved_by"},     # nullable in V3
+    "evaluation_prescription":     {"return_approved_by", "return_rejected_by"},
+    "theatre_booking":             {"theatre_deposit_id", "operation_procedure_id", "approved_by",
+                                    "cancelled_by", "rejected_by", "authorized_by"},
+    "theatre_operation":           {"visit_id"},
 }
 
 # Rows whose parent isn't part of this facility's migrated data at all are

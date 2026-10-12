@@ -402,6 +402,9 @@ NOT_MIGRATED: dict[str, str] = {
     # payments: no V3 model, like the other finance_payments_* tables
     "finance_payments_cheque": NO_MODEL, "finance_payments_pesapal_card": NO_MODEL,
     "finance_payments_pesapal_mpesa": NO_MODEL, "payments_cheque": NO_MODEL,
+    "petty_cash": "one 2017 setup row (amount 0.00, no fund name or custodian) — V3 petty cash is a named fund "
+                  "with a custodian; the org sets up its own",
+    "finance_petty_cash": "same single 2017 setup row as petty_cash",
     # inpatient (checked against the V3 models + migrations 2026-10-12)
     "inpatient_administer_drugs": "V3 drug_administration needs drug_name, dosage, route, frequency and "
                                   "scheduled_time (NOT NULL); V2 rows carry only prescription_id + an administered "
@@ -490,6 +493,12 @@ NOT_MIGRATED: dict[str, str] = {
     "dialysis_sessions": PENDING_KEY, "dialysis_plants": PENDING_KEY, "dialysis_vascular_accesses": PENDING_KEY,
     "dialysis_coagulation_types": PENDING_KEY,
 }
+
+
+# Tables a hand-written mapping would post, but whose rows aren't real data —
+# their NOT_MIGRATED reason wins over the mapping (an explicit list, so a table
+# that is both mapped and in NOT_MIGRATED isn't silently switched off).
+NOT_MIGRATED_DESPITE_MAPPING: frozenset[str] = frozenset({"petty_cash", "finance_petty_cash"})
 
 
 # ─── applying the mappings ──────────────────────────────────────────────────

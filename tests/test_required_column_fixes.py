@@ -263,3 +263,111 @@ def test_investigation_null_is_walkin_is_zero():
     tk = v2v3._PER_KEY_COERCIONS["evaluation_investigation"]["is_walkin"]
     assert (tk(None), tk(""), tk(1), tk(0)) == (0, 0, 1, 0)
     assert v2v3._V3_NULL_DEFAULTS["is_walkin"] == 0
+
+
+def test_purchase_order_required_columns_and_links():
+    out = v2v3.transform_record({"id": 61, "source_schema": "kisumu_v3", "user": 12, "supplier_id": 3, "store_id": 1,
+                                 "created_at": "2023-05-08 22:03:27", "status": "approved"},
+                                "inventory_purchase_order", ORG, "kisumu_v3")
+    assert out["po_number"] == "PO-kisumu_v3-61"
+    assert out["order_date"] == "2023-05-08"
+    assert out["created_by"] == 12 and "user_id" not in out
+    fk = v2v3._FK_REMAP["inventory_purchase_order"]
+    assert fk["supplier_id"] == "supplier" and fk["store_id"] == "store" and fk["created_by"] == "users"
+    assert m._CRITICAL_FK_FIELDS["inventory_purchase_order"] == ["supplier_id", "store_id", "created_by"]
+    assert m._NULL_IF_UNRESOLVED["inventory_purchase_order"] == {"approved_by"}
+
+
+class TestTheatreChain:
+    def test_booking_patient_from_visit_and_links(self, monkeypatch):
+        monkeypatch.setattr(v2v3, "_visit_patient_map", {555: 777})
+        out = v2v3.transform_record({"id": 99, "visit_id": 555, "operation_procedure": 12, "proc_cash_price": 100,
+                                     "emergency": 0, "status_id": 2, "requested_by": 5},
+                                    "theatre_booking", ORG, "kisumu_v3")
+        assert out["patient_id"] == 777
+        assert out["operation_procedure_id"] == 12 and out["procedure_cash_price"] == 100
+        fk = v2v3._FK_REMAP["theatre_booking"]
+        assert fk["visit_id"] == "visit" and fk["patient_id"] == "patient" and fk["requested_by"] == "users"
+        assert set(m._CRITICAL_FK_FIELDS["theatre_booking"]) == {"visit_id", "patient_id", "status_id", "requested_by"}
+
+    def test_schedule_waits_for_its_booking(self):
+        t = ns(r"Ignite\Theatre\Entities\TheatreSchedules")
+        assert v2v3._FK_REMAP[t]["booking_id"] == "theatre_booking"
+        assert "booking_id" in m._CRITICAL_FK_FIELDS[t]
+
+    def test_operation_patient_and_schedule(self, monkeypatch):
+        monkeypatch.setattr(v2v3, "_visit_patient_map", {556: 778})
+        t = ns(r"Ignite\Theatre\Entities\TheatreOperations")
+        out = v2v3.transform_record({"id": 13, "visit_id": 556, "schedule_id": 9}, t, ORG, "kisumu_v3")
+        assert out["patient_id"] == 778
+        assert v2v3._FK_REMAP[t]["schedule_id"] == "theatre_schedule"
+        assert m._CRITICAL_FK_FIELDS[t] == ["schedule_id", "patient_id"]
+
+
+def test_prescription_return_approver_name_is_not_a_user_id():
+    out = v2v3.transform_record({"id": 886337, "visit": 1, "return_approved_by": "Ms. Kerubo  Venah",
+                                 "return_rejected_by": "12", "return_approved_at": "2024-01-02 10:00:00"},
+                                "evaluation_prescription", ORG, "kisumu_v3")
+    assert out["return_approved_by"] is None and out["return_rejected_by"] == 12
+    assert out["return_approved_at"] == "2024-01-02 10:00:00"
+    assert m._NULL_IF_UNRESOLVED["evaluation_prescription"] == {"return_approved_by", "return_rejected_by"}
+
+
+def test_investigation_is_walkin_when_posted(monkeypatch):
+    monkeypatch.setattr(v2v3, "_v3_patient_for_v2_visit", lambda vid: 4242)
+    for val, want in ((None, 0), ("", 0), (1, 1), ("true", 1)):
+        out = v2v3.transform_record({"id": 727510, "visit": 1, "is_walkin": val},
+                                    "evaluation_investigation", ORG, "kisumu_v3")
+        assert out["is_walkin"] == want
+
+
+def test_sample_empty_status_is_collected():
+    co = v2v3._PER_KEY_COERCIONS["evaluation_sample"]["status"]
+    assert (co(""), co(None), co("  "), co("completed")) == ("collected", "collected", "collected", "completed")
+
+
+def test_investigation_null_flags_get_v3_defaults(monkeypatch):
+    monkeypatch.setattr(v2v3, "_v3_patient_for_v2_visit", lambda vid: 4242)
+    flags = ("ordered", "on_credit", "is_walkin", "cancelled", "moved", "moved_from_chargesheet",
+             "is_interim", "requires_preauth", "preauth_approved", "remove_from_report", "can_be_offered")
+    out = v2v3.transform_record({"id": 575994, "visit": 1, **{f: None for f in flags}},
+                                "evaluation_investigation", ORG, "kisumu_v3")
+    assert {f: out[f] for f in flags} == {**{f: 0 for f in flags}, "can_be_offered": 1}
+    kept = v2v3.transform_record({"id": 1, "visit": 1, "preauth_approved": "true", "can_be_offered": 0},
+                                 "evaluation_investigation", ORG, "kisumu_v3")
+    assert kept["preauth_approved"] == 1 and kept["can_be_offered"] == 0
+
+
+class TestVitalsMultipleReadings:
+    ROW = {"id": 208086, "visit": 336481, "user": 5, "created_at": "2025-11-10 10:10:43",
+           "bp_systolic": "204            231    161", "bp_diastolic": "107           111       80",
+           "pulse": "109", "respiration": "20", "temperature": "36.7", "oxygen": 97, "lmp": "2025-10-01"}
+
+    def test_outpatient_first_reading_and_note(self, monkeypatch):
+        monkeypatch.setattr(v2v3, "_visit_patient_map", {336481: 1})
+        monkeypatch.setitem(v2v3._PER_KEY_COERCIONS["outpatient_vital"], "recorded_by", lambda v: v)
+        out = v2v3.transform_record(dict(self.ROW), "outpatient_vital", ORG, "kisumu_v3")
+        assert (out["bp_systolic"], out["bp_diastolic"], out["pulse"]) == (204, 107, 109)
+        assert out["systolic_bp"] == 204 and out["blood_pressure"] == "204/107"
+        assert out["nurse_notes"] == "Multiple readings in V2 — bp_systolic: 204 231 161; bp_diastolic: 107 111 80"
+        assert out["lmp"] == "2025-10-01" and out["temperature"] == 36.7
+
+    def test_inpatient_first_reading_and_note(self, monkeypatch):
+        monkeypatch.setattr(v2v3, "_v2_admission_for_visit", lambda v: 9)
+        monkeypatch.setitem(v2v3._PER_KEY_COERCIONS["inpatient_vital"], "recorded_by", lambda v: v)
+        out = v2v3.transform_record({**self.ROW, "pulse": "83              77", "nurse_notes": "stable"},
+                                    "inpatient_vital", ORG, "kisumu_v3")
+        assert (out["systolic_bp"], out["pulse_rate"]) == (204, 83)
+        assert out["notes"].startswith("stable\nMultiple readings in V2 — ") and "pulse_rate: 83 77" in out["notes"]
+
+    def test_first_reading(self):
+        f = v2v3._first_reading
+        assert (f(""), f(None), f("N/A"), f("120/80"), f("36.7C"), f(98), f("72")) == (None, None, None, 120, 36.7, 98, 72)
+
+
+def test_petty_cash_seed_row_is_not_posted():
+    entries = [{"table": "petty_cash", "v3": r"App\Models\PettyCash", "transform": "generic"},
+               {"table": "finance_invoice_dispatches", "v3": r"App\Models\X", "transform": "generic"}]
+    out = {e["table"]: e for e in m.mark_skipped(entries)}
+    assert out["petty_cash"]["v3"] is None and "2017 setup row" in out["petty_cash"]["skipped"]
+    assert out["finance_invoice_dispatches"]["v3"] == r"App\Models\X"      # mapped tables untouched

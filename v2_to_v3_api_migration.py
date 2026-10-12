@@ -566,10 +566,10 @@ NAMESPACE_MAP: dict[str, dict] = {
     r"Ignite\Theatre\Entities\Theatre":                      {"v3": r"App\Models\Theatre",                     "transform": "theatre_theatre"},
     r"Ignite\Theatre\Entities\TheatreBookings":              {"v3": r"App\Models\TheatreBooking",              "transform": "theatre_booking"},
     r"Ignite\Theatre\Entities\TheatreBooking":               {"v3": r"App\Models\TheatreBooking",              "transform": "theatre_booking"},
-    r"Ignite\Theatre\Entities\TheatreSchedules":             {"v3": r"App\Models\TheatreSchedule",             "transform": "generic"},
-    r"Ignite\Theatre\Entities\TheatreSchedule":              {"v3": r"App\Models\TheatreSchedule",             "transform": "generic"},
-    r"Ignite\Theatre\Entities\TheatreOperations":            {"v3": r"App\Models\TheatreOperation",            "transform": "generic"},
-    r"Ignite\Theatre\Entities\TheatreOperation":             {"v3": r"App\Models\TheatreOperation",            "transform": "generic"},
+    r"Ignite\Theatre\Entities\TheatreSchedules":             {"v3": r"App\Models\TheatreSchedule",             "transform": "theatre_schedule"},
+    r"Ignite\Theatre\Entities\TheatreSchedule":              {"v3": r"App\Models\TheatreSchedule",             "transform": "theatre_schedule"},
+    r"Ignite\Theatre\Entities\TheatreOperations":            {"v3": r"App\Models\TheatreOperation",            "transform": "theatre_operation"},
+    r"Ignite\Theatre\Entities\TheatreOperation":             {"v3": r"App\Models\TheatreOperation",            "transform": "theatre_operation"},
 
     # ── TIER 3: Inpatient transactional ──────────────────────────────────────
     # Order: wards → beds → admission_requests → admissions
@@ -806,6 +806,7 @@ _PER_KEY_RENAMES: dict[str, dict[str, str]] = {
     },
     "inventory_purchase_order": {
         "delivery_date": "expected_delivery_date",
+        "user_id":       "created_by",      # after the global user → user_id rename
     },
     "inventory_requisition": {
         "requestor_id":     "requested_by",
@@ -824,8 +825,13 @@ _PER_KEY_RENAMES: dict[str, dict[str, str]] = {
         "company": "company_id",
     },
     "theatre_booking": {
-        "emergency": "is_emergency",
+        "emergency":           "is_emergency",
+        "operation_procedure": "operation_procedure_id",    # a V2 procedure id
+        "proc_cash_price":     "procedure_cash_price",
+        "proc_ins_price":      "procedure_insurance_price",
     },
+    "theatre_schedule":  {},
+    "theatre_operation": {},
     "theatre_theatre": {
         "associated_procedure": "associated_procedures",
     },
@@ -1067,7 +1073,9 @@ _V3_NULL_DEFAULTS: dict[str, Any] = {
     "is_a_split":           0,            # V2 had no split-prescription concept
     "appear_bold":          0,            # template_labs flag, null on some V2 rows
     "use_bio_ref_flagging": 0,            # procedures flag, null on some V2 rows
-    "is_walkin":            0,            # investigations flag, null on most V2 rows
+    "is_walkin":            0,            # investigations flags, null on most V2 rows
+    "preauth_approved":     0,
+    "requires_preauth":     0,
 }
 
 # Layer 2: coercions — value-level transforms applied after renaming.
@@ -1077,6 +1085,17 @@ def _inactive_to_status(v) -> str:
 
 def _active_flag_to_status(v) -> str:
     return "active" if v else "inactive"
+
+def _null_to(default):
+    """Coercion: a null / blank value becomes the V3 column's default."""
+    return lambda v: default if v is None or (isinstance(v, str) and not v.strip()) else v
+
+
+def _user_id_or_none(v) -> Any:
+    """A V2 *_by column that should be a user id but often holds the person's
+    name ('Ms. Kerubo  Venah') — a name can't become a V3 user id."""
+    return int(v) if str(v).strip().isdigit() else None
+
 
 def _wrap_in_list(v) -> list:
     if v is None:
@@ -1278,6 +1297,52 @@ def _blank_to_none(v):
     return None if v is None or (isinstance(v, str) and not v.strip()) else v
 
 
+_NUMBER = re.compile(r"-?\d+(?:\.\d+)?")
+
+
+def _first_reading(v):
+    """A numeric vital. Nurses sometimes typed several readings into one V2
+    field ('204            231    161', '120/80', '36.7C') — V3's numeric
+    columns reject that ("Data truncated"). The first reading is kept (all of
+    them go into the notes, see _note_multiple_readings); text with no number
+    at all becomes null."""
+    v = _blank_to_none(v)
+    if not isinstance(v, str):
+        return v
+    nums = _NUMBER.findall(v)
+    if not nums:
+        return None
+    n = float(nums[0])
+    return int(n) if n.is_integer() else n
+
+
+def _note_multiple_readings(note_field: str, fields: tuple[str, ...]):
+    """Pre-coercion hook: record every field holding more than one reading in
+    the vital's notes before _first_reading keeps only the first."""
+    def note(out: dict) -> None:
+        extra = [f"{f}: {' '.join(out[f].split())}" for f in fields
+                 if isinstance(out.get(f), str) and len(_NUMBER.findall(out[f])) > 1]
+        if extra:
+            line = "Multiple readings in V2 — " + "; ".join(extra)
+            out[note_field] = f"{out[note_field]}\n{line}" if _blank_to_none(out.get(note_field)) else line
+    return note
+
+
+_INPATIENT_VITAL_NUMBERS = ("temperature", "pulse_rate", "respiratory_rate", "systolic_bp", "diastolic_bp",
+                            "oxygen_saturation", "weight", "height", "bmi")
+_OUTPATIENT_VITAL_NUMBERS = ("temperature", "pulse", "weight", "height", "bmi", "head_circumference", "muac",
+                             "random_blood_sugar", "fasting_blood_sugar", "bp_systolic", "bp_diastolic",
+                             "respiration", "oxygen", "waist", "hip", "blood_sugar", "body_fat", "muscle_mass",
+                             "bone_mass", "metabolic_age", "body_water", "visceral_fat", "length_percentile",
+                             "weight_percentile", "bmi_percentile", "intracular_pressure")
+
+# run before the per-key coercions, on the renamed record
+_PER_KEY_PRE_COERCE: dict[str, Any] = {
+    "inpatient_vital":  _note_multiple_readings("notes", _INPATIENT_VITAL_NUMBERS),
+    "outpatient_vital": _note_multiple_readings("nurse_notes", _OUTPATIENT_VITAL_NUMBERS),
+}
+
+
 def _blood_pressure(r: dict) -> str | None:
     s = _blank_to_none(r.get("systolic_bp") or r.get("bp_systolic"))
     d = _blank_to_none(r.get("diastolic_bp") or r.get("bp_diastolic"))
@@ -1413,6 +1478,20 @@ _PER_KEY_INJECT: dict[str, dict[str, Any]] = {
         # NOT NULL in V3 (bytes); V2 never recorded the size
         "file_size":      lambda r: 0,
     },
+    # theatre_bookings / theatre_operations: patient_id NOT NULL; V2 rows only
+    # link the visit (V2 patient id here, remapped to V3 at post time)
+    "theatre_booking": {
+        "patient_id": lambda r: _v2_patient_for_visit(r.get("visit_id")),
+    },
+    "theatre_operation": {
+        "patient_id": lambda r: _v2_patient_for_visit(r.get("visit_id")),
+    },
+    "inventory_purchase_order": {
+        # inv_purchase_orders: po_number (unique per org) and order_date are
+        # NOT NULL; V2 orders have neither
+        "po_number":  lambda r: f"PO-{r.get('source_schema') or 'v2'}-{r.get('id')}",
+        "order_date": lambda r: str(r.get("created_at") or "")[:10] or None,
+    },
     "inpatient_bed": {
         # inp_beds has both: `number` (2026-06 simplified column) and the
         # original `bed_number`, still NOT NULL — same value
@@ -1517,17 +1596,12 @@ _PER_KEY_COERCIONS: dict[str, dict[str, Any]] = {
     },
     "inpatient_vital": {
         "recorded_by": _v3_user_for_v2_id,
-        **{f: _blank_to_none for f in ("temperature", "pulse_rate", "respiratory_rate", "systolic_bp",
-                                       "diastolic_bp", "oxygen_saturation", "weight", "height", "bmi")},
+        **{f: _first_reading for f in _INPATIENT_VITAL_NUMBERS},
     },
     "outpatient_vital": {
         "recorded_by": _v3_user_for_v2_id,
-        **{f: _blank_to_none for f in ("temperature", "pulse", "weight", "height", "bmi", "head_circumference",
-                                       "muac", "random_blood_sugar", "fasting_blood_sugar", "bp_systolic",
-                                       "bp_diastolic", "respiration", "oxygen", "waist", "hip", "blood_sugar",
-                                       "body_fat", "muscle_mass", "bone_mass", "metabolic_age", "body_water",
-                                       "visceral_fat", "length_percentile", "weight_percentile",
-                                       "bmi_percentile", "intracular_pressure", "lmp")},
+        **{f: _first_reading for f in _OUTPATIENT_VITAL_NUMBERS},
+        "lmp": _blank_to_none,                       # a date, not a reading
     },
     "inventory_dispensing": {
         "served_by":      _v3_user_for_v2_id,
@@ -1550,10 +1624,27 @@ _PER_KEY_COERCIONS: dict[str, dict[str, Any]] = {
     "settings_scheme": {
         "__active_to_status__": True,
     },
+    "evaluation_sample": {
+        # V3 status (pending / collected / processing / completed) is NOT NULL;
+        # every kisumu_v3 V2 sample has an empty status — a V2 sample row exists
+        # once the sample is taken, so "collected", not V3's default "pending"
+        "status": lambda v: v if str(v or "").strip() else "collected",
+    },
+    "evaluation_prescription": {
+        # V3 user ids; V2 holds the approver's / rejecter's name (all 9,401
+        # filled kisumu_v3 rows) — sent as null, the *_at dates are kept
+        "return_approved_by": _user_id_or_none,
+        "return_rejected_by": _user_id_or_none,
+    },
+    # investigations' boolean flags are NOT NULL with a default in V3
+    # (2026_03_10_000002_recreate_investigations_table…); V2 leaves them null
+    # (is_walkin on ~89% of rows) and an explicit null overrides the column
+    # default — so a null / blank flag is sent as that default
     "evaluation_investigation": {
-        # NOT NULL (default false) in V3; null on ~89% of V2 rows — an explicit
-        # null overrides the column default, so send 0 (not a walk-in)
-        "is_walkin": lambda v: 0 if v is None or v == "" else v,
+        **{flag: _null_to(0) for flag in (
+            "ordered", "on_credit", "is_walkin", "cancelled", "moved", "moved_from_chargesheet",
+            "is_interim", "requires_preauth", "preauth_approved", "remove_from_report")},
+        "can_be_offered": _null_to(1),
     },
     "theatre_theatre": {
         "associated_procedures": _wrap_in_list,
@@ -1710,7 +1801,9 @@ def transform_record(record: dict, transform_key: str, org_cfg: dict, facility: 
                 out.setdefault(GARBLED_KEY, {})[field] = _encode_corrupted_value(v)
                 out[field] = None
 
-    # 5. Per-key coercions
+    # 5. Per-key coercions (after any pre-coercion hook, which still sees the raw values)
+    if tk in _PER_KEY_PRE_COERCE:
+        _PER_KEY_PRE_COERCE[tk](out)
     coercions = _PER_KEY_COERCIONS.get(tk, {})
     if coercions.get("__inactive_to_status__"):
         if "inactive" in out:
@@ -3157,6 +3250,37 @@ _FK_REMAP: dict[str, dict[str, str]] = {
     "evaluation_doctor_note": {
         "visit_id": "visit",
     },
+    # theatre chain: booking → schedule → operation (each FK-constrained to
+    # its parent in theatre-service); visit / patient / users are other services
+    "theatre_booking": {
+        "visit_id":               "visit",
+        "patient_id":             "patient",
+        "status_id":              "theatre_scheduling_status",
+        "theatre_deposit_id":     "theatre_deposit",
+        "operation_procedure_id": "procedures",
+        "requested_by":           "users",
+        "approved_by":            "users",
+        "cancelled_by":           "users",
+        "rejected_by":            "users",
+        "authorized_by":          "users",
+    },
+    "theatre_schedule": {
+        "booking_id":   "theatre_booking",
+        "theatre_id":   "theatre",
+        "scheduled_by": "users",
+    },
+    "theatre_operation": {
+        "schedule_id": "theatre_schedule",
+        "visit_id":    "visit",
+        "patient_id":  "patient",
+    },
+    # inv_purchase_orders: supplier / store FK-constrained, created_by NOT NULL
+    "inventory_purchase_order": {
+        "supplier_id": "supplier",
+        "store_id":    "store",
+        "created_by":  "users",
+        "approved_by": "users",
+    },
     # evaluation_examination_reviews.visit_id → visits.id (FK-constrained)
     "evaluation_examination_review": {
         "visit_id": "visit",
@@ -3180,7 +3304,9 @@ _FK_REMAP: dict[str, dict[str, str]] = {
     # every prescription went out with its raw V2 visit id. The post step
     # (snowflake_to_v3_migration._V3_COLUMN_RENAMES) moves it back to `visit`.
     "evaluation_prescription": {
-        "visit_id": "visit",
+        "visit_id":           "visit",
+        "return_approved_by": "users",
+        "return_rejected_by": "users",
     },
     # invoices.patient_id → patients.id  |  invoices.visit → visits.id — this
     # transform key had NO FK-remap entry at all before (confirmed against
