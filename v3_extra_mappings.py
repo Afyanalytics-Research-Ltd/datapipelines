@@ -84,6 +84,24 @@ MAPPINGS: dict[str, dict] = {
         "critical": ["visit_id"],
         "null_if_unresolved": ["patient_id"],
     },
+    # ── inventory-service: current stock balances ────────────────────────
+    # V2 store_products is one row per product + store with its on-hand
+    # quantity and unit cost — exactly V3 inv_stocks (unique product + store +
+    # batch; no V2 batches). V3 refuses negative stock (CHECK >= 0, and the
+    # model floors it): the 68 negative kisumu_v3 balances arrive as 0.
+    "inventory_store_products": {
+        "namespace": r"Ignite\Inventory\Entities\StoreProduct",
+        "namespaces": [r"Ignite\Inventory\Entities\StoreProducts"],     # the older extract's name
+        "v3": r"App\Models\Stock", "alias": "stock", "service": "inventory",
+        "renames": {"quantity": "v2_quantity", "unit_cost": "average_cost"},
+        "keep": ["product_id", "store_id", "quantity", "available_quantity", "reserved_quantity",
+                 "average_cost", "total_value"],
+        "inject": {"quantity": ("nonneg", "v2_quantity"), "available_quantity": ("nonneg", "v2_quantity"),
+                   "reserved_quantity": ("const", 0),
+                   "total_value": ("mul_nonneg", "v2_quantity", "average_cost")},
+        "fk": {"product_id": "product", "store_id": "store"},
+        "critical": ["product_id", "store_id"],
+    },
     # ── inpatient-service ────────────────────────────────────────────────
     "inpatient_daily_charges_verifications": {
         "namespace": r"Ignite\Inpatient\Entities\DailyChargesVerifications",
@@ -372,7 +390,7 @@ NOT_MIGRATED: dict[str, str] = {
     "evaluation_prescription_payments": NO_MODEL, "evaluation_dispensing_details": NO_MODEL,
     "inventory_inventory_stock_adjustments": NO_MODEL, "evaluation_investigation_approvals": NO_MODEL,
     "evaluation_pos_sale_details": NO_MODEL, "finance_evaluation_payment_details": NO_MODEL,
-    "inventory_store_products": NO_MODEL, "inventory_inventory_batch_product_sales": NO_MODEL,
+    "inventory_inventory_batch_product_sales": NO_MODEL,
     "finance_invoice_dispatches": NO_MODEL, "inventory_batch_sales": NO_MODEL, "invoice_payers": NO_MODEL,
     "inpatient_inpatient_visit_charges": NO_MODEL, "inventory_inventory_dispensing": NO_MODEL,
     "inpatient_visit_rebates": NO_MODEL, "evaluation_slit_lamp_exam": NO_MODEL,
@@ -526,6 +544,20 @@ def _injector(spec):
             except (TypeError, ValueError):
                 return None
         return mul
+    if kind == "nonneg":                    # a quantity V3 floors at 0 (CHECK >= 0)
+        def nonneg(r):
+            try:
+                return max(0, int(float(r.get(args[0]))))
+            except (TypeError, ValueError):
+                return 0
+        return nonneg
+    if kind == "mul_nonneg":                # value of a quantity floored at 0
+        def mul_nonneg(r):
+            try:
+                return round(max(0.0, float(r.get(args[0]))) * float(r.get(args[1]) or 0), 2)
+            except (TypeError, ValueError):
+                return 0
+        return mul_nonneg
     if kind == "flags":
         pairs, default = args
 

@@ -418,3 +418,17 @@ def test_orphan_beds_are_skipped_not_posted():
 def test_rebates_wait_for_the_v3_backend():
     out = m.mark_skipped([{"table": "settings_rebates", "v3": r"App\Models\Rebate", "transform": "settings_rebate"}])
     assert out[0]["v3"] is None and out[0]["skipped"].startswith("BLOCKED ON V3 BACKEND")
+
+
+def test_stock_from_store_products():
+    import v3_extra_mappings as xm
+    tk = xm.transform_key("inventory_store_products")
+    assert v2v3.NAMESPACE_MAP[r"Ignite\Inventory\Entities\StoreProduct"]["transform"] == tk
+    base = {"id": 1, "product_id": 34461, "store_id": 381, "unit_cost": 8.97, "lot_no": None,
+            "selling_price": "0.00", "expiry_date": "0000-00-00"}
+    out = v2v3.transform_record({**base, "quantity": 12}, tk, ORG, "kisumu_v3")
+    assert out == {"id": 1, "product_id": 34461, "store_id": 381, "quantity": 12, "available_quantity": 12,
+                   "reserved_quantity": 0, "average_cost": 8.97, "total_value": 107.64}
+    neg = v2v3.transform_record({**base, "quantity": -5}, tk, ORG, "kisumu_v3")
+    assert (neg["quantity"], neg["available_quantity"], neg["total_value"]) == (0, 0, 0)
+    assert m._CRITICAL_FK_FIELDS[tk] == ["product_id", "store_id"]
