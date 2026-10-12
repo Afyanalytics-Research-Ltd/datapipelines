@@ -35,6 +35,12 @@ def _admission_for_visit(r):
     return r.get("admission_id") or v2v3._v2_admission_for_visit(r.get("visit_id"))
 
 
+def _patient_for_visit(r):
+    """V2 patient id of the row's visit (V2 diagnoses carry no patient column)."""
+    import v2_to_v3_api_migration as v2v3
+    return r.get("patient_id") or v2v3._v2_patient_for_visit(r.get("visit_id"))
+
+
 MAPPINGS: dict[str, dict] = {
     # ── evaluation-service ────────────────────────────────────────────────
     "evaluation_procedure_prices": {
@@ -193,6 +199,30 @@ MAPPINGS: dict[str, dict] = {
         "fk": {"requisition_id": "requisition", "product_id": "product"},
         "critical": ["requisition_id", "product_id"],
     },
+    # ── diagnoses (ICD10 notes) ────────────────────────────────────────────
+    # V2 keeps the diagnosis as a link to an ICD10 variation; the code and
+    # name are joined in by FETCH_SQL below (variation_code / variation_name).
+    # diagnosis_code_id is nullable in V3 — left empty (no V3 code lookup yet).
+    "evaluation_icd10_notes": {
+        "namespace": r"Ignite\Evaluation\Entities\Icd10Notes",
+        "namespaces": [r"Ignite\Evaluation\Entities\Icd10Note"],
+        "v3": r"App\Models\Diagnosis", "alias": "diagnoses", "service": "evaluation",
+        "renames": {"user_id": "recorded_by"},
+        "keep": ["visit_id", "patient_id", "diagnosis_text", "diagnosis_date", "recorded_by"],
+        "inject": {"patient_id": ("patient_for_visit",),
+                   "diagnosis_text": ("join_or", ["variation_code", "variation_name"], "code"),
+                   "diagnosis_date": ("copy", "created_at")},
+        "fk": {"visit_id": "visit", "patient_id": "patient", "recorded_by": "users"},
+        "critical": ["visit_id", "patient_id"],                    # both NOT NULL
+        "null_if_unresolved": ["recorded_by"],
+    },
+    # ── core-service ──────────────────────────────────────────────────────
+    "inventory_store_departments": {
+        "namespace": r"Ignite\Inventory\Entities\StoreDepartment",
+        "namespaces": [r"Ignite\Inventory\Entities\StoreDepartments"],
+        "v3": r"App\Models\Department", "alias": "departments", "service": "core",
+        "keep": ["name", "description"],                           # code is unique + nullable: left empty
+    },
     "inventory_goods_received_details": {
         "namespace": r"Ignite\Inventory\Entities\GoodsReceivedDetails",
         "v3": r"App\Models\GoodsReceivedItem", "alias": "goods_received_item", "service": "inventory",
@@ -269,7 +299,8 @@ NOT_MIGRATED: dict[str, str] = {
     "inventory_inventory_stocks": "V3 stock is per product + store (+ batch); V2 rows carry the product only",
     "inventory_customers": "V3 customer needs customer_no + name; V2 rows are patient-linked walk-ins",
     "inventory_batches": "V3 batch needs batch_no, product, cost; the one V2 row is a supplier delivery",
-    "evaluation_icd10_notes": "V3 diagnoses need a diagnosis_code_id; V2 holds the ICD10 code text — needs a code lookup first",
+    "settings_destinations": "V3 core_service_destinations was reworked (destination_type_id …) and its "
+                             "required columns are unclear — confirm with the V3 backend before mapping",
     "credit_notes": "V3 credit_note needs invoice_id, total_amount, reason; V2 notes are receipt-linked",
     "inpatient_visit_wards": "V2 rows are ward charges on a visit; V3 visit_ward is a bed allocation on an admission",
     "evaluation_sub_procedures": "no column in common with V3 subprocedures",
@@ -343,8 +374,17 @@ def _injector(spec):
                     return value
             return default
         return flags
+    if kind == "join_or":
+        cols, fallback = args
+
+        def join_or(r):
+            joined = " ".join(str(r.get(c)).strip() for c in cols if str(r.get(c) or "").strip())
+            return joined or (str(r.get(fallback)).strip() if str(r.get(fallback) or "").strip() else None)
+        return join_or
     if kind == "admission_for_visit":
         return _admission_for_visit
+    if kind == "patient_for_visit":
+        return _patient_for_visit
     raise ValueError(f"unknown inject {spec!r}")
 
 
@@ -372,9 +412,18 @@ def apply(v2v3, s2v3) -> int:
             s2v3._CRITICAL_FK_FIELDS.setdefault(tk, list(spec["critical"]))
         if spec.get("null_if_unresolved"):
             s2v3._NULL_IF_UNRESOLVED.setdefault(tk, set(spec["null_if_unresolved"]))
+        # a row whose visit was never extracted for the facility can never be
+        # linked — skipped and counted, not held back on every run
+        if "visit_id" in spec.get("critical", []) and (spec.get("fk") or {}).get("visit_id") == "visit":
+            s2v3._SKIP_IF_PARENT_NOT_IN_FACILITY.setdefault(tk, [("visit_id", "visits", "id")])
         s2v3._ALIAS_OVERRIDE.setdefault(tk, spec["alias"])
         s2v3._SERVICE_OVERRIDE.setdefault(tk, spec["service"])
         added += 1
+    for table, spec in MAPPINGS.items():          # other spellings of the same V2 class
+        for ns in spec.get("namespaces", []):
+            if ns not in v2v3.NAMESPACE_MAP and spec["namespace"] in v2v3.NAMESPACE_MAP:
+                v2v3.NAMESPACE_MAP[ns] = dict(v2v3.NAMESPACE_MAP[spec["namespace"]])
+                added += 1
     for ns, same_as in NAMESPACE_ALIASES.items():
         if ns not in v2v3.NAMESPACE_MAP and same_as in v2v3.NAMESPACE_MAP:
             v2v3.NAMESPACE_MAP[ns] = dict(v2v3.NAMESPACE_MAP[same_as])
@@ -382,14 +431,51 @@ def apply(v2v3, s2v3) -> int:
     return added
 
 
+# ─── tables read with their own query ───────────────────────────────────────
+
+def _icd10_notes_sql(clean: str, cols_of, clean_set: set[str]) -> str | None:
+    """ICD10 notes with their variation's code and name. The new (uuid-era)
+    extract links the variation by variation_uuid, the old one by
+    variation_id — join on whichever both sides have."""
+    var = "evaluation_icd10_variations"
+    if var not in clean_set:
+        return None
+    notes, variations = cols_of("evaluation_icd10_notes"), cols_of(var)
+    if not {"code", "name", "id"} <= variations:
+        return None
+    on = ['TO_VARCHAR(v."ID") = TO_VARCHAR(n."VARIATION_ID")'] if "variation_id" in notes else []
+    if "variation_uuid" in notes and "uuid" in variations:
+        on.append('v."UUID" = n."VARIATION_UUID"')
+    if not on:
+        return None
+    return (f'SELECT n.*, v."CODE" AS "VARIATION_CODE", v."NAME" AS "VARIATION_NAME" '
+            f'FROM {clean}.EVALUATION_ICD10_NOTES n LEFT JOIN {clean}.{var.upper()} v ON ' + " OR ".join(on))
+
+
+# table → builder(clean schema, cols_of(table) → lower-case column names, CLEAN
+# object names) → SQL, or None to read the table as is
+FETCH_SQL = {"evaluation_icd10_notes": _icd10_notes_sql}
+
+
+def duplicate_of(table: str, clean_set=None) -> str | None:
+    """The canonical copy this table duplicates — only when that copy is in
+    the facility's CLEAN too (elsewhere this table may be the only copy;
+    clean_set None = assume it is)."""
+    canonical = DUPLICATES.get(table.lower())
+    if canonical and (clean_set is None or canonical in clean_set):
+        return canonical
+    return None
+
+
 def coverage(entries: list[dict], clean_tables) -> dict:
     """Every CLEAN table → migrated | duplicate | not_migrated | UNACCOUNTED.
     `entries` are discover_tables() results (with v3/transform), `clean_tables`
     the names of the facility's CLEAN objects."""
     mapped = {e["table"].lower() for e in entries if e.get("transform") and e.get("v3")}
+    clean_set = {str(t).lower() for t in clean_tables}
     out = {}
-    for t in sorted({str(t).lower() for t in clean_tables}):
-        if t in DUPLICATES:
+    for t in sorted(clean_set):
+        if duplicate_of(t, clean_set):
             out[t] = f"duplicate of {DUPLICATES[t]}"
         elif t in mapped:
             out[t] = "migrated"

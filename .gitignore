@@ -88,6 +88,8 @@ failed_mapped_logs/*
 .migration_state/**/*.tmp
 .migration_state/**/*.bak*
 *.csv
+# V2 extraction queue (table / namespace list, no data) — read by table_set=queue
+!mapping/v2_extraction_queue.csv
 rsa_key*
 *.pdf
 *.jsonl

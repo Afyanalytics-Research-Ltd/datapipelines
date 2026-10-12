@@ -11,6 +11,9 @@ Trigger form options (all optional):
   facilities       one or more facility keys (multi-select).
   table_set        "sheet"              — tables from the data-dictionary sheet
                    "old_system_history" — the V2 tables behind old_system_history
+                   "queue"              — any V2 table, by its V2 name, from
+                                          mapping/v2_extraction_queue.csv (exact
+                                          namespaces, from the V2 journey registry)
   tables           limit to these tables (one per line). Empty = whole table set.
                    A name that matches nothing in the set fails the plan step.
   full_refresh     extract everything (updated_since = 1970) instead of the watermark.
@@ -85,11 +88,13 @@ def _job_label(job: dict) -> str:
         "facilities": Param(["kisumu_v3"], type="array",
                             items={"type": "string", "enum": FACILITIES},
                             title="Facilities", description="One or more facility keys."),
-        "table_set": Param("sheet", type="string", enum=["sheet", "old_system_history"],
+        "table_set": Param("sheet", type="string", enum=["sheet", "old_system_history", "queue"],
                            title="Table set",
                            description="sheet = data-dictionary sheet tables; "
                                        "old_system_history = V2 tables behind old_system_history "
-                                       f"({len(old_system_history_tables())} tables)."),
+                                       f"({len(old_system_history_tables())} tables); "
+                                       "queue = any V2 table by name, from mapping/v2_extraction_queue.csv "
+                                       "(exact namespaces — use it for tables the sheet doesn't list)."),
         "tables": Param([], type="array", items={"type": "string"}, title="Tables",
                         description="Only these tables (one per line). Empty = the whole set. "
                                     "Old-system-history names: " + ", ".join(old_system_history_tables())),
@@ -124,7 +129,7 @@ def v2_facility_to_snowflake():
             raise AirflowFailException(
                 "IGNITE_SHEET_ID is not set — add it as an Airflow Variable (or to the "
                 "environment / repo .env). The sheet table set needs it to list tables; "
-                "table_set=old_system_history doesn't.")
+                "table_set=old_system_history / queue don't.")
         unknown_fac = [f for f in facilities if f not in loader.FACILITIES]
         if unknown_fac:
             raise AirflowFailException(f"Unknown facilities {unknown_fac}; known: {sorted(loader.FACILITIES)}")

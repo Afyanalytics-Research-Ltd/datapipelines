@@ -51,9 +51,11 @@ class TestKisumuCoverage:
         assert kinds == {"migrated", "duplicate", "not migrated"}
         assert sum(s == "migrated" for s in cov.values()) >= 104
 
-    def test_every_new_mapping_is_a_clean_table_and_now_migrates(self):
+    def test_every_new_mapping_for_a_kisumu_clean_table_migrates(self):
         cov = xm.coverage(entries_from_fixture(), FIXTURE)
-        for t in xm.MAPPINGS:
+        in_clean = [t for t in xm.MAPPINGS if t in FIXTURE]
+        assert len(in_clean) >= 19                     # the rest come from other extracts (queue)
+        for t in in_clean:
             assert cov.get(t) == "migrated", t
 
     def test_no_table_has_two_fates(self):

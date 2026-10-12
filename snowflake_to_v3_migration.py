@@ -298,16 +298,18 @@ def discover_tables(cur, facility: str) -> list[dict]:
             "v3":        mapping["v3"] if mapping else None,
             "transform": mapping["transform"] if mapping else None,
         })
-    return mark_skipped(entries)
+    return mark_skipped(entries, set(clean_tables(cur, facility)))
 
 
-def mark_skipped(entries: list[dict]) -> list[dict]:
+def mark_skipped(entries: list[dict], clean_set: set | None = None) -> list[dict]:
     """Copies of a table migrated under another name are never posted (they'd
-    put the same records in twice); unmapped tables carry their recorded reason."""
+    put the same records in twice) — when that other copy is in this
+    facility's CLEAN; unmapped tables carry their recorded reason."""
     for e in entries:
         t = e["table"].lower()
-        if t in xm.DUPLICATES:
-            e.update(v3=None, transform=None, skipped=f"duplicate of {xm.DUPLICATES[t]}")
+        canonical = xm.duplicate_of(t, clean_set)
+        if canonical:
+            e.update(v3=None, transform=None, skipped=f"duplicate of {canonical}")
         elif not e["v3"]:
             e["skipped"] = xm.NOT_MIGRATED.get(t)
     return entries
@@ -473,6 +475,9 @@ def _parent_tables(transform_key: str, v3_namespace: str | None) -> set[str]:
     fk = {**v2v3._NS_FK_REMAP.get(v3_namespace or "", {}), **v2v3._FK_REMAP.get(transform_key, {})}
     tables = {_table_for_alias(a) for a in set(fk.values()) | {"patient", "visit", "admission"}}
     tables |= {t for _, t, _ in _SKIP_IF_PARENT_NOT_IN_FACILITY.get(transform_key, [])}
+    # the same V2 table loaded under another name (xm.TWINS) holds the same
+    # ids — and a re-extract under the new name is where the uuids are
+    tables |= {k for k, v in xm.TWINS.items() if v in tables} | {xm.TWINS[t] for t in tables if t in xm.TWINS}
     return {t for t in tables if t}
 
 
@@ -481,7 +486,8 @@ def ensure_uuids_loaded(facility: str, tables) -> None:
     not yet seen by this process. A parent whose job is already done never
     re-registers its rows, so without this its children's `_uuid` links
     could never be turned back into V2 ids."""
-    person_tables = {_alias_to_table.get(a) for a in _PERSON_UUID_ALIASES}
+    person_tables = {_alias_to_table.get(a) for a in _PERSON_UUID_ALIASES} | {"reception_patients", "patients"}
+    person_tables |= {k for k, v in xm.TWINS.items() if v in person_tables}
     for table in sorted(set(tables) - _uuids_loaded):
         _uuids_loaded.add(table)
         src = f"{sf_schema(facility, 'CLEAN')}.{table.upper()}"
@@ -942,15 +948,45 @@ def _remap_fks_via_uuid(record: dict, transform_key: str, v3_namespace: str) -> 
 
 # ─── PER-TABLE JOB ───────────────────────────────────────────────────────────
 
-def _already_inserted(job_key: str, r: dict) -> bool:
+def _already_inserted(job_key: str, r: dict, alias: str | None = None) -> bool:
     """Inserted under its uuid — or, for a record migrated before V2 had
-    uuids (progress keyed by V2 id), under its id."""
+    uuids (progress keyed by V2 id), under its id — or its V2 id already
+    maps to a V3 row of this model (migrated by another job, e.g. the same
+    V2 table loaded earlier under another source-table name)."""
     if v2v3._record_inserted(job_key, r.get("uuid") or r.get("id")):
         return True
     i = r.get("id")
-    if not r.get("uuid") or i is None:
+    if i is None:
         return False
-    return any(v2v3._record_inserted(job_key, k) for k in {i, str(i), int(i) if str(i).isdigit() else i})
+    keys = {i, str(i), int(i) if str(i).isdigit() else i}
+    if r.get("uuid") and any(v2v3._record_inserted(job_key, k) for k in keys):
+        return True
+    if alias and _single_source(alias):
+        mp = _id_map_for(alias)
+        return any(k in mp for k in keys)
+    return False
+
+
+_single_source_cache: dict[str, bool] = {}
+
+
+def _single_source(alias: str) -> bool:
+    """True when every V2 class mapped to this V3 model is the same V2 entity
+    (spellings aside), so a V2 id in its id map can only be this record.
+    `vital` gets evaluation AND inpatient vitals, whose ids overlap — False."""
+    if alias not in _single_source_cache:
+        variants = set(_alias_variants(alias))
+        sources = set()
+        for ns, mp in v2v3.NAMESPACE_MAP.items():
+            if not mp.get("v3"):
+                continue
+            a = _ALIAS_OVERRIDE.get(mp.get("transform")) or v2v3._v3_alias(mp["v3"])
+            if a in variants:
+                parts = ns.split("\\")
+                cls = parts[-1].lower()
+                sources.add((parts[1].lower(), cls[:-1] if cls.endswith("s") else cls))
+        _single_source_cache[alias] = len(sources) <= 1
+    return _single_source_cache[alias]
 
 
 def post_table_to_v3(v3_namespace: str, org_cfg: dict, records: list[dict],
@@ -973,7 +1009,7 @@ def post_table_to_v3(v3_namespace: str, org_cfg: dict, records: list[dict],
         return 0
 
     pending = [r for r in records
-               if job_key in REPROCESS_JOB_KEYS or not _already_inserted(job_key, r)]
+               if job_key in REPROCESS_JOB_KEYS or not _already_inserted(job_key, r, alias)]
     skipped = len(records) - len(pending)
     if skipped:
         log.info("  Skipping %d already-migrated records, posting %d", skipped, len(pending))
@@ -1224,6 +1260,10 @@ def iter_clean_chunks(facility: str, table: str, chunk_rows: int = CHUNK_ROWS):
     base = sql.format(clean=clean_schema) if sql else f"SELECT * FROM {clean_schema}.{table}"
     with _snowflake_connect() as conn:
         cur = conn.cursor()
+        if table.lower() in xm.FETCH_SQL:
+            built = xm.FETCH_SQL[table.lower()](clean_schema, lambda t: clean_columns(cur, facility, t),
+                                                set(clean_tables(cur, facility)))
+            base = built or base
         base = _without_twin_rows(cur, facility, table, base)
         cur.execute(f"SELECT * FROM ({base}) LIMIT 0")
         cols = {d[0].upper() for d in cur.description}
@@ -1629,6 +1669,14 @@ def clean_tables(cur, facility: str) -> list[str]:
     cur.execute(f"SELECT LOWER(table_name) FROM {db}.INFORMATION_SCHEMA.TABLES WHERE table_schema = %s",
                 (schema,))
     return [r[0] for r in cur.fetchall()]
+
+
+def clean_columns(cur, facility: str, table: str) -> set[str]:
+    """A CLEAN table/view's column names, lower case."""
+    db, schema = sf_schema(facility, "CLEAN").split(".")
+    cur.execute(f"SELECT LOWER(column_name) FROM {db}.INFORMATION_SCHEMA.COLUMNS "
+                f"WHERE table_schema = %s AND LOWER(table_name) = %s", (schema, table.lower()))
+    return {r[0] for r in cur.fetchall()}
 
 
 def mapping_coverage(facility: str) -> dict:

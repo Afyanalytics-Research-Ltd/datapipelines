@@ -53,6 +53,7 @@ ENV VARS  (put them in a `.env` file next to this script — auto-loaded)
 from __future__ import annotations
 
 import argparse
+import csv
 import gzip
 import hashlib
 import json
@@ -499,11 +500,45 @@ def facility_config(facility: str) -> dict:
     return cfg
 
 
+# ─── V2 EXTRACTION QUEUE TABLE SET ────────────────────────────────────────
+# Every V2 table the uuid layer tracks, with its exact namespace, tier and
+# wave (V2_EXTRACTION_QUEUE.csv, generated from the V2 journey registry —
+# regenerate it there rather than editing it). table_set=queue extracts from
+# it, so any V2 table can be pulled by name, not only the sheet's. Tables
+# with no Eloquent model (no namespace) can't come through the gateway.
+EXTRACTION_QUEUE_FILE = Path(__file__).resolve().parent / "mapping" / "v2_extraction_queue.csv"
+
+
+def read_extraction_queue() -> list[dict]:
+    """The queue's rows in load order (tier, wave): step, tier, wave, module,
+    table, namespace, kind, join_column, join_table, rows_ref_dump."""
+    with EXTRACTION_QUEUE_FILE.open(newline="", encoding="utf-8") as f:
+        rows = [{k: (v or "").strip() for k, v in r.items()} for r in csv.DictReader(f)]
+    return sorted(rows, key=lambda r: (int(r["step"] or 9), int(r["wave"] or 0), r["table"]))
+
+
 def build_jobs_for_facility(facility: str, since: str | None = None,
                              only_tables: set[str] | None = None,
                              table_set: str = "sheet") -> list[dict]:
     cfg = facility_config(facility)
     last_run = since or get_watermark(state_key(facility, table_set))
+
+    if table_set == "queue":
+        jobs = [
+            {
+                "facility":      facility,
+                "module":        q["module"],
+                "table":         q["table"],
+                "namespace":     q["namespace"],
+                "database":      cfg.get("db"),
+                "updated_since": last_run,
+                "limit":         500,
+            }
+            for q in read_extraction_queue()
+            if q["namespace"] and (not only_tables or q["table"].lower() in only_tables)
+        ]
+        log.info("Prepared %d extraction-queue jobs for facility=%s", len(jobs), facility)
+        return jobs
 
     if table_set == "old_system_history":
         jobs = [
