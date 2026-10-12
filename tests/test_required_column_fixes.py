@@ -237,3 +237,29 @@ def test_patient_document_file_size():
     out = v2v3.transform_record({"id": 7, "patient": 1, "file_name": "scan.pdf"},
                                 "reception_patient_document", ORG, "kisumu_v3")
     assert out["file_size"] == 0
+
+
+def test_user_gets_a_random_password_and_forced_reset(tmp_path, monkeypatch):
+    a = v2v3.transform_record({"id": 1422, "username": "a", "email": "a@x"}, "settings_user", ORG, "kisumu_v3")
+    b = v2v3.transform_record({"id": 1423, "username": "b", "email": "b@x"}, "settings_user", ORG, "kisumu_v3")
+    assert len(a["password"]) >= 32 and a["password"] != b["password"]
+    assert a["enforce_password_reset"] == 1
+    # never written to the dead-letter file
+    monkeypatch.setattr(v2v3, "DEAD_LETTER_FILE", tmp_path / "dl.jsonl")
+    v2v3._write_dead_letter(r"App\Models\User", a, {"message": "x"})
+    text = (tmp_path / "dl.jsonl").read_text()
+    assert a["password"] not in text and "<redacted>" in text
+
+
+def test_bed_number_from_number():
+    out = v2v3.transform_record({"id": 17, "number": "008", "ward_id": 1, "bed_type_id": 2, "is_available": "true"},
+                                "inpatient_bed", ORG, "kisumu_v3")
+    assert out["bed_number"] == "008" and out["number"] == "008" and out["is_available"] == 1
+
+
+def test_investigation_null_is_walkin_is_zero():
+    out = v2v3.transform_record({"id": 727501, "visit": 1, "is_walkin": None}, "evaluation_investigation", ORG, "kisumu_v3")
+    assert out is None or out["is_walkin"] == 0          # None = held back for its patient, not for is_walkin
+    tk = v2v3._PER_KEY_COERCIONS["evaluation_investigation"]["is_walkin"]
+    assert (tk(None), tk(""), tk(1), tk(0)) == (0, 0, 1, 0)
+    assert v2v3._V3_NULL_DEFAULTS["is_walkin"] == 0

@@ -52,6 +52,7 @@ import mimetypes
 import logging
 import os
 import re
+import secrets
 import sys
 import threading
 import time
@@ -1066,6 +1067,7 @@ _V3_NULL_DEFAULTS: dict[str, Any] = {
     "is_a_split":           0,            # V2 had no split-prescription concept
     "appear_bold":          0,            # template_labs flag, null on some V2 rows
     "use_bio_ref_flagging": 0,            # procedures flag, null on some V2 rows
+    "is_walkin":            0,            # investigations flag, null on most V2 rows
 }
 
 # Layer 2: coercions — value-level transforms applied after renaming.
@@ -1411,9 +1413,19 @@ _PER_KEY_INJECT: dict[str, dict[str, Any]] = {
         # NOT NULL in V3 (bytes); V2 never recorded the size
         "file_size":      lambda r: 0,
     },
+    "inpatient_bed": {
+        # inp_beds has both: `number` (2026-06 simplified column) and the
+        # original `bed_number`, still NOT NULL — same value
+        "bed_number": lambda r: r.get("number"),
+    },
     "settings_user": {
         # email is required; a V2 user without one falls back to its username
         "email": lambda r: r.get("username"),
+        # NOT NULL in V3, and the V2 extract carries no password (hash). A
+        # random one nobody ever sees (V3 hashes it; redacted from the
+        # dead-letter file) + a forced reset: staff set theirs on first login.
+        "password":               lambda r: secrets.token_urlsafe(32),
+        "enforce_password_reset": lambda r: 1,
     },
     "inpatient_admission_type": {
         # inp_admission_types needs a code; V2 types only have a name
@@ -1537,6 +1549,11 @@ _PER_KEY_COERCIONS: dict[str, dict[str, Any]] = {
     },
     "settings_scheme": {
         "__active_to_status__": True,
+    },
+    "evaluation_investigation": {
+        # NOT NULL (default false) in V3; null on ~89% of V2 rows — an explicit
+        # null overrides the column default, so send 0 (not a walk-in)
+        "is_walkin": lambda v: 0 if v is None or v == "" else v,
     },
     "theatre_theatre": {
         "associated_procedures": _wrap_in_list,
@@ -2336,12 +2353,16 @@ class RecordDeadLettered(Exception):
     """
 
 
+_REDACT_FIELDS = {"password", "remember_token", "api_token"}
+
+
 def _write_dead_letter(v3_namespace: str, record: dict, error_body: dict) -> None:
     """Append one failed record to the JSONL dead-letter file for later replay."""
     entry = {
         "ts":        datetime.now(timezone.utc).isoformat(),
         "namespace": v3_namespace,
-        "record":    record,
+        # never write a credential to disk (users get a generated password)
+        "record":    {k: ("<redacted>" if k in _REDACT_FIELDS and v else v) for k, v in record.items()},
         "error":     error_body,
     }
     with _dead_letter_lock:
