@@ -517,3 +517,33 @@ def test_empty_v3_table_assumes_uuid_without_caching(monkeypatch):
     m._alias_has_uuid.pop("zz_empty", None)
     assert m._model_has_uuid("zz_empty", "inventory") is True
     assert "zz_empty" not in m._alias_has_uuid
+
+
+def test_procedures_sync_by_code_never_by_name(monkeypatch):
+    """Five V2 'Colonoscopy' procedures, each its own code: each links to the
+    V3 row with ITS code ('<code>-<V2 id>' for a code V2 repeats), never to
+    the first same-named row."""
+    import v2_to_v3_api_migration as v2v3
+    v3 = [{"id": 5, "name": "Colonoscopy", "code": "THEA 45"},
+          {"id": 459, "name": "Colonoscopy", "code": "ASI-0036"},
+          {"id": 1344, "name": "Colonoscopy", "code": "PRC-0003"},
+          {"id": 700, "name": "Doctor's Fee", "code": "DUP-1"},
+          {"id": 701, "name": "Consultant Review", "code": "DUP-1-29238"},
+          {"id": 702, "name": "Doctor's Fee", "code": "DUP-1-29235"},
+          # a 2026-10-12 copy: "<code>-<V2 id>" for a code V2 doesn't repeat
+          {"id": 3001, "name": "Colonoscopy", "code": "ASI-0036-27262"}]
+    v2 = [{"id": 27354, "name": "COLONOSCOPY", "code": "THEA 45"},
+          {"id": 27262, "name": "Colonoscopy", "code": "ASI-0036"},
+          {"id": 27263, "name": "Colonoscopy", "code": "PRC-0003"},
+          {"id": 29238, "name": "Consultant Review", "code": "DUP-1"},   # V2 repeats the code
+          {"id": 29235, "name": "Doctor's Fee", "code": "DUP-1"}]
+    stored = {}
+    monkeypatch.setattr(v2v3, "_fetch_v3_records", lambda *a, **k: v3)
+    monkeypatch.setattr(v2v3, "v2_facility_config", lambda f: {"db": "x"})
+    monkeypatch.setattr(v2v3, "extract_v2_records", lambda job: (v2, []))
+    monkeypatch.setattr(v2v3, "_store_id_mapping", lambda alias, k, v: stored.__setitem__(k, v))
+    field = v2v3._SYNC_MATCH_FIELD_BY_NS[r"App\Models\Procedure"]
+    assert field == "code"
+    v2v3.sync_id_map("procedures", r"Ignite\Evaluation\Entities\Procedures", "kisumu_v3", match_field=field)
+    # same code + same name as the original → the original; different name → its own copy row
+    assert stored == {27354: 5, 27262: 459, 27263: 1344, 29238: 701, 29235: 700}

@@ -3837,6 +3837,11 @@ _SYNC_MATCH_FIELD_BY_NS: dict[str, str] = {
     # ICD-10 types: V3 keeps the description empty — the code is the key
     # (all 1,910 kisumu_v3 types match by code)
     r"App\Models\Icd10Type": "code",
+    # procedures: never by name — V2 has several procedures per name (5×
+    # "Colonoscopy", each its own code and price) and V3 a row per code; by
+    # name, 233 kisumu_v3 procedures were linked to a same-named sibling.
+    # Codes V2 itself repeats are "<code>-<V2 id>" in V3 (tried first).
+    r"App\Models\Procedure": "code",
 }
 # further fields tried (in order) when the match field finds nothing, per alias.
 # Usernames are unique per org in V3; 18 kisumu_v3 staff had placeholder emails.
@@ -3886,6 +3891,7 @@ def sync_id_map(alias: str, v2_namespace: str, facility: str, match_field: str =
     v3_by_key: dict[str, int] = {}
     v3_by_fallback: dict[tuple[str, str], int] = {}
     v3_by_v2_id: dict[int, int] = {}
+    v3_name_by_key: dict[str, str] = {}
     # Oldest row first, and the first row per name wins: when V3 holds copies of
     # a record (1,763 procedures re-created on 2026-10-12), children must link
     # to the original, never to the copy.
@@ -3898,6 +3904,7 @@ def sync_id_map(alias: str, v2_namespace: str, facility: str, match_field: str =
         key = rec.get(match_field)
         if key:
             v3_by_key.setdefault(str(key).strip().lower(), v3_id)
+            v3_name_by_key.setdefault(str(key).strip().lower(), str(rec.get("name") or "").strip().lower())
         for fb in _SYNC_FALLBACK_FIELDS.get(alias, ()):
             if rec.get(fb):
                 v3_by_fallback.setdefault((fb, str(rec[fb]).strip().lower()), v3_id)
@@ -3925,6 +3932,13 @@ def sync_id_map(alias: str, v2_namespace: str, facility: str, match_field: str =
         log.warning("sync_id_map: %s — %d page(s) failed to extract and were skipped: %s",
                     v2_namespace, len(failed_pages), failed_pages)
 
+    v2_code_count: dict[str, int] = {}
+    if match_field == "code":
+        for rec in v2_records:
+            k = str(rec.get("code") or "").strip().lower()
+            if k:
+                v2_code_count[k] = v2_code_count.get(k, 0) + 1
+
     by_uuid = by_field = 0
     for rec in v2_records:
         v2_id = rec.get("id")
@@ -3938,7 +3952,17 @@ def sync_id_map(alias: str, v2_namespace: str, facility: str, match_field: str =
             v3_id = v3_by_v2_id.get(int(v2_id)) if str(v2_id).isdigit() else None
             if not v3_id:
                 key = str(rec.get(match_field) or "").strip().lower()
-                v3_id = v3_by_key.get(key) if key else None
+                # The plain-code row is the original (oldest first). Every
+                # "<code>-<V2 id>" row is a 2026-10-12 copy — used ONLY when V2
+                # repeats the code for a DIFFERENT procedure (CON-0003: Doctor's
+                # Fee / Consultant Review / REVIEW …), where the original holds
+                # the code and that copy is the procedure's only V3 row.
+                if key and match_field == "code" and v2_code_count.get(key, 0) > 1:
+                    orig_name = v3_name_by_key.get(key, "")
+                    if str(rec.get("name") or "").strip().lower() != orig_name:
+                        v3_id = v3_by_key.get(f"{key}-{v2_id}")
+                if not v3_id:
+                    v3_id = v3_by_key.get(key) if key else None
             for fb in _SYNC_FALLBACK_FIELDS.get(alias, ()):
                 if v3_id:
                     break

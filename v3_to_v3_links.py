@@ -100,6 +100,7 @@ MODEL_LINKS: dict[str, dict[str, str | None]] = {
     "evaluation/procedure_categories": {"parent_category_id": "evaluation/procedure_categories"},
     "evaluation/procedures": {"category": "evaluation/procedure_categories", "sub_category_id": DROP},
     "evaluation/subprocedures": {"procedure": "evaluation/procedures"},
+    "evaluation/template_labs": {"subtest_id": "evaluation/procedures"},
     "evaluation/diagnoses": {"diagnosis_code_id": "evaluation/icd10_variations"},
     "inventory/product": {"category_id": "inventory/product_category"},
     "inventory/product_category": {"parent_category_id": "inventory/product_category"},
