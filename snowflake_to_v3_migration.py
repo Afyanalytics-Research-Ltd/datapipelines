@@ -596,6 +596,7 @@ _CRITICAL_FK_FIELDS: dict[str, list] = {
     "inventory_purchase_order":      ["supplier_id", "store_id", "created_by"],
     "inventory_grn":                 ["purchase_order_id", "store_id", "supplier_id"],
     "inventory_requisition":         ["requesting_store_id"],
+    "inventory_stock_movement":      ["product_id", "user_id", "from_store_id", "to_store_id"],
     # inp_admission_requests: patient + requesting doctor NOT NULL
     "inpatient_admission_request":   ["patient_id", "requested_by"],
     # inv_products.category_id is FK-constrained: wait for the category
@@ -657,6 +658,11 @@ _SKIP_IF_PARENT_NOT_IN_FACILITY: dict[str, list[tuple[str, str, str]]] = {
     # orders whose store isn't in V2's stores (kisumu_v3: stores 1 and 2) can never link
     "inventory_purchase_order":     [("store_id", "inventory_stores", "id")],
     "inventory_grn":                [("store_id", "inventory_stores", "id")],
+    # early (2023) movements point at products / stores / users deleted from V2
+    # itself (product 29, stores 1 and 2, users 723 / 726) — never linkable
+    "inventory_stock_movement":     [("product_id", "inventory_products", "id"),
+                                     ("store_id", "inventory_stores", "id"),
+                                     ("user_id", "users", "id")],
     # all 4 kisumu_v3 requisitions have store_id 0 (no store) — V3 requires one
     "inventory_requisition":        [("requesting_store_id", "inventory_stores", "id")],
     "gen_inventory_internal_order": [("requesting_store_id", "inventory_stores", "id"),

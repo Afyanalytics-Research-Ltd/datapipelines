@@ -551,6 +551,9 @@ NAMESPACE_MAP: dict[str, dict] = {
     r"Ignite\Reception\Entities\Referral":                   {"v3": r"App\Models\Referral",                    "transform": "generic"},
 
     # Inventory transactional (after config)
+    # V2 stock ledger (one row per stock change) → V3 inventory stock movements
+    r"Ignite\Inventory\Entities\StockMovement":              {"v3": r"App\Models\StockMovement",               "transform": "inventory_stock_movement"},
+    r"Ignite\Inventory\Entities\StockMovements":             {"v3": r"App\Models\StockMovement",               "transform": "inventory_stock_movement"},
     r"Ignite\Inventory\Entities\Products":                   {"v3": r"App\Models\Product",                     "transform": "inventory_product"},
     r"Ignite\Inventory\Entities\Product":                    {"v3": r"App\Models\Product",                     "transform": "inventory_product"},
     r"Ignite\Inventory\Entities\BatchPurchases":             {"v3": r"App\Models\Batch",                       "transform": "inventory_batch"},
@@ -729,6 +732,11 @@ _PER_KEY_RENAMES: dict[str, dict[str, str]] = {
     "finance_gl_account_group": {"type": "account_type_id"},
     "inventory_unit": {},
     "evaluation_examination_review": {},
+    # V2's signed quantity / store / action / type are re-derived (see _movement_*)
+    "inventory_stock_movement": {
+        "quantity": "v2_quantity", "store_id": "v2_store_id", "action": "v2_action", "type": "v2_type",
+        "opening": "opening_balance", "closing": "closing_balance",
+    },
     "reception_patient_document": {
         "filename": "file_name",
         "document": "file_path",
@@ -975,6 +983,11 @@ _PER_KEY_KEEP_ONLY: dict[str, set[str]] = {
                         "procedure_insurance_price", "authorized_amount", "approved_by", "cancelled_by",
                         "rejected_by", "authorized_by", "cancellation_reason", "rejection_reason",
                         "created_at", "updated_at"},
+    # inventory-service StockMovement::$fillable that V2 can fill
+    # created_at / updated_at: when the movement happened (a ledger needs the V2 date)
+    "inventory_stock_movement": {"product_id", "type", "direction", "from_store_id", "to_store_id", "quantity",
+                                 "opening_balance", "closing_balance", "reason", "notes", "user_id",
+                                 "idempotency_key", "created_at", "updated_at"},
     # reception-service PatientDependant::$fillable that V2 can fill
     "reception_patient_dependant": {"patient_id", "full_name", "relationship", "dob", "gender", "id_no",
                                     "mobile", "email"},
@@ -1146,6 +1159,44 @@ _RECEIPT_METHODS = (("cash_amount", "cash"), ("mpesa_amount", "mpesa"), ("card_a
                     ("pesa_pal_card_amount", "card"), ("jambopay_amount", "jambopay"),
                     ("patientaccount_amount", "patient_account"), ("giftcard_amount", "gift_card"),
                     ("voucher_amount", "voucher"), ("loyalty_amount", "loyalty"), ("points_amount", "points"))
+
+
+# V2 stock-movement action (free text, 20 values in kisumu_v3) → V3 (type, direction).
+# None as direction = by the sign of V2's quantity (+ in, − out).
+_MOVEMENT_ACTIONS: dict[str, tuple[str, str | None]] = {
+    "dispensed": ("dispense", "out"), "consumable": ("issue", "out"),
+    "return": ("return", "in"), "consumable return": ("return", "in"),
+    "sys-purchase": ("receipt", "in"), "product added to store": ("receipt", "in"),
+    "internal order (receive)": ("receipt", "in"), "in": ("receipt", "in"),
+    "pharmacy pos sale": ("sale", "out"), "walkin_sale": ("sale", "out"),
+    "knocked_off": ("disposal", "out"), "dispatched": ("transfer", "out"),
+    "positive adjmt.": ("adjustment", "in"), "negative adjmt.": ("adjustment", "out"),
+    "sys-transer": ("transfer", None), "sys-transfer": ("transfer", None),
+    "sys-adjustment": ("adjustment", None), "adjustment": ("adjustment", None),
+    "stock_take_adjustment": ("adjustment", None),
+}
+
+
+def _movement(r: dict) -> tuple[str, str]:
+    """(V3 type, direction). V2's own type column says in / out on most rows
+    and wins; elsewhere (transfer, adjust, adjustment, purchase order) the
+    action, else the quantity's sign. An "in" with a negative quantity (310
+    stock-take adjustments) is stock going down: out."""
+    kind, direction = _MOVEMENT_ACTIONS.get(str(r.get("v2_action") or "").strip().lower(), ("adjustment", None))
+    negative = _as_float(r.get("v2_quantity")) < 0
+    v2_dir = str(r.get("v2_type") or "").strip().lower()
+    if v2_dir in ("in", "out"):
+        direction = "out" if v2_dir == "in" and negative else v2_dir
+    elif direction is None:
+        direction = "out" if negative else "in"
+    return kind, direction
+
+
+def _int_or_zero(v) -> int:
+    try:
+        return int(round(float(v)))
+    except (TypeError, ValueError):
+        return 0
 
 
 _REQUISITION_STATUS = {s: s for s in ("draft", "submitted", "pending_approval", "approved", "partially_fulfilled",
@@ -1595,6 +1646,16 @@ _PER_KEY_INJECT: dict[str, dict[str, Any]] = {
         # have none. Same pattern as schemes' SCH-<facility>-<id>.
         "code": lambda r: f"INS-{r.get('source_schema') or 'v2'}-{r.get('id')}",
     },
+    "inventory_stock_movement": {
+        "type":            lambda r: _movement(r)[0],
+        "direction":       lambda r: _movement(r)[1],
+        "quantity":        lambda r: abs(_int_or_zero(r.get("v2_quantity"))),        # V3 keeps it positive
+        "from_store_id":   lambda r: r.get("v2_store_id") if _movement(r)[1] == "out" else None,
+        "to_store_id":     lambda r: r.get("v2_store_id") if _movement(r)[1] == "in" else None,
+        "reason":          lambda r: _blank_to_none(r.get("v2_action")),
+        "notes":           lambda r: f"V2 type: {r['v2_type']}" if _blank_to_none(r.get("v2_type")) else None,
+        "idempotency_key": lambda r: f"v2:{r.get('source_schema') or 'v2'}:stock_movement:{r.get('id')}",
+    },
     "inventory_requisition": {
         # inv_requisitions: requisition_number (unique per org) and request_date are NOT NULL
         "requisition_number": lambda r: f"REQ-{r.get('source_schema') or 'v2'}-{r.get('id')}",
@@ -1753,6 +1814,9 @@ _PER_KEY_COERCIONS: dict[str, dict[str, Any]] = {
     },
     # inv_requisitions.status is an enum without V2's "pending" ("Data truncated
     # for column 'status'"): pending → pending_approval, unknown → submitted
+    "inventory_stock_movement": {
+        "opening_balance": _int_or_zero, "closing_balance": _int_or_zero,     # NOT NULL integers
+    },
     "inventory_requisition": {
         "status": lambda v: _REQUISITION_STATUS.get(str(v or "").strip().lower(), "submitted"),
         # NOT NULL with defaults (2025_11_25_000010)
@@ -3460,6 +3524,13 @@ _FK_REMAP: dict[str, dict[str, str]] = {
         "requested_by":        "users",
         "approved_by":         "users",
     },
+    # inv_stock_movements: product + store FK-constrained, user NOT NULL
+    "inventory_stock_movement": {
+        "product_id":    "product",
+        "from_store_id": "store",
+        "to_store_id":   "store",
+        "user_id":       "users",
+    },
     # inv_goods_received_notes: PO / store / supplier FK-constrained
     "inventory_grn": {
         "purchase_order_id": "purchase_order",
@@ -3754,6 +3825,8 @@ def _fetch_v3_records(alias: str, org_cfg: dict, service_name: str | None = None
 # alias (singular/plural varies by service) so lookups can't get out of sync.
 _SYNC_MATCH_FIELD_BY_NS: dict[str, str] = {
     r"App\Models\User": "email",
+    # products: code is per-org unique in V3 (V3 renamed name → generic_name)
+    r"App\Models\Product": "code",
 }
 # further fields tried (in order) when the match field finds nothing, per alias.
 # Usernames are unique per org in V3; 18 kisumu_v3 staff had placeholder emails.
@@ -3876,7 +3949,9 @@ def sync_id_map(alias: str, v2_namespace: str, facility: str, match_field: str =
     return matched
 
 
-_RESYNC_MAX_ROWS = 5000            # only reference-sized tables are re-synced when partial
+# only reference-sized tables are re-synced when partial (products: 6,440 V3 rows
+# in org 4 — 94 V2 products had no mapping, holding 686 stock rows and movements)
+_RESYNC_MAX_ROWS = 10000
 
 # transform keys whose payload carries facility_id that must be the destination facility
 _PER_KEY_DEST_FACILITY: set[str] = {"theatre_theatre"}

@@ -41,6 +41,16 @@ def _patient_for_visit(r):
     return r.get("patient_id") or v2v3._v2_patient_for_visit(r.get("visit_id"))
 
 
+# Surgical safety checklists with no certifier in V2 (all 92 kisumu_v3 rows):
+# the operation's lead surgeon stands in (joined in as certifier_user_id,
+# _checklist_certifier_sql) and the signature field records that it's a
+# stand-in. Order matters: the note is decided before certified_by is filled.
+_STAND_IN_CERTIFIER_INJECT = {
+    "certified_by_signature": ("if_empty", "certified_by",
+                               "Certifier not recorded in V2 — set to the operation's lead surgeon at migration"),
+    "certified_by": ("copy", "certifier_user_id"),
+}
+
 MAPPINGS: dict[str, dict] = {
     # ── evaluation-service ────────────────────────────────────────────────
     "evaluation_procedure_prices": {
@@ -110,6 +120,180 @@ MAPPINGS: dict[str, dict] = {
         "keep": ["result_detail_id", "type", "lower", "upper", "flag", "bio_reference", "lg_type", "lg_value"],
         "fk": {"result_detail_id": "investigation_result_details"},
         "critical": ["result_detail_id"],
+    },
+    # ── theatre-service: operation details and checklists ────────────────
+    # (_STAND_IN_CERTIFIER_INJECT: see _checklist_certifier_sql)
+    # The theatre gateway hides SQL errors ("the database refused the row"),
+    # so every payload holds only real V3 columns. V3 renamed almost every V2
+    # checklist field; V2 yes/no values are on / yes / no / 1 / 0 / non.
+    "theatre_operation_medics": {
+        "namespace": r"Ignite\Theatre\Entities\TheatreMedic",
+        "v3": r"App\Models\TheatreOperationMedic", "alias": "theatre_operation_medic", "service": "theatre",
+        "keep": ["operation_id", "user_id", "medic_type_id", "role"],
+        # role (NOT NULL enum) from the V2 medic type's name (joined in, FETCH_SQL)
+        "inject": {"role": ("map", "medic_type_name", {"surgeon": "lead_surgeon", "anaesthetist": "anaesthetist",
+                                                       "nurse": "scrub_nurse", "assistant": "assistant_surgeon"},
+                            "assistant_surgeon")},
+        "fk": {"operation_id": "theatre_operation", "user_id": "users", "medic_type_id": "theatre_medic_type"},
+        "critical": ["operation_id", "user_id", "medic_type_id"],
+    },
+    "theatre_operation_procedures": {
+        "namespace": r"Ignite\Theatre\Entities\OperationProcedure",
+        "namespaces": [r"Ignite\Theatre\Entities\OperationProcedures"],     # the older extract's name
+        "v3": r"App\Models\TheatreOperationProcedure", "alias": "theatre_operation_procedure", "service": "theatre",
+        "renames": {"type": "v2_type"},
+        "keep": ["operation_id", "procedure_id", "procedure_name", "procedure_notes"],
+        # procedure_name NOT NULL — the V2 procedure's name (joined in, FETCH_SQL)
+        "inject": {"procedure_notes": ("copy", "v2_type")},
+        "fk": {"operation_id": "theatre_operation", "procedure_id": "procedures"},
+        "critical": ["operation_id"],
+        "null_if_unresolved": ["procedure_id"],
+    },
+    "theatre_operation_pulses": {
+        "namespace": r"Ignite\Theatre\Entities\OperationPulses",
+        "v3": r"App\Models\TheatreOperationPulse", "alias": "theatre_operation_pulse", "service": "theatre",
+        "renames": {"value": "pulse_rate"},
+        "keep": ["operation_id", "pulse_rate", "recorded_at"],
+        "inject": {"recorded_at": ("copy", "created_at")},
+        "fk": {"operation_id": "theatre_operation"},
+        "critical": ["operation_id"],
+    },
+    "theatre_deposits": {
+        "namespace": r"Ignite\Theatre\Entities\TheatreDeposit",
+        "v3": r"App\Models\TheatreDeposit", "alias": "theatre_deposit", "service": "theatre",
+        "keep": ["name", "amount", "description"],
+    },
+    "theatre_anaesthetist_checks": {
+        "namespace": r"Ignite\Theatre\Entities\AnaesthetistCheck",
+        "v3": r"App\Models\TheatreAnaesthetistCheck", "alias": "theatre_anaesthetist_check", "service": "theatre",
+        "renames": {f: f"v2_{f}" for f in ("hb", "pvc", "electrolyte_normal", "temp", "sugar", "albumim", "systolic",
+                                           "diastolic", "pulse", "dentures", "patient_fit_operation",
+                                           "consent_given", "premedication_given")},
+        "keep": ["booking_id", "hb", "pvc", "electrolyte_normal", "temperature", "blood_sugar", "albumin",
+                 "systolic_bp", "diastolic_bp", "pulse", "has_dentures", "patient_fit_for_operation",
+                 "consent_given", "premedication_given", "certified_by"],
+        "inject": {"hb": ("number", "v2_hb"), "pvc": ("number", "v2_pvc"), "temperature": ("number", "v2_temp"),
+                   "blood_sugar": ("number", "v2_sugar"), "albumin": ("number", "v2_albumim"),
+                   "systolic_bp": ("number", "v2_systolic"), "diastolic_bp": ("number", "v2_diastolic"),
+                   "pulse": ("number", "v2_pulse"), "electrolyte_normal": ("yesno", "v2_electrolyte_normal"),
+                   "has_dentures": ("yesno", "v2_dentures"),
+                   "patient_fit_for_operation": ("yesno", "v2_patient_fit_operation", 0),
+                   "consent_given": ("yesno", "v2_consent_given", 0),
+                   "premedication_given": ("yesno", "v2_premedication_given", 0)},
+        "fk": {"booking_id": "theatre_booking", "certified_by": "users"},
+        "critical": ["booking_id", "certified_by"],
+    },
+    "theatre_doctor_checks": {
+        "namespace": r"Ignite\Theatre\Entities\DoctorCheck",
+        "v3": r"App\Models\TheatreDoctorCheck", "alias": "theatre_doctor_check", "service": "theatre",
+        "renames": {f: f"v2_{f}" for f in ("hydration_normal", "hb", "electrolyte_normal", "chest_normal",
+                                           "bp_systolic", "diastolic", "pulse", "pvc", "temp",
+                                           "relevant_medical_preoperative_preparation_completed",
+                                           "patient_fit_operation", "blood_available", "consent_given")},
+        "keep": ["booking_id", "hydration_normal", "hb", "electrolyte_normal", "chest_normal", "systolic_bp",
+                 "diastolic_bp", "pulse", "pvc", "temperature", "preoperative_preparation_completed",
+                 "patient_fit_for_operation", "blood_available", "consent_given", "certified_by"],
+        "inject": {"hb": ("number", "v2_hb"), "pvc": ("number", "v2_pvc"), "temperature": ("number", "v2_temp"),
+                   "systolic_bp": ("number", "v2_bp_systolic"), "diastolic_bp": ("number", "v2_diastolic"),
+                   "pulse": ("number", "v2_pulse"), "hydration_normal": ("yesno", "v2_hydration_normal"),
+                   "electrolyte_normal": ("yesno", "v2_electrolyte_normal"),
+                   "chest_normal": ("yesno", "v2_chest_normal"),
+                   "preoperative_preparation_completed":
+                       ("yesno", "v2_relevant_medical_preoperative_preparation_completed", 0),
+                   "patient_fit_for_operation": ("yesno", "v2_patient_fit_operation", 0),
+                   "blood_available": ("yesno", "v2_blood_available"),
+                   "consent_given": ("yesno", "v2_consent_given", 0)},
+        "fk": {"booking_id": "theatre_booking", "certified_by": "users"},
+        "critical": ["booking_id", "certified_by"],
+    },
+    "theatre_nurse_checks": {
+        "namespace": r"Ignite\Theatre\Entities\NurseChecks",
+        "namespaces": [r"Ignite\Theatre\Entities\NurseCheck"],
+        "v3": r"App\Models\TheatreNurseCheck", "alias": "theatre_nurse_check", "service": "theatre",
+        "renames": {f: f"v2_{f}" for f in ("gown_and_socks", "wigs", "jewellery", "dentures", "preparation",
+                                           "gastric_tube", "xrays", "blood_available", "consent_given",
+                                           "premedication_given", "bladder_check_urinary_catheter")},
+        "keep": ["booking_id", "has_gown_and_socks", "has_wigs", "has_jewellery", "has_dentures",
+                 "preparation_done", "urinalysis_sugar", "urinalysis_albumin", "has_gastric_tube", "has_xrays",
+                 "blood_available", "consent_given", "premedication_given", "bladder_check_notes", "certified_by"],
+        "inject": {"has_gown_and_socks": ("yesno", "v2_gown_and_socks"), "has_wigs": ("yesno", "v2_wigs"),
+                   "has_jewellery": ("yesno", "v2_jewellery"), "has_dentures": ("yesno", "v2_dentures"),
+                   "preparation_done": ("yesno", "v2_preparation", 0), "has_gastric_tube": ("yesno", "v2_gastric_tube"),
+                   "has_xrays": ("yesno", "v2_xrays"), "blood_available": ("yesno", "v2_blood_available"),
+                   "consent_given": ("yesno", "v2_consent_given", 0),
+                   "premedication_given": ("yesno", "v2_premedication_given", 0),
+                   "urinalysis_sugar": ("copy", "sugar"), "urinalysis_albumin": ("copy", "albumim"),
+                   "bladder_check_notes": ("copy", "v2_bladder_check_urinary_catheter")},
+        "fk": {"booking_id": "theatre_booking", "certified_by": "users"},
+        "critical": ["booking_id", "certified_by"],
+    },
+    "theatre_before_anaesthesias": {
+        "namespace": r"Ignite\Theatre\Entities\BeforeAnaesthesias",
+        "v3": r"App\Models\TheatreBeforeAnaesthesia", "alias": "theatre_before_anaesthesia", "service": "theatre",
+        "renames": {f: f"v2_{f}" for f in ("patient_confirmed", "site_marked", "anaesthesia_safety_check_completed",
+                                           "pulse_oximeter_on_patient_functioning", "known_allergy",
+                                           "difficult_airway_aspiration_risk", "risk_of_over_500ml_blood_loss")}
+                   | {"known_allergy_marked_notes": "known_allergy_notes"},
+        "keep": ["operation_id", "patient_confirmed", "site_marked", "site_marked_notes",
+                 "anaesthesia_safety_check_completed", "pulse_oximeter_functioning", "known_allergy",
+                 "known_allergy_notes", "difficult_airway_risk", "blood_loss_risk", "certified_by",
+                 "certified_by_signature"],
+        "inject": {**_STAND_IN_CERTIFIER_INJECT,
+                   "patient_confirmed": ("yesno", "v2_patient_confirmed", 0), "site_marked": ("yesno", "v2_site_marked"),
+                   "anaesthesia_safety_check_completed": ("yesno", "v2_anaesthesia_safety_check_completed", 0),
+                   "pulse_oximeter_functioning": ("yesno", "v2_pulse_oximeter_on_patient_functioning"),
+                   "known_allergy": ("yesno", "v2_known_allergy"),
+                   "difficult_airway_risk": ("yesno", "v2_difficult_airway_aspiration_risk"),
+                   "blood_loss_risk": ("yesno", "v2_risk_of_over_500ml_blood_loss")},
+        "fk": {"operation_id": "theatre_operation", "certified_by": "users"},
+        "critical": ["operation_id", "certified_by"],
+    },
+    "theatre_before_skin_incisions": {
+        "namespace": r"Ignite\Theatre\Entities\TheatreBeforeSkinIncision",
+        "v3": r"App\Models\TheatreBeforeSkinIncision", "alias": "theatre_before_skin_incision", "service": "theatre",
+        "renames": {"confirm_members": "v2_confirm_members",
+                    "surgeon_anaesthesia_nurse_confirm": "v2_surgeon_anaesthesia_nurse_confirm",
+                    "antibiotic_prophylaxis_sixty_minutes": "v2_antibiotic_prophylaxis",
+                    "essential_imaging_displayed": "v2_essential_imaging_displayed",
+                    "nurse_team_review_notes": "nursing_team_review_notes"},
+        "keep": ["operation_id", "team_members_confirmed", "surgeon_anaesthesia_nurse_confirmed",
+                 "surgeon_review_notes", "anaesthesia_team_review_notes", "nursing_team_review_notes",
+                 "antibiotic_prophylaxis_given", "essential_imaging_displayed", "certified_by",
+                 "certified_by_signature"],
+        "inject": {**_STAND_IN_CERTIFIER_INJECT,
+                   "team_members_confirmed": ("yesno", "v2_confirm_members", 0),
+                   "surgeon_anaesthesia_nurse_confirmed": ("yesno", "v2_surgeon_anaesthesia_nurse_confirm", 0),
+                   "antibiotic_prophylaxis_given": ("yesno", "v2_antibiotic_prophylaxis"),
+                   "essential_imaging_displayed": ("yesno", "v2_essential_imaging_displayed")},
+        "fk": {"operation_id": "theatre_operation", "certified_by": "users"},
+        "critical": ["operation_id", "certified_by"],
+    },
+    "theatre_before_leaving_theatres": {
+        "namespace": r"Ignite\Theatre\Entities\BeforeLeavingTheatres",
+        "v3": r"App\Models\TheatreBeforeLeavingTheatre", "alias": "theatre_before_leaving_theatre",
+        "service": "theatre",
+        "renames": {"name_of_procedure_recorded": "v2_name_of_procedure_recorded",
+                    "name_of_procedure_recorded_notes": "procedure_name_notes",
+                    "that_instrument_sponge_needle_count_are_correct": "v2_count_correct",
+                    "that_instrument_sponge_needle_count_are_correct_notes": "count_notes",
+                    "how_specimen_is_recorded": "v2_specimen_recorded",
+                    "how_specimen_is_recorded_notes": "specimen_notes",
+                    "whether_there_are_any_equipment_problems": "v2_equipment_problems",
+                    "whether_there_are_any_equipment_problems_notes": "equipment_notes",
+                    "surgeon_anaesthesia_professional_nurse_review": "v2_team_review",
+                    "surgeon_anaesthesia_professional_nurse_review_notes": "review_notes"},
+        "keep": ["operation_id", "procedure_name_recorded", "procedure_name_notes",
+                 "instrument_sponge_needle_count_correct", "count_notes", "specimen_labeling_recorded",
+                 "specimen_notes", "equipment_problems", "equipment_notes", "team_review_completed",
+                 "review_notes", "certified_by", "certified_by_signature"],
+        "inject": {**_STAND_IN_CERTIFIER_INJECT,
+                   "procedure_name_recorded": ("yesno", "v2_name_of_procedure_recorded", 0),
+                   "instrument_sponge_needle_count_correct": ("yesno", "v2_count_correct"),
+                   "specimen_labeling_recorded": ("yesno", "v2_specimen_recorded"),
+                   "equipment_problems": ("yesno", "v2_equipment_problems"),
+                   "team_review_completed": ("yesno", "v2_team_review", 0)},
+        "fk": {"operation_id": "theatre_operation", "certified_by": "users"},
+        "critical": ["operation_id", "certified_by"],
     },
     # ── core-service: roles ──────────────────────────────────────────────
     # Role definitions only (Spatie roles: unique per name + guard + org; the
@@ -489,9 +673,6 @@ NOT_MIGRATED: dict[str, str] = {
     "inventory_stocks": "V3 stock is per product + store (+ batch); V2 rows carry the product only",
     "inventory_batch": "V3 batch needs batch_no, store_id and cost_price; V2 rows have no store (0/1333) and a "
                        "batch number on only 113",
-    "inventory_stock_movements": "V3 stock_movement needs a type enum, a direction, from/to store and a NOT NULL "
-                                 "user_id; V2 has 20 free-text actions and signed quantities — history only, no "
-                                 "V3 stock rows to match",
     "inventory_stock_adjustments": NO_MODEL,
     "inventory_store_stock_adjustments": "product_id and store_id empty on all 9,250 rows (only store_product_id, "
                                          "and store_products isn't migrated); same adjustments as the stock movements",
@@ -541,17 +722,20 @@ NOT_MIGRATED: dict[str, str] = {
     "users_user_profiles": "profiles belong to the user accounts the V3 backend creates; user_profiles has no "
                            "gateway model and needs user_id, which waits for users",
     # theatre / dialysis
-    "theatre_medic": PENDING_KEY, "theatre_operation_procedures": PENDING_KEY,
-    "theatre_operation_investigations": PENDING_KEY, "theatre_before_leaving_theatres": PENDING_KEY,
+    # older KISUMU_CLEAN extract names
+    "theatre_medic": PENDING_KEY,
     "theatre_theatre_before_anaesthesias": PENDING_KEY, "theatre_theatre_before_skin_incisions": PENDING_KEY,
     "theatre_theatre_payments": PENDING_KEY, "theatre_theatre_operation_pulses": PENDING_KEY,
     "theatre_theatre_operation_fluids": PENDING_KEY, "theatre_theatre_deposits": PENDING_KEY,
     "theatre_consumable_requirements": PENDING_KEY,
-    "theatre_anaesthetist_checks": PENDING_KEY, "theatre_before_anaesthesias": PENDING_KEY,
-    "theatre_before_skin_incisions": PENDING_KEY, "theatre_deposits": PENDING_KEY,
-    "theatre_doctor_checks": PENDING_KEY, "theatre_nurse_check": PENDING_KEY, "theatre_nurse_checks": PENDING_KEY,
-    "theatre_operation_fluids": PENDING_KEY, "theatre_operation_medics": PENDING_KEY,
-    "theatre_operation_pulses": PENDING_KEY, "theatre_payments": PENDING_KEY,
+    "theatre_nurse_check": "the same 14 rows as theatre_nurse_checks (migrated from there)",
+    # theatre-service columns V2 has no data for (checked 2026-10-13)
+    "theatre_operation_investigations": "V3 needs investigation name, ordered_at and ordered_by (a user); "
+                                        "V2 rows hold only a procedure id and type",
+    "theatre_operation_fluids": "V3 needs fluid name, route and administered_by (a user); V2 has only a "
+                                "quantity and time",
+    "theatre_payments": "V3 needs received_by (a user), payment method and the booking; V2 rows link the "
+                        "operation and invoice, with no cashier",
     "dialysis_patients": PENDING_KEY, "dialysis_chairs": PENDING_KEY, "dialysis_schedules": PENDING_KEY,
     "dialysis_machines": PENDING_KEY, "dialysis_wards": PENDING_KEY, "dialysis_ward_types": PENDING_KEY,
     "dialysis_sessions": PENDING_KEY, "dialysis_plants": PENDING_KEY, "dialysis_vascular_accesses": PENDING_KEY,
@@ -586,6 +770,35 @@ def _injector(spec):
             except (TypeError, ValueError):
                 return None
         return mul
+    if kind == "yesno":                     # V2 checklist value → 1 / 0, else the default (None)
+        unknown = args[1] if len(args) > 1 else None
+
+        def yesno(r):
+            v = str(r.get(args[0]) if r.get(args[0]) is not None else "").strip().lower()
+            if v in ("", "null"):
+                return unknown
+            if v in ("on", "yes", "y", "true", "1", "checked", "done"):
+                return 1
+            if v in ("off", "no", "n", "non", "none", "false", "0", "nil"):
+                return 0
+            try:
+                return 1 if float(v) > 0 else 0       # e.g. blood available "450" (ml)
+            except ValueError:
+                return unknown
+        return yesno
+    if kind == "if_empty":                  # a value only where V2's own column is empty
+        col, value = args
+        return lambda r: value if r.get(col) in (None, "", 0, "0") else None
+    if kind == "number":                    # numeric V3 column: a V2 number, else null ("normal")
+        def number(r):
+            try:
+                return float(str(r.get(args[0])).strip())
+            except (TypeError, ValueError):
+                return None
+        return number
+    if kind == "map":                       # value of one V2 column looked up in a dict
+        col, table, default = args
+        return lambda r: table.get(str(r.get(col) or "").strip().lower(), default)
     if kind == "nonneg":                    # a quantity V3 floors at 0 (CHECK >= 0)
         def nonneg(r):
             try:
@@ -733,9 +946,44 @@ def _goods_received_sql(clean: str, cols_of, clean_set: set[str]) -> str | None:
             f'ON TO_VARCHAR(p."ID") = TO_VARCHAR(g."PURCHASE_ORDER_ID")')
 
 
+def _join_name_sql(table: str, fk: str, parent: str, alias: str):
+    """table rows + the parent's NAME as <alias> (V3 wants the name; V2 links the id)."""
+    def build(clean: str, cols_of, clean_set: set[str]) -> str | None:
+        if parent not in clean_set or fk not in cols_of(table) or not {"id", "name"} <= cols_of(parent):
+            return None
+        return (f'SELECT t.*, p."NAME" AS "{alias.upper()}" FROM {clean}.{table.upper()} t '
+                f'LEFT JOIN {clean}.{parent.upper()} p ON TO_VARCHAR(p."ID") = TO_VARCHAR(t."{fk.upper()}")')
+    return build
+
+
+def _checklist_certifier_sql(table: str):
+    """Surgical safety checklists: V3 requires certified_by, and no kisumu_v3
+    checklist row records one. Agreed 2026-10-13: the operation's lead surgeon
+    (its medic of type 'surgeon'; else any medic on the operation) stands in,
+    joined as CERTIFIER_USER_ID — and the signature field says so."""
+    def build(clean: str, cols_of, clean_set: set[str]) -> str | None:
+        if not {"theatre_operation_medics", "theatre_medic_types"} <= clean_set or "operation_id" not in cols_of(table):
+            return None
+        return (
+            f'SELECT t.*, COALESCE(s.uid, a.uid) AS "CERTIFIER_USER_ID" FROM {clean}.{table.upper()} t '
+            f'LEFT JOIN (SELECT m."OPERATION_ID" op, MIN(m."USER_ID") uid FROM {clean}.THEATRE_OPERATION_MEDICS m '
+            f'JOIN {clean}.THEATRE_MEDIC_TYPES mt ON TO_VARCHAR(mt."ID") = TO_VARCHAR(m."MEDIC_TYPE_ID") '
+            f"WHERE LOWER(TRIM(mt.\"NAME\")) = 'surgeon' GROUP BY 1) s ON TO_VARCHAR(s.op) = TO_VARCHAR(t.\"OPERATION_ID\") "
+            f'LEFT JOIN (SELECT "OPERATION_ID" op, MIN("USER_ID") uid FROM {clean}.THEATRE_OPERATION_MEDICS GROUP BY 1) a '
+            f'ON TO_VARCHAR(a.op) = TO_VARCHAR(t."OPERATION_ID")')
+    return build
+
+
 # table → builder(clean schema, cols_of(table) → lower-case column names, CLEAN
 # object names) → SQL, or None to read the table as is
 FETCH_SQL = {"evaluation_icd10_notes": _icd10_notes_sql,
+             "theatre_before_anaesthesias": _checklist_certifier_sql("theatre_before_anaesthesias"),
+             "theatre_before_skin_incisions": _checklist_certifier_sql("theatre_before_skin_incisions"),
+             "theatre_before_leaving_theatres": _checklist_certifier_sql("theatre_before_leaving_theatres"),
+             "theatre_operation_medics": _join_name_sql("theatre_operation_medics", "medic_type_id",
+                                                        "theatre_medic_types", "medic_type_name"),
+             "theatre_operation_procedures": _join_name_sql("theatre_operation_procedures", "procedure_id",
+                                                            "evaluation_procedures", "procedure_name"),
              "inventory_goods_received": _goods_received_sql,
              "evaluation_visit_destinations": _visit_destinations_sql,
              "patient_dependants": _patient_dependants_sql("patient_dependants"),
