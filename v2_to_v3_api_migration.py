@@ -421,8 +421,7 @@ NAMESPACE_MAP: dict[str, dict] = {
     # Evaluation reference / lookup tables
     r"Ignite\Evaluation\Entities\DiagnosisCodes":            {"v3": r"App\Models\DiagnosisCode",               "transform": "generic"},
     r"Ignite\Evaluation\Entities\DiagnosisCode":             {"v3": r"App\Models\DiagnosisCode",               "transform": "generic"},
-    r"Ignite\Evaluation\Entities\CriticalValues":            {"v3": r"App\Models\CriticalValue",               "transform": "generic"},
-    r"Ignite\Evaluation\Entities\CriticalValue":             {"v3": r"App\Models\CriticalValue",               "transform": "generic"},
+    # CriticalValues, TemplateLab: v3_extra_mappings (their procedure links need the id map)
     r"Ignite\Evaluation\Entities\Icd10Types":                {"v3": r"App\Models\Icd10Type",                   "transform": "generic"},
     r"Ignite\Evaluation\Entities\Icd10Type":                 {"v3": r"App\Models\Icd10Type",                   "transform": "generic"},
     r"Ignite\Evaluation\Entities\Icd10Categories":           {"v3": r"App\Models\Icd10Category",               "transform": "eval_icd10_range"},
@@ -453,8 +452,6 @@ NAMESPACE_MAP: dict[str, dict] = {
     r"Ignite\Evaluation\Entities\ProcedureCategoryTemplate": {"v3": r"App\Models\ProcedureCategoryTemplate",   "transform": "generic"},
     r"Ignite\Evaluation\Entities\ProcedureTemplates":        {"v3": r"App\Models\ProcedureTemplate",           "transform": "generic"},
     r"Ignite\Evaluation\Entities\ProcedureTemplate":         {"v3": r"App\Models\ProcedureTemplate",           "transform": "generic"},
-    r"Ignite\Evaluation\Entities\TemplateLabs":              {"v3": r"App\Models\TemplateLab",                 "transform": "generic"},
-    r"Ignite\Evaluation\Entities\TemplateLab":               {"v3": r"App\Models\TemplateLab",                 "transform": "generic"},
 
     # Finance config (must precede transactional finance)
     r"Ignite\Finance\Entities\Banks":                        {"v3": r"App\Models\Bank",                        "transform": "generic"},
@@ -3837,6 +3834,9 @@ _SYNC_MATCH_FIELD_BY_NS: dict[str, str] = {
     r"App\Models\User": "email",
     # products: code is per-org unique in V3 (V3 renamed name → generic_name)
     r"App\Models\Product": "code",
+    # ICD-10 types: V3 keeps the description empty — the code is the key
+    # (all 1,910 kisumu_v3 types match by code)
+    r"App\Models\Icd10Type": "code",
 }
 # further fields tried (in order) when the match field finds nothing, per alias.
 # Usernames are unique per org in V3; 18 kisumu_v3 staff had placeholder emails.
@@ -3964,7 +3964,12 @@ def sync_id_map(alias: str, v2_namespace: str, facility: str, match_field: str =
 _RESYNC_MAX_ROWS = 10000
 
 # transform keys whose payload carries facility_id that must be the destination facility
-_PER_KEY_DEST_FACILITY: set[str] = {"theatre_theatre"}
+_PER_KEY_DEST_FACILITY: set[str] = {"theatre_theatre", "gen_settings_destinations", "gen_settings_scheme_exclusions"}
+# transform keys whose rows link to the row V3 already has with the same value
+# of this field (V3 seeds org 4 with Laboratory / Triage … destinations; the
+# shared ICD-10 codes) instead of adding a twin
+_LINK_BY_FIELD: dict[str, str] = {"gen_settings_destinations": "name",
+                                  "gen_evaluation_icd10_variations": "code"}
 _v3_total_cache: dict[str, int | None] = {}
 _resynced: set[str] = set()       # aliases whose id map was rebuilt in this process
 

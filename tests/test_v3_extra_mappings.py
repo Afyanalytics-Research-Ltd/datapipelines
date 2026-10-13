@@ -56,7 +56,10 @@ class TestKisumuCoverage:
         in_clean = [t for t in xm.MAPPINGS if t in FIXTURE]
         assert len(in_clean) >= 19                     # the rest come from other extracts (queue)
         for t in in_clean:
-            assert cov.get(t) == "migrated", t
+            if FIXTURE[t]["namespace"] is None:        # CLEAN-only here: discovery can't see it
+                assert cov.get(t, "").startswith("not migrated: no RAW rows"), t
+            else:
+                assert cov.get(t) == "migrated", t
 
     def test_no_table_has_two_fates(self):
         assert not set(xm.MAPPINGS) & set(xm.NOT_MIGRATED)

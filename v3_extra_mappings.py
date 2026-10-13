@@ -121,6 +121,38 @@ MAPPINGS: dict[str, dict] = {
         "fk": {"result_detail_id": "investigation_result_details"},
         "critical": ["result_detail_id"],
     },
+    # ── setup: scheme prices and service destinations ─────────────────────
+    # V2 scheme "exclusions" are per-scheme procedure prices (2,639 priced, 3
+    # excluded). V2 schemes migrate to FINANCE insurance_scheme, so the prices
+    # go to finance insurance_scheme_pricing; core scheme_pricing /
+    # scheme_exclusions link CORE insurance schemes, which hold none of V2's.
+    # standard_price is the procedure's cash price (FETCH_SQL).
+    "settings_scheme_exclusions": {
+        "namespace": r"Ignite\Settings\Entities\SchemeExclusion",
+        "namespaces": [r"Ignite\Settings\Entities\SchemeExclusions"],
+        "v3": r"App\Models\InsuranceSchemePricing", "alias": "insurance_scheme_pricing", "service": "finance",
+        "renames": {"procedure_id": "item_id", "price": "scheme_price"},
+        "keep": ["scheme_id", "item_id", "item_type", "standard_price", "scheme_price", "is_covered",
+                 "requires_preauth", "facility_id"],
+        "fk": {"scheme_id": "insurance_scheme", "item_id": "procedures"},
+        "critical": ["scheme_id", "item_id"],
+        "inject": {"item_type": ("const", "procedure"),
+                   "is_covered": ("map", "excluded", {"1": 0, "true": 0}, 1)},
+    },
+    # V2 destination types 1 room / 2 department / 3 clinic → V3's static keys;
+    # code is unique across V3, so it carries the facility and V2 id. Names V3
+    # already has for the org (its seeded Laboratory, Triage …) are linked, not
+    # re-added (v2v3._LINK_BY_FIELD).
+    "settings_destinations": {
+        "namespace": r"Ignite\Settings\Entities\SettingsDestination",
+        "v3": r"App\Models\ServiceDestination", "alias": "service_destinations", "service": "core",
+        "renames": {"hidden_from_normal_queues": "hidden_from_queues"},
+        "keep": ["facility_id", "name", "slug", "code", "destination_type", "icon", "auto_checkin",
+                 "hidden_from_queues", "associated_procedure_category"],
+        "inject": {"destination_type": ("map", "destination_type_id",
+                                        {"1": "room", "2": "department", "3": "specialized_clinic"}, "department"),
+                   "code": ("fmt", "DST-{source_schema}-{id}")},
+    },
     # ── theatre-service: operation details and checklists ────────────────
     # (_STAND_IN_CERTIFIER_INJECT: see _checklist_certifier_sql)
     # The theatre gateway hides SQL errors ("the database refused the row"),
@@ -361,6 +393,48 @@ MAPPINGS: dict[str, dict] = {
         "critical": ["admission_id"],
         "null_if_unresolved": ["patient_id"],
     },
+    # lab critical values: procedure_id / parent_procedure_id are V2 procedure
+    # ids (the V2 "procedure" column); type / lg_type normalised in FETCH_SQL
+    "evaluation_critical_values": {
+        "namespace": r"Ignite\Evaluation\Entities\CriticalValues",
+        "namespaces": [r"Ignite\Evaluation\Entities\CriticalValue"],
+        "v3": r"App\Models\CriticalValue", "alias": "critical_values", "service": "evaluation",
+        "renames": {"procedure": "procedure_id"},
+        "keep": ["procedure_id", "parent_procedure_id", "age_group_id", "critical_value", "type", "lg_type",
+                 "lg_value", "gender", "is_active"],
+        "fk": {"procedure_id": "procedures", "parent_procedure_id": "procedures", "age_group_id": "age_groups"},
+        "critical": ["procedure_id"],
+        "null_if_unresolved": ["parent_procedure_id", "age_group_id"],
+        "inject": {"lg_value": ("copy", "critical_value"), "is_active": ("const", 1)},
+    },
+    # V3 holds the 11,200 base ICD-10 codes shared by every org; V2 kisumu_v3
+    # has 84,325 (ICD-11 and finer ICD-10 codes too) and diagnoses use them.
+    # Codes V3 already has are linked by code, never re-added
+    # (v2v3._LINK_BY_FIELD); the rest are inserted.
+    "evaluation_icd10_variations": {
+        "namespace": r"Ignite\Evaluation\Entities\Icd10Variation",
+        "namespaces": [r"Ignite\Evaluation\Entities\Icd10Variations"],
+        "v3": r"App\Models\Icd10Variation", "alias": "icd10_variations", "service": "evaluation",
+        "renames": {"name": "description"},
+        "keep": ["code", "description", "type_id", "is_active"],
+        "fk": {"type_id": "icd10_types"},
+        "null_if_unresolved": ["type_id"],
+        "inject": {"is_active": ("const", 1), "description": ("copy", "code")},
+    },
+    # lab templates: V2 `procedure` / `subtest` are V2 procedure ids (was
+    # registered "generic", which posted them raw — 116 FK refusals)
+    "evaluation_templates_lab": {
+        "namespace": r"Ignite\Evaluation\Entities\TemplateLab",
+        "namespaces": [r"Ignite\Evaluation\Entities\TemplateLabs"],
+        "v3": r"App\Models\TemplateLab", "alias": "template_labs", "service": "evaluation",
+        "renames": {"procedure": "procedure_id", "subtest": "subtest_id"},
+        "keep": ["procedure_id", "title", "subtest_id", "sort_order", "alias", "lab_min_range", "lab_max_range",
+                 "adult_minrange", "adult_maxrange", "appear_bold"],
+        "fk": {"procedure_id": "procedures", "subtest_id": "procedures"},
+        "critical": ["procedure_id"],
+        "null_if_unresolved": ["subtest_id"],
+        "inject": {"appear_bold": ("const", 0)},
+    },
     "evaluation_age_groups": {
         "namespace": r"Ignite\Evaluation\Entities\AgeGroups",
         "v3": r"App\Models\AgeGroup", "alias": "age_groups", "service": "evaluation",
@@ -593,7 +667,7 @@ REPORT = "MOH register / report rows derived from the clinical and billing recor
 
 NOT_MIGRATED: dict[str, str] = {
     # V3 model exists, but it isn't this data's place
-    "evaluation_icd10_variations": SHARED, "symptoms": SHARED, "evaluation_tags": SHARED,
+    "symptoms": SHARED, "evaluation_tags": SHARED,
     "evaluation_reference_range": SHARED, "evaluation_investigation_approval_statuses": SHARED,
     "users_permissions": SETUP, "activations": SETUP,
     "finance_account_groups": SETUP, "finance_account_types": SETUP,
@@ -601,15 +675,9 @@ NOT_MIGRATED: dict[str, str] = {
     "inventory_inventory_stocks": "V3 stock is per product + store (+ batch); V2 rows carry the product only",
     "inventory_customers": "V3 customer needs customer_no + name; V2 rows are patient-linked walk-ins",
     "inventory_batches": "V3 batch needs batch_no, product, cost; the one V2 row is a supplier delivery",
-    "settings_destinations": "V3 core_service_destinations was reworked (destination_type_id …) and its "
-                             "required columns are unclear — confirm with the V3 backend before mapping",
     "credit_notes": "V3 credit_note needs invoice_id, total_amount, reason; V2 notes are receipt-linked",
     "inpatient_visit_wards": "V2 rows are ward charges on a visit; V3 visit_ward is a bed allocation on an admission",
     "evaluation_sub_procedures": "no column in common with V3 subprocedures",
-    "settings_scheme_exclusions": "NEEDS A DECISION — the rows are per-scheme procedure prices (2,639 priced, 3 "
-                                  "excluded) → V3 core scheme_pricing, whose scheme_id is an FK to CORE "
-                                  "insurance schemes, while V2 schemes migrate to FINANCE insurance_scheme; "
-                                  "which insurance tables are canonical must be settled first",
     "finance_payments_mpesa": NO_MODEL, "finance_payments_cash": NO_MODEL, "finance_payments_card": NO_MODEL,
     "finance_payments_pesa_pal_mpesa": NO_MODEL, "finance_payments_pesa_pal_card": NO_MODEL,
     # no V3 model at all
@@ -761,6 +829,8 @@ def _injector(spec):
         return lambda r: str(r.get(args[0]) or "").strip().upper()[:50] or None
     if kind == "prefix":
         return lambda r: f"{args[0]}{r.get(args[1])}" if r.get(args[1]) is not None else None
+    if kind == "fmt":                       # a string built from the row's own columns
+        return lambda r: args[0].format_map({k: ("" if v is None else v) for k, v in r.items()})
     if kind == "join":
         return lambda r: " ".join(str(r.get(a)) for a in args if r.get(a) not in (None, "")) or None
     if kind == "mul":
@@ -986,9 +1056,85 @@ def _result_ranges_sql(clean: str, cols_of, clean_set: set[str]) -> str | None:
             f'JOIN {clean}.EVALUATION_INVESTIGATION_RESULTS r ON TO_VARCHAR(r."ID") = TO_VARCHAR(d."INVESTIGATION_RESULT_ID")')
 
 
+def _critical_values_sql(clean: str, cols_of, clean_set: set[str]) -> str | None:
+    """V2 sometimes stores the comparison itself as type ('>' with no lg_type);
+    V3 wants type range / less_greater and the operator in lg_type."""
+    if not {"type", "lg_type"} <= cols_of("evaluation_critical_values"):
+        return None
+    ops = "('<', '>', '<=', '>=', '==', '=')"
+    return (f'SELECT c.* EXCLUDE ("TYPE", "LG_TYPE"), '
+            f'IFF(TRIM(c."TYPE") IN {ops}, \'less_greater\', c."TYPE") AS "TYPE", '
+            f'COALESCE(c."LG_TYPE", IFF(TRIM(c."TYPE") IN {ops}, TRIM(c."TYPE"), NULL)) AS "LG_TYPE" '
+            f'FROM {clean}.EVALUATION_CRITICAL_VALUES c')
+
+
+def _scheme_prices_sql(clean: str, cols_of, clean_set: set[str]) -> str | None:
+    """Scheme prices of procedures V2 still has (2,638 of 2,929 kisumu_v3 rows
+    point at procedures absent from V2 — they can never link), each with the
+    procedure's latest cash price as STANDARD_PRICE (V3 NOT NULL)."""
+    need = {"evaluation_procedures", "evaluation_procedure_prices"}
+    if not need <= clean_set or "procedure_id" not in cols_of("settings_scheme_exclusions"):
+        return None
+    deleted = ' WHERE e."DELETED_AT" IS NULL' if "deleted_at" in cols_of("settings_scheme_exclusions") else ""
+    return (f'SELECT e.*, COALESCE(pp."CASH_CHARGE", e."PRICE") AS "STANDARD_PRICE" '
+            f'FROM {clean}.SETTINGS_SCHEME_EXCLUSIONS e '
+            f'JOIN {clean}.EVALUATION_PROCEDURES p ON TO_VARCHAR(p."ID") = TO_VARCHAR(e."PROCEDURE_ID") '
+            f'LEFT JOIN (SELECT "EVALUATION_PROCEDURE_ID", "CASH_CHARGE" FROM {clean}.EVALUATION_PROCEDURE_PRICES '
+            f'QUALIFY ROW_NUMBER() OVER (PARTITION BY "EVALUATION_PROCEDURE_ID" ORDER BY "UPDATED_AT" DESC, "ID" DESC) = 1) pp '
+            f'ON TO_VARCHAR(pp."EVALUATION_PROCEDURE_ID") = TO_VARCHAR(e."PROCEDURE_ID")' + deleted)
+
+
+def _latest_store_price(clean: str, col: str, deleted: bool) -> str:
+    """Each product's `col` from its most recently updated store row that has one."""
+    live = ' AND "DELETED_AT" IS NULL' if deleted else ""
+    return (f'SELECT "PRODUCT_ID", "{col}" AS "PRICE" FROM {clean}.INVENTORY_STORE_PRODUCTS '
+            f'WHERE TRY_TO_DOUBLE(TO_VARCHAR("{col}")) > 0{live} '
+            f'QUALIFY ROW_NUMBER() OVER (PARTITION BY "PRODUCT_ID" '
+            f'ORDER BY "UPDATED_AT" DESC NULLS LAST, "ID" DESC) = 1')
+
+
+def _product_prices_sql(clean: str, cols_of, clean_set: set[str]) -> str | None:
+    """V2 prices products per store (inventory_store_products); its product
+    rows hardly carry one (86 of 6,467 kisumu_v3 products). V3 prices the
+    product itself and its stock has no price columns — agreed 2026-10-13:
+    the most recently updated store row's selling / insurance price, else the
+    product's own."""
+    prices = {"selling_price", "insurance_price"}
+    if "inventory_store_products" not in clean_set:
+        return None
+    sp = cols_of("inventory_store_products")
+    if not (prices | {"product_id", "updated_at", "id"}) <= sp or not prices <= cols_of("inventory_products"):
+        return None
+    deleted = "deleted_at" in sp
+    return (f'SELECT p.* EXCLUDE ("SELLING_PRICE", "INSURANCE_PRICE"), '
+            f'COALESCE(s."PRICE", p."SELLING_PRICE") AS "SELLING_PRICE", '
+            f'COALESCE(i."PRICE", p."INSURANCE_PRICE") AS "INSURANCE_PRICE" '
+            f'FROM {clean}.INVENTORY_PRODUCTS p '
+            f'LEFT JOIN ({_latest_store_price(clean, "SELLING_PRICE", deleted)}) s '
+            f'ON TO_VARCHAR(s."PRODUCT_ID") = TO_VARCHAR(p."ID") '
+            f'LEFT JOIN ({_latest_store_price(clean, "INSURANCE_PRICE", deleted)}) i '
+            f'ON TO_VARCHAR(i."PRODUCT_ID") = TO_VARCHAR(p."ID")')
+
+
+def _latest_procedure_price_sql(clean: str, cols_of, clean_set: set[str]) -> str | None:
+    """V2 keeps every price a procedure ever had (12,813 rows, 1,715
+    procedures); V3 holds one per org + procedure + facility (unique key), so
+    whichever row landed first won — 115 procedures got an old price. Read
+    only each procedure's most recently updated row."""
+    cols = cols_of("evaluation_procedure_prices")
+    if not {"evaluation_procedure_id", "updated_at", "id"} <= cols:
+        return None
+    return (f'SELECT * FROM {clean}.EVALUATION_PROCEDURE_PRICES QUALIFY ROW_NUMBER() OVER '
+            f'(PARTITION BY "EVALUATION_PROCEDURE_ID" ORDER BY "UPDATED_AT" DESC NULLS LAST, "ID" DESC) = 1')
+
+
 # table → builder(clean schema, cols_of(table) → lower-case column names, CLEAN
 # object names) → SQL, or None to read the table as is
 FETCH_SQL = {"evaluation_icd10_notes": _icd10_notes_sql,
+             "evaluation_procedure_prices": _latest_procedure_price_sql,
+             "inventory_products": _product_prices_sql,
+             "evaluation_critical_values": _critical_values_sql,
+             "settings_scheme_exclusions": _scheme_prices_sql,
              "evaluation_result_details_ranges": _result_ranges_sql,
              "theatre_before_anaesthesias": _checklist_certifier_sql("theatre_before_anaesthesias"),
              "theatre_before_skin_incisions": _checklist_certifier_sql("theatre_before_skin_incisions"),
@@ -1027,6 +1173,10 @@ def coverage(entries: list[dict], clean_tables) -> dict:
             out[t] = "migrated"
         elif t in NOT_MIGRATED:
             out[t] = f"not migrated: {NOT_MIGRATED[t]}"
+        elif t in MAPPINGS:
+            # mapped, but this extract has no RAW rows naming its V2 class
+            # (loaded straight into CLEAN), so discovery can't pick it up
+            out[t] = "not migrated: no RAW rows (V2 class unknown) in this extract — mapped where RAW has it"
         else:
             out[t] = "UNACCOUNTED"
     return out

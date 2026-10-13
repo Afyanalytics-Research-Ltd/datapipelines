@@ -1059,6 +1059,33 @@ def _single_source(alias: str) -> bool:
     return _single_source_cache[alias]
 
 
+def _link_existing_by_field(pending: list[dict], *, transform_key: str, alias: str, org_cfg: dict,
+                            job_key: str) -> list[dict]:
+    """Rows V3 already has under the same value of a natural key
+    (v2v3._LINK_BY_FIELD: destination name, ICD code …) are linked to that
+    row — id map + marked inserted — instead of posted as a twin. Returns
+    the rows still to post."""
+    field = v2v3._LINK_BY_FIELD.get(transform_key)
+    if not field or not pending:
+        return pending
+    key = lambda rec: str(rec.get(field) or "").strip().lower()
+    existing: dict[str, int] = {}
+    for rec in sorted(v2v3._fetch_v3_records(alias, org_cfg, service_name=_SERVICE_OVERRIDE.get(transform_key)),
+                      key=lambda x: x.get("id") or 0):                       # oldest row wins
+        if key(rec) and rec.get("id") is not None:
+            existing.setdefault(key(rec), rec["id"])
+    same = [r for r in pending if key(r) in existing]
+    for r in same:
+        for k in {r.get("id"), r.get("uuid")} - {None}:
+            _store_uuid_mapping(alias, k, existing[key(r)])
+        rk = r.get("uuid") or r.get("id")
+        if rk is not None:
+            v2v3._mark_record_inserted(job_key, rk)
+    if same:
+        log.info("  Linked %d record(s) to the row V3 already has with the same %s — not posted", len(same), field)
+    return [r for r in pending if key(r) not in existing]
+
+
 def post_table_to_v3(v3_namespace: str, org_cfg: dict, records: list[dict],
                      *, transform_key: str, alias: str, job_key: str, dry_run: bool) -> int:
     """Mirrors v2v3.post_to_v3()'s threading/resume/dead-letter behaviour,
@@ -1083,6 +1110,8 @@ def post_table_to_v3(v3_namespace: str, org_cfg: dict, records: list[dict],
     skipped = len(records) - len(pending)
     if skipped:
         log.info("  Skipping %d already-migrated records, posting %d", skipped, len(pending))
+    pending = _link_existing_by_field(pending, transform_key=transform_key, alias=alias, org_cfg=org_cfg,
+                                      job_key=job_key)
     if RECORD_LIMIT:
         ck = _canary_key(job_key)
         room = max(RECORD_LIMIT - _canary_sent.get(ck, 0), 0)
