@@ -658,6 +658,11 @@ _SKIP_IF_PARENT_NOT_IN_FACILITY: dict[str, list[tuple[str, str, str]]] = {
     # orders whose store isn't in V2's stores (kisumu_v3: stores 1 and 2) can never link
     "inventory_purchase_order":     [("store_id", "inventory_stores", "id")],
     "inventory_grn":                [("store_id", "inventory_stores", "id")],
+    # 281,220 kisumu_v3 result details point at 40,524 lab results V2 itself
+    # doesn't have (old-system lines; not in the API, nor in the older KISUMU
+    # extract, nor an investigation id; 58 have a known visit) — never linkable
+    "gen_evaluation_investigation_result_details": [("investigation_result_id",
+                                                     "evaluation_investigation_results", "id")],
     # early (2023) movements point at products / stores / users deleted from V2
     # itself (product 29, stores 1 and 2, users 723 / 726) — never linkable
     "inventory_stock_movement":     [("product_id", "inventory_products", "id"),

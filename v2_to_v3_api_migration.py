@@ -1199,6 +1199,8 @@ def _int_or_zero(v) -> int:
         return 0
 
 
+_INV_RESULT_STATUSES = {"preliminary", "final", "corrected", "amended", "approved", "rejected", "retracted", "publish"}
+
 _REQUISITION_STATUS = {s: s for s in ("draft", "submitted", "pending_approval", "approved", "partially_fulfilled",
                                        "fulfilled", "rejected", "cancelled")} | {"pending": "pending_approval"}
 
@@ -1811,6 +1813,14 @@ _PER_KEY_COERCIONS: dict[str, dict[str, Any]] = {
     },
     "finance_receipt": {
         "receipt_date": lambda v: str(v)[:10] if _blank_to_none(v) else None,   # a DATE column
+    },
+    # investigation_results.status is an enum of words; V2 holds 0 / 1. MySQL
+    # read 1 as the enum's first value (preliminary — 47,326 kisumu_v3 rows
+    # already in V3) and refused 0 ("Data truncated", 430 results + their
+    # details). Both → preliminary, consistently; a valid word passes through.
+    "evaluation_inv_result": {
+        "status": lambda v: (str(v).strip().lower() if str(v or "").strip().lower() in _INV_RESULT_STATUSES
+                             else "preliminary"),
     },
     # inv_requisitions.status is an enum without V2's "pending" ("Data truncated
     # for column 'status'"): pending → pending_approval, unknown → submitted

@@ -974,9 +974,22 @@ def _checklist_certifier_sql(table: str):
     return build
 
 
+def _result_ranges_sql(clean: str, cols_of, clean_set: set[str]) -> str | None:
+    """Reference ranges of result details whose lab result V2 doesn't have
+    (the orphan details skipped by snowflake_to_v3_migration) can never get a
+    parent — read only the ranges whose detail has a V2 result."""
+    need = {"evaluation_investigation_result_details", "evaluation_investigation_results"}
+    if not need <= clean_set or "result_detail_id" not in cols_of("evaluation_result_details_ranges"):
+        return None
+    return (f'SELECT rg.* FROM {clean}.EVALUATION_RESULT_DETAILS_RANGES rg '
+            f'JOIN {clean}.EVALUATION_INVESTIGATION_RESULT_DETAILS d ON TO_VARCHAR(d."ID") = TO_VARCHAR(rg."RESULT_DETAIL_ID") '
+            f'JOIN {clean}.EVALUATION_INVESTIGATION_RESULTS r ON TO_VARCHAR(r."ID") = TO_VARCHAR(d."INVESTIGATION_RESULT_ID")')
+
+
 # table → builder(clean schema, cols_of(table) → lower-case column names, CLEAN
 # object names) → SQL, or None to read the table as is
 FETCH_SQL = {"evaluation_icd10_notes": _icd10_notes_sql,
+             "evaluation_result_details_ranges": _result_ranges_sql,
              "theatre_before_anaesthesias": _checklist_certifier_sql("theatre_before_anaesthesias"),
              "theatre_before_skin_incisions": _checklist_certifier_sql("theatre_before_skin_incisions"),
              "theatre_before_leaving_theatres": _checklist_certifier_sql("theatre_before_leaving_theatres"),
