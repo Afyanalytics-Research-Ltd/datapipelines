@@ -69,13 +69,16 @@ def _split_s3(uri: str) -> tuple[str, str]:
     params={
         "facility": Param("kisumu_v3", type="string", title="Facility",
                           description="Facility key (Snowflake {NAME}_CLEAN + Connection afya_v3_<name>)."),
-        "audit_csv": Param("", type="string", title="Audit CSV (paste)",
-                           description="The reconcile *-summary.csv content. Leave empty to use audit_s3_uri."),
-        "audit_s3_uri": Param("", type="string", title="Audit CSV on S3",
+        # optional (null allowed) — fill ONE of the two; the form otherwise insists on both
+        "audit_csv": Param(None, type=["null", "string"], format="multiline", title="Audit CSV (paste)",
+                           description="Paste the reconcile *-summary.csv content here, OR leave empty and give "
+                                       "audit_s3_uri."),
+        "audit_s3_uri": Param(None, type=["null", "string"], title="Audit CSV on S3 (optional)",
                               description="e.g. s3://collabmedbucket/v3_audits/4-reconcile-20261014-090333-summary.csv"),
-        "tables": Param([], type="array", items={"type": "string"}, title="Only these V2 tables",
-                        description="Empty = every table the audit shows short."),
-        "exclude_tables": Param([], type="array", items={"type": "string"}, title="Exclude V2 tables"),
+        "tables": Param([], type=["null", "array"], items={"type": "string"}, title="Only these V2 tables (optional)",
+                        description="One per line. Empty = every table the audit shows short."),
+        "exclude_tables": Param([], type=["null", "array"], items={"type": "string"},
+                                title="Exclude V2 tables (optional)", description="One per line."),
         "organization_id": Param(4, type="integer", title="V3 organization id"),
         "facility_id": Param(4, type="integer", title="V3 facility id"),
         "s3_bucket": Param("collabmedbucket", type="string", title="S3 bucket"),
