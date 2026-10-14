@@ -1809,7 +1809,10 @@ _PER_KEY_COERCIONS: dict[str, dict[str, Any]] = {
         "__active_to_status__": True,
     },
     "finance_receipt": {
-        "receipt_date": lambda v: str(v)[:10] if _blank_to_none(v) else None,   # a DATE column
+        # a DATE column. V2's zero date (0000-00-00) arrives as "-0001-11-30"
+        # and MySQL refuses it — null, so the inject falls back to created_at
+        "receipt_date": lambda v: (str(v)[:10] if _blank_to_none(v) and re.match(r"(19|20)\d\d-\d\d-\d\d", str(v))
+                                   else None),
     },
     # investigation_results.status is an enum of words; V2 holds 0 / 1. MySQL
     # read 1 as the enum's first value (preliminary — 47,326 kisumu_v3 rows
