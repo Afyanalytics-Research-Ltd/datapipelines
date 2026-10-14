@@ -547,3 +547,53 @@ def test_procedures_sync_by_code_never_by_name(monkeypatch):
     v2v3.sync_id_map("procedures", r"Ignite\Evaluation\Entities\Procedures", "kisumu_v3", match_field=field)
     # same code + same name as the original → the original; different name → its own copy row
     assert stored == {27354: 5, 27262: 459, 27263: 1344, 29238: 701, 29235: 700}
+
+
+def test_treatment_action_display_name_from_its_name():
+    """core_treatment_actions.display_name is NOT NULL; V2 actions only have a name."""
+    tk = ns(r"Ignite\Settings\Entities\TreatmentActions")
+    assert tk == "settings_treatment_action"
+    tf = lambda rec: v2v3.transform_record({"id": 9, **rec}, tk, ORG, "kisumu_v3")   # noqa: E731
+    assert tf({"name": "doctor_notes", "display_name": None})["display_name"] == "Doctor Notes"
+    assert tf({"name": "doctor's notes"})["display_name"] == "Doctor's Notes"
+    assert tf({"name": None})["display_name"] == "Action 9"
+    assert tf({"name": "vitals", "display_name": "Vital Signs"})["display_name"] == "Vital Signs"
+
+
+def test_422_postal_code_too_long_is_sent_as_null(monkeypatch):
+    sent = _post(monkeypatch, [
+        _R(422, {"success": False, "message": "insert rejected: Data too long for column 'postal_code' at row 1"}),
+        _R(201, {"success": True, "data": {"id": 99}}),
+    ])
+    v2v3._post_to_v3_batch(r"App\Models\InsuranceCompany", ORG,
+                           {"id": 417, "name": "Jubilee", "postal_code": "P.O. Box 30376-00100 Nairobi, Kenya"},
+                           alias_override="insurance_company", service_override="finance")
+    assert sent[0]["postal_code"] and sent[1]["postal_code"] is None and sent[1]["name"] == "Jubilee"
+
+
+def test_422_other_column_too_long_still_dead_letters(monkeypatch):
+    import pytest
+    sent = _post(monkeypatch, [
+        _R(422, {"success": False, "message": "insert rejected: Data too long for column 'name' at row 1"}),
+    ])
+    with pytest.raises(v2v3.RecordDeadLettered):
+        v2v3._post_to_v3_batch(r"App\Models\InsuranceCompany", ORG, {"id": 418, "name": "x" * 300},
+                               alias_override="insurance_company", service_override="finance")
+    assert len(sent) == 1
+
+
+def test_nameless_product_gets_a_generic_name():
+    tk = ns(r"Ignite\Inventory\Entities\Product")
+    tf = lambda rec: v2v3.transform_record({"id": 37374, **rec}, tk, ORG, "kisumu_v3")   # noqa: E731
+    assert tf({"name": None, "item_no": "ITM000222"})["generic_name"] == "Unnamed product ITM000222"
+    assert tf({"name": "Paracetamol 500mg"})["generic_name"] == "Paracetamol 500mg"
+
+
+def test_422_vital_height_out_of_range_is_sent_as_null(monkeypatch):
+    sent = _post(monkeypatch, [
+        _R(422, {"success": False, "message": "insert rejected: Out of range value for column 'height' at row 1"}),
+        _R(201, {"success": True, "data": {"id": 99}}),
+    ])
+    v2v3._post_to_v3_batch(r"App\Models\Vital", ORG, {"id": 212315, "height": 16137.4, "weight": 75.05},
+                           alias_override="vitals", service_override="evaluation")
+    assert sent[1]["height"] is None and sent[1]["weight"] == 75.05

@@ -57,11 +57,13 @@ def _start(write: bool = True):
     p = get_current_context()["params"]
     facility = p["facility"]
     os.environ["RECORD_WORKERS"] = str(int(p["record_workers"]))
+    os.environ["V3_POST_THROTTLE"] = str(float(p.get("post_throttle") or 0))
     use_pipelines_dir([facility])
     import migrate_facility as mf
     import snowflake_to_v3_migration as s2v3
     import v2_to_v3_api_migration as v2v3
     s2v3.RECORD_WORKERS = v2v3.RECORD_WORKERS = int(p["record_workers"])
+    v2v3.V3_POST_THROTTLE = float(p.get("post_throttle") or 0)
     if write and not p["dry_run"]:
         others = mf._other_processes()
         if others:
@@ -97,7 +99,10 @@ def _wants(p: dict, phase: str) -> bool:
         "allow_gaps": Param(False, type="boolean", title="Allow gaps",
                             description="Run main tables even if the gate finds prerequisites missing from V3."),
         "workers": Param(8, type="integer", minimum=1, maximum=32, title="Tables in parallel per tier"),
-        "record_workers": Param(8, type="integer", minimum=1, maximum=32, title="Parallel POSTs per table"),
+        "record_workers": Param(8, type="integer", minimum=1, maximum=64, title="Parallel POSTs per table",
+                                description="Raise it to post faster; lower it if V3 starts returning 504s."),
+        "post_throttle": Param(0, type="number", minimum=0, maximum=10, title="Pause after each POST (seconds)",
+                               description="0 = no pause (fastest)."),
     },
 )
 def migrate_facility():

@@ -395,8 +395,8 @@ NAMESPACE_MAP: dict[str, dict] = {
     r"Ignite\Settings\Entities\CategoryFilter":              {"v3": r"App\Models\CategoryFilter",              "transform": "generic"},
     r"Ignite\Settings\Entities\ApprovalLevels":              {"v3": r"App\Models\ApprovalLevel",               "transform": "generic"},
     r"Ignite\Settings\Entities\ApprovalLevel":               {"v3": r"App\Models\ApprovalLevel",               "transform": "generic"},
-    r"Ignite\Settings\Entities\TreatmentActions":            {"v3": r"App\Models\TreatmentAction",             "transform": "generic"},
-    r"Ignite\Settings\Entities\TreatmentAction":             {"v3": r"App\Models\TreatmentAction",             "transform": "generic"},
+    r"Ignite\Settings\Entities\TreatmentActions":            {"v3": r"App\Models\TreatmentAction",             "transform": "settings_treatment_action"},
+    r"Ignite\Settings\Entities\TreatmentAction":             {"v3": r"App\Models\TreatmentAction",             "transform": "settings_treatment_action"},
     # Insurance chain: company → scheme → rebate
     r"Ignite\Settings\Entities\Insurances":                  {"v3": r"App\Models\InsuranceCompany",            "transform": "settings_insurance"},
     r"Ignite\Settings\Entities\Insurance":                   {"v3": r"App\Models\InsuranceCompany",            "transform": "settings_insurance"},
@@ -894,6 +894,7 @@ _PER_KEY_RENAMES: dict[str, dict[str, str]] = {
     "evaluation_prescription": {},       # prescribed_by dropped+reinjected as V3 user id below
     "evaluation_sample": {},             # V2 Sample columns match V3 samples' fillable 1:1
     "inpatient_discharge_type": {},
+    "settings_treatment_action": {},
     # V2 discharge requests are the clinical discharge summary; the sections
     # with a V3 column of their own are renamed here, the rest are folded
     # into discharge_notes (_PER_KEY_INJECT) so nothing is lost.
@@ -1129,7 +1130,6 @@ _V3_NULL_DEFAULTS: dict[str, Any] = {
     "preauth_approved":     0,
     "requires_preauth":     0,
 }
-
 # Layer 2: coercions — value-level transforms applied after renaming.
 # Each entry: (source_field_after_rename, transform_fn)
 def _inactive_to_status(v) -> str:
@@ -1447,6 +1447,13 @@ _OUTPATIENT_VITAL_NUMBERS = ("temperature", "pulse", "weight", "height", "bmi", 
                              "bone_mass", "metabolic_age", "body_water", "visceral_fat", "length_percentile",
                              "weight_percentile", "bmi_percentile", "intracular_pressure")
 
+# Optional V3 columns sent as null when V3 rejects the V2 value as too long or
+# out of range ("Data too long for column 'x'", "Out of range value for column
+# 'x'"), instead of dead-lettering the record: insurance companies' postal_code
+# holds whole addresses; a few vitals hold typos (height 15736.6, 7691761 in
+# kisumu_v3 — V3 vitals are decimal(6,2)).
+_V3_NULL_WHEN_UNFIT: set[str] = {"postal_code", *_INPATIENT_VITAL_NUMBERS, *_OUTPATIENT_VITAL_NUMBERS}
+
 def _flag_with_message(flag: str, note_field: str):
     """Pre-coercion hook for a V2 flag column that sometimes holds a message
     instead of 0/1 — prescriptions' moved_from_chargesheet is 'Item removed
@@ -1538,6 +1545,20 @@ _PER_KEY_INJECT: dict[str, dict[str, Any]] = {
     "inpatient_discharge_type": {
         # inp_discharge_types needs a code (unique per org); V2 types only have a name
         "code": lambda r: "_".join(str(r.get("name") or f"TYPE {r.get('id')}").upper().split()),
+    },
+    "inventory_product": {
+        # inv_products.generic_name (V2's name) is NOT NULL; a few V2 products
+        # have no name at all, only an item number (4 in kisumu_v3)
+        "generic_name": lambda r: f"Unnamed product {r.get('item_no') or r.get('id')}",
+    },
+    "settings_treatment_action": {
+        # core_treatment_actions.display_name is NOT NULL with no default and
+        # V2 has no such column: the label is V2's name/slug ("vitals",
+        # "doctor_notes") made readable — "Vitals", "Doctor Notes"
+        "display_name": lambda r: " ".join(
+            w[:1].upper() + w[1:]
+            for w in str(r.get("name") or f"Action {r.get('id')}").replace("_", " ").replace("-", " ").split()
+        ),
     },
     "inpatient_discharge_request": {
         # V2 admission id here; remapped to the V3 admission at post time
@@ -2182,8 +2203,11 @@ def _v3_session() -> requests.Session:
     with _v3_session_lock:
         if _v3_session_singleton is None:
             s = requests.Session()
+            # one keep-alive connection per parallel POST, or the extra
+            # workers queue for a connection instead of posting
+            pool = max(32, RECORD_WORKERS)
             adapter = requests.adapters.HTTPAdapter(
-                pool_connections=32, pool_maxsize=32, max_retries=0,
+                pool_connections=pool, pool_maxsize=pool, max_retries=0,
             )
             s.mount("https://", adapter)
             s.mount("http://", adapter)
@@ -2898,6 +2922,19 @@ def _post_to_v3_batch(
                     )
                     _write_dead_letter(v3_namespace, record, err_body)
                     raise RecordDeadLettered()
+
+                # Category 2.6 — Value too long / out of range for an optional V3
+                # column (_V3_NULL_WHEN_UNFIT): send it as null and retry
+                unfit = re.search(r"(Data too long|Out of range value) for column '(\w+)'", debug_msg)
+                if unfit and unfit.group(2) in _V3_NULL_WHEN_UNFIT:
+                    col = unfit.group(2)
+                    if body["data"].get(col) is not None:
+                        log.warning(
+                            "  V3 %s id=%-6s '%s' %s (%r) — sending null and retrying",
+                            r.status_code, rec_id, col, unfit.group(1).lower(), str(body["data"][col])[:80],
+                        )
+                        body["data"] = {**body["data"], col: None}
+                        continue
 
                 # Category 3 — Generic server fault: dead-letter immediately, no retry.
                 # 500s on insert are almost always data issues, not transient faults.
