@@ -73,16 +73,34 @@ def csv_cell(v) -> str:
 
 
 def load_sql(db_table: str, service: str, cols: list[str], n: int, org: int, fac: int | None, when: str) -> str:
+    # Run in batch (mysql < file): an open transaction would be rolled back at exit, so this COMMITs
+    # itself; <table>_undo.sql deletes exactly these rows (by uuid) if the counts / warnings look wrong.
+    # LOAD DATA LOCAL turns bad values into warnings rather than errors — SHOW WARNINGS lists them.
     return (f"-- {service.upper()} service database: load {n} V2 rows missing from V3 into {db_table} "
             f"(organization {org}{f', facility {fac}' if fac else ''}). Generated {when} UTC.\n"
             f"-- Run with {db_table}.csv in the working directory:  mysql --local-infile=1 <db> < {db_table}_load.sql\n"
-            f"SELECT COUNT(*) AS before_load FROM {db_table} WHERE organization_id = {org};\n"
+            f"-- Afterwards: loaded must equal expected and warnings be empty — else run {db_table}_undo.sql.\n"
+            f"SELECT COUNT(*) AS before_load FROM `{db_table}` WHERE organization_id = {org};\n"
             f"START TRANSACTION;\n"
-            f"LOAD DATA LOCAL INFILE '{db_table}.csv' INTO TABLE {db_table}\n"
+            f"LOAD DATA LOCAL INFILE '{db_table}.csv' INTO TABLE `{db_table}`\n"
             f"  CHARACTER SET utf8mb4 FIELDS TERMINATED BY ',' OPTIONALLY ENCLOSED BY '\"' ESCAPED BY ''\n"
-            f"  LINES TERMINATED BY '\\n' IGNORE 1 LINES\n  ({', '.join(cols)});\n"
+            # backticks: V3 has columns named after SQL keywords (evaluation_age_groups.`group`)
+            f"  LINES TERMINATED BY '\\n' IGNORE 1 LINES\n  ({', '.join(f'`{c}`' for c in cols)});\n"
             f"SELECT ROW_COUNT() AS loaded, {n} AS expected;\n"
-            f"-- loaded = expected → COMMIT;   otherwise → ROLLBACK;\n")
+            f"SHOW WARNINGS LIMIT 50;\n"
+            f"COMMIT;\n"
+            f"SELECT COUNT(*) AS after_load FROM `{db_table}` WHERE organization_id = {org};\n")
+
+
+def undo_sql(db_table: str, uuids: list[str], org: int) -> str:
+    """Deletes exactly the rows a load script inserted (matched by uuid)."""
+    out = [f"-- UNDO of {db_table}_load.sql: deletes the {len(uuids)} rows it loaded (by uuid), organization {org}.",
+           "START TRANSACTION;"]
+    for i in range(0, len(uuids), 1000):
+        out.append(f"DELETE FROM `{db_table}` WHERE organization_id = {org} AND uuid IN ("
+                   + ",".join(f"'{u}'" for u in uuids[i:i + 1000]) + ");")
+    out += ["COMMIT;", f"SELECT COUNT(*) AS after_undo FROM `{db_table}` WHERE organization_id = {org};"]
+    return "\n".join(out) + "\n"
 
 
 def is_suspect(n_export: int, gap: int | None) -> bool:
@@ -152,9 +170,25 @@ def export_table(facility: str, v2_table: str, gap: int | None, out_dir: Path, *
         captured[key].append(dict(payload))
         return None
 
-    saved = (v2v3.STATE_ROOT, v2v3._post_to_v3_batch, m.REPROCESS_JOB_KEYS, m.RECORD_LIMIT)
-    v2v3.STATE_ROOT, v2v3._post_to_v3_batch = work, capture
-    m.REPROCESS_JOB_KEYS, m.RECORD_LIMIT = _Every(), 0
+    held = {"n": 0}
+
+    def count_held(v3_namespace, record, error_body):
+        held["n"] += 1
+
+    # Nothing is posted, so the migration's per-row bookkeeping is pure cost here: it rewrites the
+    # whole progress file + id map (~900k entries each) every 50 rows (~25 rows/s), and appends a
+    # dead letter per held row. Off for the export — the state copy is thrown away anyway.
+    patched = {
+        (v2v3, "STATE_ROOT"): work, (v2v3, "_post_to_v3_batch"): capture,
+        (v2v3, "_mark_record_inserted"): lambda job_key, record_id: None,
+        (v2v3, "_flush_record_progress"): lambda: None, (v2v3, "_flush_id_map"): lambda: None,
+        (v2v3, "_write_dead_letter"): count_held,
+        (m, "REPROCESS_JOB_KEYS"): _Every(), (m, "RECORD_LIMIT"): 0,
+        (m, "RECORD_LOG_EVERY"): 20000, (v2v3, "RECORD_LOG_EVERY"): 20000,
+    }
+    saved = {k: getattr(*k) for k in patched if hasattr(*k)}
+    for (mod, attr), val in patched.items():
+        setattr(mod, attr, val)
     t0 = time.time()
     tier = None
     try:
@@ -165,9 +199,12 @@ def export_table(facility: str, v2_table: str, gap: int | None, out_dir: Path, *
         except Exception:
             pass
     finally:
-        v2v3.STATE_ROOT, v2v3._post_to_v3_batch, m.REPROCESS_JOB_KEYS, m.RECORD_LIMIT = saved
+        for (mod, attr) in patched:
+            if (mod, attr) in saved:
+                setattr(mod, attr, saved[(mod, attr)])
         shutil.rmtree(work, ignore_errors=True)
-    log.info("%s: transformed (%s) in %.0fs %s", v2_table, run["status"], time.time() - t0, str(run.get("detail", ""))[:200])
+    log.info("%s: transformed (%s) in %.0fs — %d captured, %d held (parent not in V3) %s", v2_table, run["status"],
+             time.time() - t0, sum(len(v) for v in captured.values()), held["n"], str(run.get("detail", ""))[:200])
 
     if not captured:
         return [{"v2_table": v2_table, "status": "nothing to export", "pipeline": run["status"],
@@ -210,6 +247,12 @@ def export_table(facility: str, v2_table: str, gap: int | None, out_dir: Path, *
                 (out_dir / f"{db_table}_load.sql").write_text(
                     load_sql(db_table, svc, cols, len(fresh), organization_id, facility_id if fac_col else None, when))
                 files.append(f"{db_table}_load.sql")
+                (out_dir / f"{db_table}_undo.sql").write_text(
+                    undo_sql(db_table, [str(p["uuid"]) for p in fresh], organization_id))
+                files.append(f"{db_table}_undo.sql")
+            # which gateway model the CSV is for — load_missing_records posts it there
+            (folder / f"{db_table}.model.json").write_text(json.dumps({"service": svc, "alias": alias}))
+            files.append(str((folder / f"{db_table}.model.json").relative_to(out_dir)))
         reports.append({"v2_table": v2_table, "service": svc, "alias": alias, "db_table": db_table, "tier": tier,
                         "transformed": len(rows), "already_in_v3": len(rows) - len(fresh), "to_load": len(fresh),
                         "audit_gap": gap, "pipeline": run["status"], "detail": run.get("detail", ""), "files": files,
