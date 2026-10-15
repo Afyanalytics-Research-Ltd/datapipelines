@@ -109,6 +109,45 @@ MODEL_LINKS: dict[str, dict[str, str | None]] = {
     "theatre/theatre_booking": {"status_id": "theatre/theatre_scheduling_status"},
     "evaluation/visits": {"unique_id": None, "sha_patient_cr_id": None},
     "evaluation/investigations": {"invoiced": None},
+    "finance/receipt": {"invoice_id": "finance/invoice"},
+    "inpatient/visit_ward": {"bed_id": "inpatient/bed"},
+    # polymorphic, but every row of kisumu_v3 is priceable_type = 'procedure'
+    "core/scheme_pricing": {"priceable_id": "evaluation/procedures"},
+}
+
+# Columns a V2 → V3 load left holding V2 ids (kisumu_v3, audited 2026-10-15:
+# invoice.visit = 311001 where org 4's visits are 104394–158514, prescriptions
+# .drug = 34781 where its products are 1–10040 …). The copy translates them
+# through that load's id map (V2 id → source V3 id) first; what the map
+# doesn't have is copied as null (optional) or held (critical) and counted.
+# (model, column) → alias in the V2→V3 id map
+V2_KEYED: dict[tuple[str, str], str] = {
+    ("finance/invoice", "visit"): "visits", ("finance/invoice", "visit_id"): "visits",
+    ("finance/invoice", "user_id"): "users", ("finance/invoice", "company_id"): "insurance_company",
+    ("finance/invoice", "scheme_id"): "insurance_scheme",
+    ("evaluation/prescriptions", "drug"): "product", ("evaluation/prescriptions", "store_id"): "store",
+    ("evaluation/prescriptions", "admission_request_id"): "admission_request",
+    ("evaluation/investigations", "admission_id"): "admission",
+    ("evaluation/investigations", "date_changed_by"): "users",
+    ("evaluation/investigation_results", "approved_by"): "users",
+    ("evaluation/investigation_results", "published_by"): "users",
+    ("evaluation/examination_reviews", "user_id"): "users",
+    ("evaluation/samples", "user_id"): "users",
+    ("evaluation/visits", "marked_as_em_by"): "users",
+    ("reception/patient_random_note", "patient_id"): "patient",
+    ("evaluation/subprocedures", "procedure"): "procedures",
+    ("evaluation/icd10_variations", "type_id"): "icd10_types",
+}
+
+# Links the source itself has broken beyond repair (V2 ids no map holds):
+# copied as null and reported — the plan doesn't fail on them.
+# (model, column) → why
+ACCEPT_UNRESOLVED: dict[tuple[str, str], str] = {
+    ("evaluation/samples", "type_id"): "V2 sample type ids (1–119); org 4's are 244–362 and no id map has them",
+    ("evaluation/samples", "collection_method_id"): "V2 collection method ids (1–8); org 4's are 18–25, no map",
+    ("evaluation/investigations", "treatment_location_id"): "V2 treatment location ids; org 4's are 5–8, no map",
+    ("evaluation/prescriptions", "treatment_location_id"): "V2 treatment location ids; org 4's are 5–8, no map",
+    ("evaluation/icd10_subcategories", "category_id"): "some categories are not org 4's (shared ICD-10 data)",
 }
 
 # links a row can't exist without (held back / not this org's row when unresolved)
@@ -173,6 +212,10 @@ SKIP_MODELS: dict[str, str] = {
     "core/organizations": "the organisation itself — the target org already exists",
     "core/facilities": "facilities belong to the target org's own setup (rows link to the target facility)",
     "evaluation/facilities": "facilities belong to the target org's own setup",
+    # the source org's own audit trail (who changed what, when): polymorphic
+    # subject/causer ids, and the target writes its own as rows go in
+    **{f"{svc}/activity_log": "the source's audit trail — the target keeps its own"
+       for svc in ("core", "reception", "evaluation", "inventory", "finance", "theatre", "inpatient", "dialysis")},
 }
 
 # models with no tenant column that are reference data shared by every org on

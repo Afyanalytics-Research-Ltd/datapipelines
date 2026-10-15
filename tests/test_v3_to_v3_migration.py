@@ -151,6 +151,28 @@ def test_audit_ignores_other_orgs_rows_of_a_model_without_tenant_column():
     assert audit["evaluation/investigation_result_details"]["investigation_result_id"]["rate"] == 1.0
 
 
+def test_v2_ids_left_by_the_v2_load_are_repaired_through_its_map(tmp_path):
+    src, dst = _pair()
+    u1 = next(r["id"] for r in src.rows["core/users"] if r["uuid"] == "u1")
+    visits = src.rows["evaluation/visits"]
+    visits[0]["marked_as_em_by"] = 500          # V2 user 500 = source user u1
+    visits[1]["marked_as_em_by"] = u1           # a V2 id that happens to equal a real V3 id: not in the map
+    v2_map = {"users": {"500": u1}}
+    state = vv.State("src", "dst", root=tmp_path)
+    plan = vv.build_plan(src)
+    audit = vv.audit_links(src, plan, v2_map=v2_map)
+    assert audit["evaluation/visits"]["marked_as_em_by"]["rate"] == 0.5
+    assert vv.print_plan(plan, audit) == []    # source data, not a rule problem
+    copier = vv.Copier(src, dst, state, plan, workers=2, v2_map=v2_map)
+    res = {m: copier.copy_model(m) for m in sorted(plan["models"], key=lambda m: plan["models"][m]["tier"] or 0)
+           if plan["models"][m]["selected"]}
+    usr = {r["uuid"]: r["id"] for r in dst.rows["core/users"]}
+    got = {r["uuid"]: r.get("marked_as_em_by") for r in dst.rows["evaluation/visits"]}
+    assert got == {"v1": usr["u1"], "v2": None}
+    assert res["evaluation/visits"]["v2_ids_not_in_map"] == {"marked_as_em_by": 1}
+    assert vv.verify_model(copier, "evaluation/visits")["ok"]
+
+
 def test_full_copy_mirrors_every_row_and_link(tmp_path):
     src, dst = _pair()
     state, plan, copier, order, _ = _run(src, dst, tmp_path)
@@ -236,6 +258,50 @@ def test_verify_catches_a_changed_field_and_a_missing_row(tmp_path):
     p = vv.verify_model(copier, "reception/patient")
     assert not v["ok"] and v["mismatched_fields"] == {"status": 1}
     assert not p["ok"] and p["missing"] == 1
+
+
+@pytest.mark.parametrize("err, says", [
+    ('403 {"success":false,"message":"Forbidden. This endpoint is restricted to superadmin."}', "superadmin role"),
+    ('422 {"success":false,"message":"the database refused the row: Duplicate entry \'INV-9\' for key '
+     '\'invoices_invoice_no_unique\' (SQL: insert …)"}', "'INV-9' in unique key invoices_invoice_no_unique"),
+    ('422 {"success":false,"message":"the database refused the row: Column \'patient_id\' cannot be null"}',
+     "requires patient_id"),
+    ('422 {"message":"Cannot add or update a child row: a foreign key constraint fails (`x`.`visits`, CONSTRAINT '
+     '`f` FOREIGN KEY (`patient`) REFERENCES `patients` (`id`))"}', "links to a patients row"),
+    ('422 {"message":"insert rejected: Data too long for column \'notes\' at row 1"}', "notes is longer"),
+    ("ConnectionError: Max retries exceeded (Connection refused)", "didn't answer"),
+    ('500 {"message":"Server Error"}', "HTTP 5xx"),
+])
+def test_errors_are_explained(err, says):
+    msg, meaning = vv.describe_error(err)
+    assert says in meaning, (msg, meaning)
+    assert "(SQL:" not in msg
+
+
+def test_failed_model_says_why_in_words(tmp_path):
+    src, dst = _pair()
+    real = dst.insert
+
+    def picky(svc, alias, data, match_on="uuid"):
+        if alias == "patient" and data.get("first_name") == "Bo":
+            return _Resp(422, {"success": False, "message": "the database refused the row: Column 'gender' "
+                                                            "cannot be null (SQL: insert into patients …)"})
+        return real(svc, alias, data, match_on)
+
+    dst.insert = picky
+    state, plan, copier, order, results = _run(src, dst, tmp_path)
+    res = results["reception/patient"]
+    text = vv.describe_result("reception/patient", res, state)
+    assert res["status"] == "failed"
+    assert "1 row(s) [insert] — the target requires gender" in text
+    assert "V3 said: HTTP 422: the database refused the row: Column 'gender' cannot be null" in text
+    assert "uuid p2" in text and "dead_letters" in text
+    # its child is held, and says which parent is missing
+    vis = results["evaluation/visits"]
+    held_text = vv.describe_result("evaluation/visits", vis, state)
+    assert "evaluation/visits.patient → reception/patient ids [" in held_text
+    line = json.loads((state.dir / "dead_letters" / "reception__patient.jsonl").read_text().splitlines()[0])
+    assert line["row"]["_source_id"] and "requires gender" in line["error"]
 
 
 def test_norm_treats_formats_alike():

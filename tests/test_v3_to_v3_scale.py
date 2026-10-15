@@ -237,6 +237,24 @@ def test_target_down_stops_the_model_and_keeps_state(tmp_path):
     _no_duplicates(dst)
 
 
+def test_target_account_without_superadmin_fails_before_posting(tmp_path):
+    src, dst = _big(n_patients=50, visits_per=0, details_per=0)
+    plan = vv.build_plan(src)
+    copier = vv.Copier(src, dst, vv.State("src", "dst", root=tmp_path), plan, workers=4)
+    msg = 'read p1: 403 {"success":false,"message":"Forbidden. This endpoint is restricted to superadmin."}'
+
+    def refused(*a, **k):
+        raise vv.GatewayError(f"dst core/users {msg}")
+
+    dst.read_page = refused
+    dst.read_all = refused
+    with pytest.raises(vv.GatewayError, match="superadmin"):
+        vv.preflight(dst, services=("core",))
+    with pytest.raises(vv.GatewayError, match="superadmin role"):
+        copier.copy_model("core/users")
+    assert dst.posts == 0
+
+
 def test_schema_rejecting_every_row_stops_early(tmp_path):
     src, dst = _big(n_patients=500, visits_per=0, details_per=0)
     plan = vv.build_plan(src)

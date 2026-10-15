@@ -110,6 +110,29 @@ class State:
                                default=str) + "\n")
 
 
+def load_v2_map(source: str, root: Path = STATE_ROOT) -> dict[str, dict[str, int]]:
+    """The V2 → V3 load's id map for the source org (only the aliases
+    L.V2_KEYED uses): V2 id → source V3 id. Empty if there is none."""
+    p = Path(os.getenv("V3V3_V2_ID_MAP") or root / source / ".migration_id_map.json")
+    if not p.exists():
+        return {}
+    want = set(L.V2_KEYED.values())
+    full = json.loads(p.read_text())
+    out = {a: {str(k): v for k, v in (full.get(a) or {}).items() if v is not None} for a in want}
+    log.info("V2→V3 id map %s: %s", p, {a: len(m) for a, m in out.items()})
+    return out
+
+
+def repair_v2(v2_map: dict, model: str, col: str, val):
+    """(value to link with, was it repaired): a V2-keyed column's V2 id →
+    the source's V3 id, or None when the map lacks it (never the raw value:
+    a V2 id can collide with an unrelated V3 id)."""
+    alias = L.V2_KEYED.get((model, col))
+    if alias is None or val in (None, "") or isinstance(val, bool):
+        return val, False
+    return (v2_map.get(alias) or {}).get(str(val)), True
+
+
 # ─── catalogue + plan ───────────────────────────────────────────────────────
 
 def catalogue(src: V3Client) -> dict[str, dict]:
@@ -224,7 +247,8 @@ def build_plan(src: V3Client, only: list[str] | None = None, exclude: list[str] 
     return {"source": src.key, "organization_id": src.organization_id, "models": models}
 
 
-def audit_links(src: V3Client, plan: dict, sample: int = 2000, id_cache: dict | None = None) -> dict:
+def audit_links(src: V3Client, plan: dict, sample: int = 2000, id_cache: dict | None = None,
+                v2_map: dict | None = None) -> dict:
     """For each link of each selected model: how many of a sample of source
     values are ids of the model the rule points at (in the source org). A
     wrong rule shows up as a low rate. Returns {model: {col: {...}}}."""
@@ -268,10 +292,16 @@ def audit_links(src: V3Client, plan: dict, sample: int = 2000, id_cache: dict | 
                 res[col] = {"target": target, "non_null": len(vals)}
                 continue
             known = ids_of(target)
+            v2 = (model, col) in L.V2_KEYED
+            if v2:                                     # V2 ids: judged after the V2→V3 map
+                vals = [str(repair_v2(v2_map or {}, model, col, v)[0]) for v in vals]
             hit = sum(v in known for v in vals)
             res[col] = {"target": target, "non_null": len(vals), "resolvable": hit,
                         "rate": round(hit / len(vals), 3) if vals else None,
-                        "missing_examples": [v for v in vals if v not in known][:5]}
+                        "missing_examples": [v for v in vals if v not in known][:5],
+                        **({"v2_keyed": True} if v2 else {}),
+                        **({"accepted": L.ACCEPT_UNRESOLVED[(model, col)]}
+                           if (model, col) in L.ACCEPT_UNRESOLVED else {})}
         for col in x.get("unmapped", []):
             vals = [r[col] for r in rows if r.get(col) not in (None, "", 0, "0")]
             res[col] = {"target": None, "non_null": len(vals), "examples": vals[:5]}
@@ -279,12 +309,172 @@ def audit_links(src: V3Client, plan: dict, sample: int = 2000, id_cache: dict | 
     return out
 
 
+_ERR_HINTS: list[tuple[re.Pattern, str]] = [(re.compile(p, re.I), h) for p, h in (
+    (r"restricted to superadmin|Forbidden", "the target account lacks the superadmin role on that instance — "
+                                            "ask for it (or use an account that has it), then re-run"),
+    (r"Duplicate entry '(?P<v>[^']*)' for key '(?P<k>[^']*)'",
+     "the target already has a row with {v!r} in unique key {k} (under another uuid) — it was copied before "
+     "by something else, or the source has two rows with the same key"),
+    (r"Column '(?P<c>\w+)' cannot be null", "the target requires {c}, but it is empty here — in the source, or "
+                                            "because the row it links to isn't on the target (see held/deferred)"),
+    (r"foreign key constraint fails .*REFERENCES `(?P<t>\w+)`", "the row links to a {t} row that isn't on the "
+                                                                "target — copy that model first"),
+    (r"Unknown column '(?:\w+\.)?(?P<c>\w+)'", "the target's schema has no column {c} (older/newer V3 build)"),
+    (r"Data too long for column '(?P<c>\w+)'", "{c} is longer than the target's column allows"),
+    (r"Out of range value for column '(?P<c>\w+)'", "{c} is out of the target column's range"),
+    (r"Incorrect (?:datetime|date|integer|decimal) value: '(?P<v>[^']*)' for column '(?P<c>\w+)'",
+     "{c} = {v!r} isn't a valid value for the target's column type"),
+    (r"Field '(?P<c>\w+)' doesn't have a default value", "the target requires {c}, which the source row lacks"),
+    (r"Table '(?P<t>[\w.]+)' doesn't exist", "the table {t} doesn't exist on that instance's database"),
+    (r"is not registered", "the target gateway has no such model (service not deployed / older build)"),
+    (r"\b401\b|Unauthenticated", "the login token was refused — check the account's password"),
+    (r"Timeout|timed out|ConnectionError|Connection refused|RemoteDisconnected",
+     "the target didn't answer (network / overloaded) — re-run; rows already in are matched by uuid"),
+    (r"^5\d\d\b", "the target's server failed on this row (HTTP 5xx) — see its message"),
+)]
+
+
+def describe_error(err: str) -> tuple[str, str]:
+    """(V3's own message, what it means) for a gateway error text like
+    '422 {"success":false,"message":"…"}' or an exception string."""
+    status, _, body = str(err).partition(" ")
+    msg = body
+    try:
+        j = json.loads(body)
+        msg = j.get("message") or j.get("error") or body
+        if isinstance(j.get("errors"), dict):        # Laravel validation: field → [messages]
+            msg += " — " + "; ".join(f"{k}: {' '.join(v) if isinstance(v, list) else v}"
+                                     for k, v in j["errors"].items())
+    except ValueError:
+        msg = str(err)
+    msg = re.sub(r"\s*\(SQL: .*", "", " ".join(str(msg).split()))[:400]
+    if status.isdigit():
+        msg = f"HTTP {status}: {msg}"
+    for pat, hint in _ERR_HINTS:
+        m = pat.search(str(err))
+        if m:
+            return msg, hint.format(**{k: v for k, v in m.groupdict().items()})
+    return msg, "see V3's message"
+
+
+def _reason_key(msg: str) -> str:
+    """The message with values / ids stripped, so rows failing the same way group together."""
+    s = re.sub(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", "<uuid>", msg)
+    s = re.sub(r"'[^']{0,60}' for key", "'…' for key", s)
+    return re.sub(r"(?<![\w])\d+(?![\w])", "N", s)[:300]
+
+
+def held_summary(x: dict, held: dict) -> dict:
+    """{column: {rows, parent model, example parent ids}} for rows held because
+    a parent they can't exist without isn't on the target."""
+    out: dict[str, dict] = {}
+    for cols in held.values():
+        for c, v in cols.items():
+            e = out.setdefault(c, {"rows": 0, "parent": x["links"].get(c), "missing_parent_ids": []})
+            e["rows"] += 1
+            if len(e["missing_parent_ids"]) < 5 and v not in e["missing_parent_ids"]:
+                e["missing_parent_ids"].append(v)
+    return out
+
+
+def describe_held(model: str, held_because: dict) -> str:
+    return "\n".join(
+        f"  • {h['rows']} row(s): {model}.{c} → {h['parent']} ids {h['missing_parent_ids']} are not on the target "
+        f"— that model hasn't been copied yet, failed, or those parents aren't the source org's (copy "
+        f"{h['parent']} first, then re-run this model)" for c, h in held_because.items())
+
+
+def describe_result(model: str, res: dict, state: "State") -> str:
+    """A model's copy outcome in words: what went in, what didn't, and why."""
+    head = (f"{model}: read {res.get('read', 0)}, posted {res.get('posted', 0)}, already on target "
+            f"{res.get('already', res.get('linked', 0))}, failed {res.get('failed', 0)}, held {res.get('held', 0)}, "
+            f"other org's rows skipped {res.get('foreign', 0)}")
+    parts = [head]
+    if res.get("aborted"):
+        parts.append(f"STOPPED EARLY: {res['aborted']}")
+    if res.get("errors"):
+        parts.append(f"{res['failed']} row(s) refused by the target:")
+        for e in res["errors"][:6]:
+            parts.append(f"  • {e['count']} row(s) [{e['stage']}] — {e['meaning']}\n"
+                         f"      V3 said: {e['v3_message']}\n"
+                         f"      e.g. source id {e['example']['source_id']}, uuid {e['example']['uuid']}")
+    if res.get("held_because"):
+        parts.append(f"{res['held']} row(s) held — not posted because a parent they need isn't on the target:")
+        parts.append(describe_held(model, res["held_because"]))
+    if res.get("v2_ids_not_in_map"):
+        parts.append("copied with a null link — the source row held a V2 id the V2→V3 id map doesn't have: " +
+                     ", ".join(f"{c} ×{n}" for c, n in res["v2_ids_not_in_map"].items()))
+    if res.get("failed") or res.get("held"):
+        parts.append(f"every refused row, with V3's full message: {state._path('dead_letters', model, 'jsonl')}; "
+                     f"held rows: {state._path('held', model)}")
+    return "\n".join(parts)
+
+
+def describe_verify(model: str, res: dict) -> str:
+    parts = [f"{model}: target differs from source — {res.get('missing', 0)} of {res.get('source', 0)} source "
+             f"row(s) missing on the target, {sum((res.get('mismatched_fields') or {}).values())} field "
+             f"difference(s), {res.get('extra_on_target', 0)} target row(s) not in the source"]
+    for ex in res.get("missing_examples") or []:
+        why = "held: its parent isn't on the target" if ex.get("held") else "never posted, or refused (see dead letters)"
+        parts.append(f"  • missing: source id {ex.get('id')}, uuid {ex.get('uuid')} — {why}")
+    for col, n in sorted((res.get("mismatched_fields") or {}).items(), key=lambda kv: -kv[1]):
+        exs = (res.get("mismatch_examples") or {}).get(col) or []
+        e = exs[0] if exs else {}
+        parts.append(f"  • {col}: differs on {n} row(s) — e.g. uuid {e.get('uuid')}: source {e.get('expected')!r}, "
+                     f"target {e.get('target')!r}")
+    return "\n".join(parts)
+
+
+class _Hint:
+    def format(self, c) -> str:
+        return (f"the gateway refuses {c.key}'s account (user {getattr(c, 'user_id', None)}, org "
+                f"{c.organization_id}, facility {c.facility_id}): it needs the superadmin role on that instance")
+
+
+FORBIDDEN_HINT = _Hint()
+
+
+def _forbidden(e: Exception) -> bool:
+    return " 403 " in str(e) or "restricted to superadmin" in str(e)
+
+
+def preflight(client: V3Client, services=SERVICES) -> None:
+    """Before anything moves: the account can read and describe on every
+    service it will touch. Raises GatewayError naming what's refused."""
+    client.token()
+    refused = []
+    for svc in services:
+        try:
+            models = client.models(svc)
+        except GatewayError as e:
+            if _forbidden(e):
+                refused.append(f"{svc} (list)")
+            continue                                   # service not deployed there: the plan says so
+        if not models:
+            continue
+        alias = models[0]["alias"]
+        try:
+            client.read_page(svc, alias, 1, per_page=1)
+            client.describe(svc, alias)
+        except GatewayError as e:
+            if _forbidden(e):
+                refused.append(f"{svc}/{alias}")
+            else:
+                log.warning("preflight %s %s/%s: %s", client.key, svc, alias, e)
+    if refused:
+        raise GatewayError(f"{FORBIDDEN_HINT.format(c=client)} — refused: {', '.join(refused)}")
+    log.info("preflight %s: gateway access ok on %s", client.key, ", ".join(services))
+
+
 # ─── copy ───────────────────────────────────────────────────────────────────
 
 class Copier:
     def __init__(self, src: V3Client, dst: V3Client, state: State, plan: dict, *, workers: int = 4,
-                 record_limit: int = 0, read_workers: int = READ_WORKERS):
+                 record_limit: int = 0, read_workers: int = READ_WORKERS, v2_map: dict | None = None):
         self.src, self.dst, self.state, self.plan = src, dst, state, plan
+        self.v2_map = v2_map or {}
+        self.unrepaired: dict[str, int] = {}          # "model.col" → V2 ids the map lacked (copied as null)
+        self.errors: dict[str, dict[str, dict]] = {}  # model → cause → {count, v3_message, meaning, example}
         self.models = plan["models"]
         self.workers = max(1, workers)
         self.read_workers = max(1, read_workers)
@@ -312,6 +502,8 @@ class Copier:
                 if r.get("uuid") and r.get("id") is not None:
                     out[str(r["uuid"]).lower()] = r["id"]
         except GatewayError as e:
+            if _forbidden(e):        # it can't insert either — every row would only be dead-lettered
+                raise GatewayError(f"{model}: {e} — {FORBIDDEN_HINT.format(c=self.dst)}") from e
             log.warning("%s: can't read target rows (%s) — relying on match_on uuid", model, e)
         return out
 
@@ -332,6 +524,14 @@ class Copier:
             elif target == L.DROP:
                 out[col] = None
             else:
+                val, v2 = repair_v2(self.v2_map, model, col, val)
+                if v2 and val is None:                # a V2 id nothing maps: never linked to a guess
+                    k = f"{model}.{col}"
+                    self.unrepaired[k] = self.unrepaired.get(k, 0) + 1
+                    out[col] = None
+                    if col in crit:
+                        missing_crit.append(col)
+                    continue
                 mapped = self.state.id_map(target).get(str(val))
                 if mapped is None and target == model:
                     mapped = self.state.id_map(model).get(str(val))
@@ -378,6 +578,29 @@ class Copier:
     def _post_pool(self, model: str):
         return _PostPool(self, model)
 
+    def record_error(self, model: str, row: dict, payload: dict, err: str, stage: str = "insert") -> None:
+        """Dead-letter the row and count its cause (V3's message + what it
+        means + one example row) for the task's failure message."""
+        msg, meaning = describe_error(err)
+        self.state.dead_letter(model, {"_source_id": row.get("id"), **payload}, f"{stage}: {msg} — {meaning}")
+        with self._lock:
+            e = self.errors.setdefault(model, {}).setdefault(_reason_key(f"{stage}: {msg}"), {
+                "count": 0, "stage": stage, "v3_message": msg, "meaning": meaning,
+                "example": {"source_id": row.get("id"), "uuid": payload.get("uuid") or row.get("uuid")}})
+            e["count"] += 1
+
+    def error_summary(self, model: str, top: int = 5) -> str:
+        """Multi-line: each cause, how many rows, V3's message, what it means, an example."""
+        errs = sorted((self.errors.get(model) or {}).values(), key=lambda e: -e["count"])
+        lines = []
+        for e in errs[:top]:
+            lines.append(f"  • {e['count']} row(s) [{e['stage']}] — {e['meaning']}\n"
+                         f"      V3 said: {e['v3_message']}\n"
+                         f"      e.g. source id {e['example']['source_id']}, uuid {e['example']['uuid']}")
+        if len(errs) > top:
+            lines.append(f"  • … and {len(errs) - top} more cause(s)")
+        return "\n".join(lines)
+
     def copy_model(self, model: str) -> dict:
         """Read the source org's rows (pages in parallel), translate, and POST
         the new ones with `workers` in flight; a row already on the target
@@ -407,7 +630,7 @@ class Copier:
             sid = str(row["id"])
             if err:
                 counts["failed"] += 1
-                self.state.dead_letter(model, payload, err)
+                self.record_error(model, row, payload, err)
                 return
             if new_id is not None:
                 idm[sid] = new_id
@@ -468,6 +691,13 @@ class Copier:
                 self.state.save("held", model, held)
                 self.state.save("src_ids", model, src_ids)
         counts["seconds"] = round(time.time() - t0)
+        v2_null = {k.split(".", 1)[1]: n for k, n in self.unrepaired.items() if k.startswith(model + ".")}
+        if v2_null:
+            counts["v2_ids_not_in_map"] = v2_null          # linked as null: the source held a V2 id
+        if held:
+            counts["held_because"] = held_summary(x, held)
+        if self.errors.get(model):
+            counts["errors"] = sorted(self.errors[model].values(), key=lambda e: -e["count"])
         if pool.aborted:
             counts["aborted"] = pool.aborted
         counts["status"] = ("failed" if counts["failed"] or pool.aborted else "waiting" if counts["held"] else
@@ -511,7 +741,7 @@ class Copier:
         def done(row, payload, deferred, new_id, err):
             if err:
                 counts["failed"] += 1
-                self.state.dead_letter(model, payload, err)
+                self.record_error(model, row, payload, err)
             else:
                 idm[str(row["id"])] = new_id
                 counts["posted"] += 1
@@ -569,7 +799,7 @@ class Copier:
 
         def done(row, patch, cols, _new_id, err):
             if err:
-                self.state.dead_letter(model, patch, "relink: " + err)
+                self.record_error(model, row, patch, err, stage="relink")
                 left.setdefault(row["id"], {_UUID_KEY: patch["uuid"]}).update(
                     {c: cols[c] for c in patch if c != "uuid"})
             else:
@@ -585,7 +815,12 @@ class Copier:
                 for col, val in cols.items():
                     if col == _UUID_KEY:
                         continue
-                    mapped = maps[x["links"][col]].get(str(val))
+                    # a link deferred by an older run may hold a V2 id: repaired the same way as on copy
+                    fixed, v2 = repair_v2(self.v2_map, model, col, val)
+                    if v2 and fixed is None:
+                        missing[col] = val
+                        continue
+                    mapped = maps[x["links"][col]].get(str(fixed))
                     if mapped is None:
                         missing[col] = val
                     else:
@@ -645,10 +880,15 @@ class _PostPool:
                     self._ok += 1
                     self._streak = 0
                 if not self.aborted:
+                    if self._streak or (self._bad >= MAX_ERROR_STREAK and not self._ok):
+                        msg, meaning = describe_error(err)
                     if self._streak >= MAX_ERROR_STREAK:
-                        self.aborted = f"{self._streak} POSTs in a row failed (last: {err[:300]})"
+                        self.aborted = (f"{self._streak} POSTs in a row failed — {meaning}. Last answer: {msg}. "
+                                        f"Stopped so the rest isn't dead-lettered; nothing is lost — re-run once "
+                                        f"the target is back")
                     elif self._bad >= MAX_ERROR_STREAK and not self._ok:
-                        self.aborted = f"the first {self._bad} rows were all rejected (last: {err[:300]})"
+                        self.aborted = (f"the first {self._bad} rows were all rejected — {meaning}. V3 said: {msg}. "
+                                        f"Stopped: posting the rest would fail the same way")
                     if self.aborted:
                         log.error("%s: %s — stopping this model", self.model, self.aborted)
         finally:
@@ -778,8 +1018,14 @@ def print_plan(plan: dict, audit: dict | None = None) -> list[str]:
                 if a["target"] is None and a["non_null"]:
                     problems.append(f"{m}.{col}: id-like column with values but no link rule ({a['examples']})")
                 elif a.get("rate") is not None and a["rate"] < 0.95:
-                    problems.append(f"{m}.{col} → {a['target']}: only {a['resolvable']}/{a['non_null']} values are "
-                                    f"ids there (e.g. {a['missing_examples']})")
+                    msg = (f"{m}.{col} → {a['target']}: only {a['resolvable']}/{a['non_null']} values are ids there "
+                           f"(e.g. {a['missing_examples']})")
+                    if a.get("v2_keyed") or a.get("accepted"):
+                        # the source's own data: copied as null / held, and counted
+                        log.warning("SOURCE DATA: %s — %s", msg, a.get("accepted") or
+                                    "V2 ids the V2→V3 id map doesn't have")
+                    else:
+                        problems.append(msg)
     for p in problems:
         log.warning("LINK: %s", p)
     return problems
@@ -808,12 +1054,16 @@ def main(argv=None) -> int:
     state = State(a.source, a.target)
     if a.command == "plan":
         plan = load_or_build_plan(src, state, a.models, a.exclude, refresh=True)
-        audit = audit_links(src, plan, sample=a.audit_sample)
+        audit = audit_links(src, plan, sample=a.audit_sample, v2_map=load_v2_map(a.source))
         state.save("audit", "all", audit)
         problems = print_plan(plan, audit)
         return 1 if problems else 0
+    if a.command in ("migrate", "relink"):
+        preflight(src)
+        preflight(dst)                 # a refused account stops here, before a row is posted
     plan = load_or_build_plan(src, state, a.models, a.exclude, refresh=a.refresh_plan)
     copier = Copier(src, dst, state, plan, workers=a.workers, record_limit=a.record_limit,
+                    v2_map=load_v2_map(a.source),
                     read_workers=a.read_workers)
     todo = sorted((m for m, x in plan["models"].items() if x["selected"] and (a.tier is None or x["tier"] == a.tier)),
                   key=lambda m: (plan["models"][m]["tier"], m))
@@ -822,16 +1072,21 @@ def main(argv=None) -> int:
         """True = this model is fine."""
         try:
             if a.command == "migrate":
-                return copier.copy_model(m)["status"] != "failed"
+                res = copier.copy_model(m)
+                if res["status"] in ("failed", "waiting"):
+                    (log.error if res["status"] == "failed" else log.warning)("%s", describe_result(m, res, state))
+                return res["status"] != "failed"
             if a.command == "relink":
                 copier.relink(m)
                 return True
             res = verify_model(copier, m, canary=a.canary)
             state.save("verify", m, res)
             log.info("verify %s: %s", m, {k: v for k, v in res.items() if not k.endswith("examples")})
+            if not res["ok"]:
+                log.error("%s", describe_verify(m, res))
             return res["ok"]
         except GatewayError as e:
-            log.error("%s: %s", m, e)
+            log.error("%s: %s\n%s", m, e, copier.error_summary(m))
             return False
 
     bad = 0

@@ -103,15 +103,24 @@ def v3_to_v3_migration():
         p = get_current_context()["params"]
         vv, src, dst, state = _setup(p)
         log.info("source %r → target %r", src, dst)
-        if p["mode"] != "plan":
-            dst.token()                       # wrong account / org fails here, before anything moves
+        # wrong account / org, or an account the gateway refuses (no superadmin
+        # role), fails here — before anything moves, with what's refused
+        try:
+            vv.preflight(src)
+            if p["mode"] != "plan":
+                vv.preflight(dst)
+        except vv.GatewayError as e:
+            raise AirflowFailException(str(e))
         pl = _plan(vv, src, state, p, refresh=p["refresh_plan"] or p["mode"] == "plan")
         if p["mode"] == "plan":
-            audit = vv.audit_links(src, pl)
+            audit = vv.audit_links(src, pl, v2_map=vv.load_v2_map(p["source"]))
             state.save("audit", "all", audit)
             problems = vv.print_plan(pl, audit)
             if problems:
-                raise AirflowFailException(f"{len(problems)} link problem(s) — see the log")
+                raise AirflowFailException(
+                    f"{len(problems)} link rule problem(s) — a column holds ids but no rule says which model they "
+                    f"belong to, or the rule points at the wrong model. Fix v3_to_v3_links.py:\n  • "
+                    + "\n  • ".join(problems))
             return []
         vv.print_plan(pl)
         return [{"model": m, "tier": x["tier"]} for m, x in sorted(pl["models"].items()) if x["selected"]]
@@ -140,16 +149,20 @@ def v3_to_v3_migration():
         vv, src, dst, state = _setup(p)
         pl = _plan(vv, src, state, p)
         copier = vv.Copier(src, dst, state, pl, workers=int(p["workers"]), record_limit=int(p["record_limit"]),
-                           read_workers=int(p["read_workers"]))
+                           read_workers=int(p["read_workers"]), v2_map=vv.load_v2_map(p["source"]))
         try:
             res = copier.copy_model(job["model"])
         except vv.GatewayError as e:          # target down / rejecting everything: state is saved, retry later
-            raise AirflowFailException(str(e)) if "all rejected" in str(e) else RuntimeError(str(e))
-        log.info("%s: %s", job["model"], res)
+            detail = f"{e}\n{copier.error_summary(job['model'])}"
+            raise AirflowFailException(detail) if "all rejected" in str(e) else RuntimeError(detail)
+        text = vv.describe_result(job["model"], res, state)
+        log.info("%s", text)
         if res["status"] == "failed":
-            raise AirflowFailException(f"{res['failed']} row(s) dead-lettered — see dead_letters/{job['model']}")
+            log.error("%s", text)
+            raise AirflowFailException(text)
         if res["status"] == "waiting":
-            raise AirflowSkipException(f"WAITING — {res['held']} row(s) held for a parent not copied yet")
+            log.warning("%s", text)
+            raise AirflowSkipException("WAITING — " + text)
         return res
 
     @task(trigger_rule=TriggerRule.ALL_DONE)
@@ -159,12 +172,17 @@ def v3_to_v3_migration():
             raise AirflowSkipException("migrate mode only")
         vv, src, dst, state = _setup(p)
         pl = _plan(vv, src, state, p)
-        copier = vv.Copier(src, dst, state, pl, workers=int(p["workers"]), read_workers=int(p["read_workers"]))
+        copier = vv.Copier(src, dst, state, pl, workers=int(p["workers"]), read_workers=int(p["read_workers"]),
+                           v2_map=vv.load_v2_map(p["source"]))
         out = {m: copier.relink(m) for m, x in sorted(pl["models"].items(), key=lambda kv: kv[1]["tier"] or 0)
                if x["selected"]}
         left = {m: r["still_missing"] for m, r in out.items() if r["still_missing"]}
         if left:
-            log.warning("links still unresolved after relink: %s", left)
+            log.warning("links still unresolved after relink (copied as null — their parent row isn't on the "
+                        "target: not in the source org, or it failed): %s", left)
+        for m in out:
+            if copier.errors.get(m):
+                log.error("%s relink refused:\n%s", m, copier.error_summary(m))
         return out
 
     @task(trigger_rule=TriggerRule.ALL_DONE)
@@ -185,13 +203,15 @@ def v3_to_v3_migration():
         pl = _plan(vv, src, state, ctx["params"])
         # a canary run compares just the rows it copied, field by field
         canary = ctx["params"]["mode"] == "migrate" and int(ctx["params"]["record_limit"]) > 0
-        res = vv.verify_model(vv.Copier(src, dst, state, pl, read_workers=int(ctx["params"]["read_workers"])),
+        res = vv.verify_model(vv.Copier(src, dst, state, pl, read_workers=int(ctx["params"]["read_workers"]),
+                                        v2_map=vv.load_v2_map(ctx["params"]["source"])),
                               job["model"], canary=canary)
         state.save("verify", job["model"], res)
         log.info("%s: %s", job["model"], json.dumps(res, default=str)[:4000])
         if not res["ok"]:
-            raise AirflowFailException(
-                f"target differs: {res.get('missing', 0)} missing, fields {res.get('mismatched_fields') or {}}")
+            text = vv.describe_verify(job["model"], res)
+            log.error("%s", text)
+            raise AirflowFailException(text)
         return {k: v for k, v in res.items() if not k.endswith("examples")}
 
     @task(trigger_rule=TriggerRule.NONE_FAILED)
