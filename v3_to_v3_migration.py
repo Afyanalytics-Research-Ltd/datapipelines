@@ -46,8 +46,15 @@ from v3_to_v3_client import SERVICES, GatewayError, V3Client
 log = logging.getLogger("v3_to_v3")
 
 STATE_ROOT = Path(os.getenv("V3V3_STATE_DIR") or Path(__file__).resolve().parent / ".migration_state")
-SAVE_EVERY = 500
+CHECKPOINT_SECONDS = 30     # id map / deferred links flushed to disk at least this often
+READ_WORKERS = int(os.getenv("V3V3_READ_WORKERS") or 8)   # parallel page reads per table
+# a model stops (state saved, rest left for the re-run) after this many POSTs
+# in a row fail at the transport / 5xx level, or when its first this-many
+# rows are all rejected — the target is down or the schema is wrong, and
+# posting the rest would only fill the dead letters
+MAX_ERROR_STREAK = 50
 _UNKNOWN_COL = re.compile(r"Unknown column '(?:[\w]+\.)?(\w+)'")
+_UUID_KEY = "__uuid__"      # deferred links: the row's uuid, so relink needn't re-read the source
 
 
 # ─── state ──────────────────────────────────────────────────────────────────
@@ -58,7 +65,7 @@ def _fname(model: str) -> str:
 
 def _atomic_write(path: Path, data) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + f".{os.getpid()}.tmp")
+    tmp = path.with_suffix(path.suffix + f".{os.getpid()}.{threading.get_ident()}.tmp")
     tmp.write_text(json.dumps(data, default=str))
     os.replace(tmp, path)
 
@@ -84,7 +91,8 @@ class State:
 
     def save_map(self, model: str) -> None:
         with self._lock:
-            _atomic_write(self._path("id_map", model), self._maps.get(model, {}))
+            snapshot = dict(self._maps.get(model, {}))   # POST threads keep adding while it's written
+        _atomic_write(self._path("id_map", model), snapshot)
 
     def load(self, kind: str, model: str, default):
         p = self._path(kind, model)
@@ -174,17 +182,27 @@ def tiers(models: dict[str, dict]) -> dict[str, int]:
     return level
 
 
-def build_plan(src: V3Client, only: list[str] | None = None, exclude: list[str] | None = None) -> dict:
+def build_plan(src: V3Client, only: list[str] | None = None, exclude: list[str] | None = None,
+               workers: int = 16) -> dict:
     cat = catalogue(src)
-    models: dict[str, dict] = {}
-    for model, meta in sorted(cat.items()):
-        if "read" not in meta["ops"]:
-            continue
+    readable = sorted(m for m, meta in cat.items() if "read" in meta["ops"])
+
+    def first_page(model):
+        meta = cat[model]
         try:
-            rows, page_meta = src.read_page(meta["service"], meta["alias"], 1, per_page=50)
+            return src.read_page(meta["service"], meta["alias"], 1, per_page=50)
         except GatewayError as e:
-            models[model] = {**meta, "kind": "error", "error": str(e)[:300], "links": {}, "cols": [], "count": None}
+            return e
+
+    with ThreadPoolExecutor(workers) as pool:                 # ~230 models, one read each
+        pages = dict(zip(readable, pool.map(first_page, readable)))
+    models: dict[str, dict] = {}
+    for model in readable:
+        meta, got = cat[model], pages[model]
+        if isinstance(got, GatewayError):
+            models[model] = {**meta, "kind": "error", "error": str(got)[:300], "links": {}, "cols": [], "count": None}
             continue
+        rows, page_meta = got
         cols = sorted({c for r in rows for c in r})
         kind = model_kind(model, meta, set(cols))
         if not rows and kind != "skip":
@@ -219,17 +237,29 @@ def audit_links(src: V3Client, plan: dict, sample: int = 2000, id_cache: dict | 
             if not t or t["kind"] in ("error", "empty"):
                 ids[target] = set()
             else:
-                ids[target] = {str(r["id"]) for r in src.read_all(t["service"], t["alias"]) if r.get("id") is not None}
+                ids[target] = {str(r["id"]) for r in src.read_all(t["service"], t["alias"], workers=READ_WORKERS)
+                               if r.get("id") is not None}
         return ids[target]
 
     out = {}
     for model, x in sorted(models.items()):
         if not x.get("selected"):
             continue
-        rows = []
-        for r in src.read_all(x["service"], x["alias"]):
-            rows.append(r)
-            if len(rows) >= sample:
+        # a model with no tenant column serves every org's rows: only the ones
+        # hanging off this org's parents are this org's (and audited) — the
+        # rest would read as broken links
+        mine = None
+        if x["kind"] == "parent_rows":
+            crit = {c: x["links"][c] for c in L.critical_cols(model)
+                    if x["links"].get(c) not in (None, L.FACILITY, L.DROP)}
+            parents = {c: ids_of(t) for c, t in crit.items()}
+            mine = lambda r: any(str(r.get(c)) in ids for c, ids in parents.items())
+        rows, scanned = [], 0
+        for r in src.read_all(x["service"], x["alias"], workers=min(READ_WORKERS, -(-sample // 500))):
+            scanned += 1
+            if mine is None or mine(r):
+                rows.append(r)
+            if len(rows) >= sample or scanned >= sample * 20:
                 break
         res = {}
         for col, target in x["links"].items():
@@ -253,26 +283,32 @@ def audit_links(src: V3Client, plan: dict, sample: int = 2000, id_cache: dict | 
 
 class Copier:
     def __init__(self, src: V3Client, dst: V3Client, state: State, plan: dict, *, workers: int = 4,
-                 record_limit: int = 0):
+                 record_limit: int = 0, read_workers: int = READ_WORKERS):
         self.src, self.dst, self.state, self.plan = src, dst, state, plan
         self.models = plan["models"]
-        self.workers = workers
+        self.workers = max(1, workers)
+        self.read_workers = max(1, read_workers)
         self.record_limit = record_limit
         self._dropped_cols: dict[str, set[str]] = {}
+        self._src_id_sets: dict[str, set[str]] = {}
+        self._lock = threading.Lock()
 
     # rows of the source org, with the model's own filter
     def source_rows(self, model: str):
         x = self.models[model]
-        for r in self.src.read_all(x["service"], x["alias"]):
+        for r in self.src.read_all(x["service"], x["alias"], workers=self.read_workers):
             if x["kind"] == "org_rows" and str(r.get("organization_id")) != str(self.src.organization_id):
                 continue
             yield r
 
-    def target_uuids(self, model: str) -> dict[str, int]:
+    def target_rows(self, model: str):
         x = self.models[model]
+        return self.dst.read_all(x["service"], x["alias"], workers=self.read_workers)
+
+    def target_uuids(self, model: str) -> dict[str, int]:
         out = {}
         try:
-            for r in self.dst.read_all(x["service"], x["alias"]):
+            for r in self.target_rows(model):
                 if r.get("uuid") and r.get("id") is not None:
                     out[str(r["uuid"]).lower()] = r["id"]
         except GatewayError as e:
@@ -331,14 +367,23 @@ class Copier:
                 return (j.get("id") or d.get("id")), None
             m = _UNKNOWN_COL.search(r.text)
             if m and m.group(1) in payload:            # the target's schema lacks this column
-                self._dropped_cols.setdefault(model, set()).add(m.group(1))
+                with self._lock:
+                    self._dropped_cols.setdefault(model, set()).add(m.group(1))
                 log.warning("%s: target has no column %s — not copied", model, m.group(1))
                 payload = {k: v for k, v in payload.items() if k != m.group(1)}
                 continue
             return None, f"{r.status_code} {r.text[:1500]}"
         return None, "too many unknown columns"
 
+    def _post_pool(self, model: str):
+        return _PostPool(self, model)
+
     def copy_model(self, model: str) -> dict:
+        """Read the source org's rows (pages in parallel), translate, and POST
+        the new ones with `workers` in flight; a row already on the target
+        (by uuid) is only mapped. The id map and deferred links are flushed at
+        least every CHECKPOINT_SECONDS and always on the way out, so a crash
+        or abort loses nothing the re-run can't find on the target by uuid."""
         x = self.models[model]
         if x["kind"] == "reference":
             return self.link_reference(model)
@@ -349,31 +394,34 @@ class Copier:
         deferred_all = self.state.load("deferred", model, {})
         src_ids: list[str] = []
         counts = {"read": 0, "already": 0, "posted": 0, "held": 0, "foreign": 0, "failed": 0, "deferred": 0}
-        lock = threading.Lock()
         new = 0
+        last_save = time.time()
 
-        def post(row, payload, deferred):
-            new_id, err = self._insert(model, payload)
-            with lock:
-                if err:
-                    counts["failed"] += 1
-                    self.state.dead_letter(model, payload, err)
-                    return
-                if new_id is not None:
-                    idm[str(row["id"])] = new_id
-                counts["posted"] += 1
-                if deferred:
-                    deferred_all[str(row["id"])] = deferred
-                    counts["deferred"] += 1
-                if counts["posted"] % SAVE_EVERY == 0:
-                    # checkpoint: a crash loses at most the rows since here, and
-                    # those are found on the target by uuid on the next run
-                    self.state.save_map(model)
-                    self.state.save("deferred", model, deferred_all)
+        def save():
+            self.state.save_map(model)
+            with pool.lock:
+                snapshot = dict(deferred_all)
+            self.state.save("deferred", model, snapshot)
 
-        with ThreadPoolExecutor(self.workers) as pool:
-            futures = []
+        def done(row, payload, deferred, new_id, err):          # runs on a POST thread, under pool.lock
+            sid = str(row["id"])
+            if err:
+                counts["failed"] += 1
+                self.state.dead_letter(model, payload, err)
+                return
+            if new_id is not None:
+                idm[sid] = new_id
+            counts["posted"] += 1
+            if deferred:
+                deferred_all[sid] = {**deferred, _UUID_KEY: row.get("uuid")}
+                counts["deferred"] += 1
+
+        pool = self._post_pool(model)
+        complete = False
+        try:
             for row in self.source_rows(model):
+                if pool.aborted:
+                    break
                 counts["read"] += 1
                 sid = str(row.get("id"))
                 payload, missing_crit, deferred = self.translate(model, row)
@@ -389,81 +437,115 @@ class Copier:
                     continue
                 src_ids.append(sid)
                 uuid = str(row.get("uuid") or "").lower()
-                if uuid and uuid in on_target:
+                if (uuid and uuid in on_target) or (not uuid and sid in idm):
                     # already on the target (earlier run, or posted just before a
                     # crash): never re-posted — a full re-post would overwrite the
                     # row (a user's password …). Links still missing go to relink,
                     # which patches only those columns.
-                    idm[sid] = on_target[uuid]
-                    counts["already"] += 1
-                    if deferred:
-                        with lock:
-                            deferred_all[sid] = deferred
+                    with pool.lock:
+                        if uuid:
+                            idm[sid] = on_target[uuid]
+                        counts["already"] += 1
+                        if deferred:
+                            deferred_all[sid] = {**deferred, _UUID_KEY: row.get("uuid")}
                     continue
                 if self.record_limit and new >= self.record_limit:
                     continue
                 new += 1
-                futures.append(pool.submit(post, row, payload, deferred))
-            for f in futures:
-                f.result()
-        self.state.save_map(model)
-        self.state.save("held", model, held)
-        self.state.save("deferred", model, deferred_all)
-        self.state.save("src_ids", model, src_ids)
+                pool.submit(row, payload, deferred, done)
+                if time.time() - last_save > CHECKPOINT_SECONDS:
+                    save()
+                    last_save = time.time()
+                    log.info("%s: %s (%.0f rows/s)", model, counts, counts["read"] / (last_save - t0))
+            else:
+                complete = True
+        finally:
+            pool.close()
+            save()
+            if complete:
+                # only a full read: children (parent_rows) and verify take a
+                # parent id missing from this list as another org's row
+                self.state.save("held", model, held)
+                self.state.save("src_ids", model, src_ids)
         counts["seconds"] = round(time.time() - t0)
-        counts["status"] = ("failed" if counts["failed"] else "waiting" if counts["held"] else
+        if pool.aborted:
+            counts["aborted"] = pool.aborted
+        counts["status"] = ("failed" if counts["failed"] or pool.aborted else "waiting" if counts["held"] else
                             "canary" if self.record_limit else "done")
         self.state.save("report", model, counts)
         log.info("%s: %s", model, counts)
+        if pool.aborted:
+            raise GatewayError(f"{model}: stopped — {pool.aborted}")
         return counts
 
     def _parent_in_source(self, model: str, row: dict, cols: list[str]) -> bool:
         x = self.models[model]
         for c in cols:
             parent = x["links"].get(c)
-            if parent and str(row.get(c)) in set(self.state.load("src_ids", parent, [])):
+            if not parent:
+                continue
+            ids = self._src_id_sets.get(parent)
+            if ids is None:
+                with self._lock:
+                    ids = self._src_id_sets.get(parent)
+                    if ids is None:
+                        ids = self._src_id_sets[parent] = set(self.state.load("src_ids", parent, []))
+            if str(row.get(c)) in ids:
                 return True
         return False
 
     def link_reference(self, model: str) -> dict:
         """Shared reference rows: the target's own row (uuid, then the match
         fields); inserted only when the target has none."""
-        x = self.models[model]
         idm = self.state.id_map(model)
         fields = L.REFERENCE_MATCH.get(model, ("code", "name"))
         by_uuid, by_key = {}, {}
-        for r in self.dst.read_all(x["service"], x["alias"]):
+        for r in self.target_rows(model):
             if r.get("uuid"):
                 by_uuid[str(r["uuid"]).lower()] = r["id"]
             for f in fields:
                 if r.get(f) not in (None, ""):
                     by_key.setdefault((f, str(r[f]).strip().lower()), r["id"])
         counts = {"read": 0, "linked": 0, "posted": 0, "failed": 0}
-        for row in self.source_rows(model):
-            counts["read"] += 1
-            sid = str(row["id"])
-            hit = by_uuid.get(str(row.get("uuid") or "").lower())
-            for f in fields:
-                if hit is None and row.get(f) not in (None, ""):
-                    hit = by_key.get((f, str(row[f]).strip().lower()))
-            if hit is not None:
-                idm[sid] = hit
-                counts["linked"] += 1
-                continue
-            if self.record_limit and counts["posted"] >= self.record_limit:
-                continue
-            payload, _, _ = self.translate(model, row)
-            new_id, err = self._insert(model, payload)
+
+        def done(row, payload, deferred, new_id, err):
             if err:
                 counts["failed"] += 1
                 self.state.dead_letter(model, payload, err)
             else:
-                idm[sid] = new_id
+                idm[str(row["id"])] = new_id
                 counts["posted"] += 1
-        self.state.save_map(model)
-        counts["status"] = "failed" if counts["failed"] else "done"
+
+        pool = self._post_pool(model)
+        posting = 0
+        try:
+            for row in self.source_rows(model):
+                if pool.aborted:
+                    break
+                counts["read"] += 1
+                sid = str(row["id"])
+                hit = by_uuid.get(str(row.get("uuid") or "").lower())
+                for f in fields:
+                    if hit is None and row.get(f) not in (None, ""):
+                        hit = by_key.get((f, str(row[f]).strip().lower()))
+                if hit is not None:
+                    with pool.lock:
+                        idm[sid] = hit
+                        counts["linked"] += 1
+                    continue
+                if self.record_limit and posting >= self.record_limit:
+                    continue
+                posting += 1
+                payload, _, _ = self.translate(model, row)
+                pool.submit(row, payload, None, done)
+        finally:
+            pool.close()
+            self.state.save_map(model)
+        counts["status"] = "failed" if counts["failed"] or pool.aborted else "done"
         self.state.save("report", model, counts)
         log.info("%s (reference): %s", model, counts)
+        if pool.aborted:
+            raise GatewayError(f"{model}: stopped — {pool.aborted}")
         return counts
 
     def relink(self, model: str) -> dict:
@@ -473,32 +555,107 @@ class Copier:
         deferred = self.state.load("deferred", model, {})
         if not deferred:
             return {"relinked": 0, "still_missing": 0}
-        uuids = {}
-        for r in self.source_rows(model):
-            if str(r["id"]) in deferred:
-                uuids[str(r["id"])] = r.get("uuid")
-        left, done = {}, 0
-        for sid, cols in deferred.items():
-            patch, missing = {"uuid": uuids.get(sid)}, {}
-            for col, val in cols.items():
-                mapped = self.state.id_map(x["links"][col], reload=True).get(str(val))
-                if mapped is None:
-                    missing[col] = val
-                else:
-                    patch[col] = mapped
-            if len(patch) > 1 and patch["uuid"]:
-                _, err = self._insert(model, patch)
-                if err:
-                    self.state.dead_letter(model, patch, "relink: " + err)
-                    missing.update({c: cols[c] for c in patch if c != "uuid"})
-                else:
-                    done += 1
-            if missing:
-                left[sid] = missing
-        self.state.save("deferred", model, left)
-        res = {"relinked": done, "still_missing": len(left)}
+        uuids = {sid: cols.get(_UUID_KEY) for sid, cols in deferred.items()}
+        if any(not u for u in uuids.values()):            # state from before uuids were kept
+            for r in self.source_rows(model):
+                sid = str(r["id"])
+                if sid in uuids and not uuids[sid]:
+                    uuids[sid] = r.get("uuid")
+        # each parent's map read from disk once (other processes wrote them)
+        targets = {x["links"][c] for cols in deferred.values() for c in cols if c != _UUID_KEY}
+        maps = {t: dict(self.state.id_map(t, reload=True)) for t in targets}
+        left: dict[str, dict] = {}
+        relinked = [0]
+
+        def done(row, patch, cols, _new_id, err):
+            if err:
+                self.state.dead_letter(model, patch, "relink: " + err)
+                left.setdefault(row["id"], {_UUID_KEY: patch["uuid"]}).update(
+                    {c: cols[c] for c in patch if c != "uuid"})
+            else:
+                relinked[0] += 1
+
+        pool = self._post_pool(model)
+        try:
+            for sid, cols in deferred.items():
+                if pool.aborted:
+                    left[sid] = cols
+                    continue
+                patch, missing = {"uuid": uuids.get(sid)}, {}
+                for col, val in cols.items():
+                    if col == _UUID_KEY:
+                        continue
+                    mapped = maps[x["links"][col]].get(str(val))
+                    if mapped is None:
+                        missing[col] = val
+                    else:
+                        patch[col] = mapped
+                if missing:
+                    left[sid] = {**missing, _UUID_KEY: uuids.get(sid)}
+                if len(patch) > 1 and patch["uuid"]:
+                    pool.submit({"id": sid}, patch, cols, done)
+        finally:
+            pool.close()
+            self.state.save("deferred", model, left)
+        res = {"relinked": relinked[0], "still_missing": len(left)}
         log.info("%s relink: %s", model, res)
+        if pool.aborted:
+            raise GatewayError(f"{model} relink: stopped — {pool.aborted}")
         return res
+
+
+class _PostPool:
+    """`workers` POSTs in flight for one model, at most 4×workers queued (so a
+    big table streams instead of piling up in memory). Each result goes to the
+    caller's `done(row, payload, extra, new_id, err)` under `lock`. Stops
+    taking work (`aborted` says why) after MAX_ERROR_STREAK transport / 5xx
+    failures in a row, or when the first MAX_ERROR_STREAK rows all fail."""
+
+    def __init__(self, copier: Copier, model: str):
+        self.copier, self.model = copier, model
+        self.lock = threading.Lock()
+        self.aborted: str | None = None
+        self._slots = threading.BoundedSemaphore(copier.workers * 4)
+        self._pool = ThreadPoolExecutor(copier.workers, thread_name_prefix=f"post-{model.split('/')[-1]}")
+        self._streak = self._ok = self._bad = 0
+
+    def submit(self, row: dict, payload: dict, extra, done) -> None:
+        self._slots.acquire()
+        if self.aborted:
+            self._slots.release()
+            return
+        self._pool.submit(self._run, row, payload, extra, done)
+
+    def _run(self, row, payload, extra, done):
+        try:
+            if self.aborted:
+                return
+            systemic = False
+            try:
+                new_id, err = self.copier._insert(self.model, payload)
+                systemic = bool(err) and err[:1] == "5"
+            except Exception as e:                         # transport failure after the client's retries
+                new_id, err, systemic = None, f"{type(e).__name__}: {e}", True
+            with self.lock:
+                done(row, payload, extra, new_id, err)
+                if err:
+                    self._bad += 1
+                    self._streak = self._streak + 1 if systemic else 0
+                else:
+                    self._ok += 1
+                    self._streak = 0
+                if not self.aborted:
+                    if self._streak >= MAX_ERROR_STREAK:
+                        self.aborted = f"{self._streak} POSTs in a row failed (last: {err[:300]})"
+                    elif self._bad >= MAX_ERROR_STREAK and not self._ok:
+                        self.aborted = f"the first {self._bad} rows were all rejected (last: {err[:300]})"
+                    if self.aborted:
+                        log.error("%s: %s — stopping this model", self.model, self.aborted)
+        finally:
+            self._slots.release()
+
+    def close(self) -> None:
+        self._pool.shutdown(wait=True)
 
 
 # ─── verify ─────────────────────────────────────────────────────────────────
@@ -541,7 +698,7 @@ def verify_model(copier: Copier, model: str, examples: int = 5, canary: bool = F
         return {"source": len(src_ids), "linked": len(src_ids) - len(miss), "missing": len(miss),
                 "missing_examples": miss[:examples], "ok": not miss}
     dst = {}
-    for r in copier.dst.read_all(x["service"], x["alias"]):
+    for r in copier.target_rows(model):
         if r.get("uuid"):
             dst[str(r["uuid"]).lower()] = r
     held = copier.state.load("held", model, {})
@@ -637,7 +794,10 @@ def main(argv=None) -> int:
     ap.add_argument("--exclude", nargs="*", default=None)
     ap.add_argument("--tier", type=int, default=None)
     ap.add_argument("--record-limit", type=int, default=0)
-    ap.add_argument("--workers", type=int, default=4)
+    ap.add_argument("--workers", type=int, default=16, help="POSTs in flight per model")
+    ap.add_argument("--read-workers", type=int, default=READ_WORKERS, help="page reads in flight per table")
+    ap.add_argument("--parallel-models", type=int, default=1,
+                    help="models of the same tier run at once (tiers still run in order)")
     ap.add_argument("--refresh-plan", action="store_true")
     ap.add_argument("--audit-sample", type=int, default=2000)
     ap.add_argument("--canary", action="store_true", help="verify: compare only the rows on the target")
@@ -653,21 +813,37 @@ def main(argv=None) -> int:
         problems = print_plan(plan, audit)
         return 1 if problems else 0
     plan = load_or_build_plan(src, state, a.models, a.exclude, refresh=a.refresh_plan)
-    copier = Copier(src, dst, state, plan, workers=a.workers, record_limit=a.record_limit)
+    copier = Copier(src, dst, state, plan, workers=a.workers, record_limit=a.record_limit,
+                    read_workers=a.read_workers)
     todo = sorted((m for m, x in plan["models"].items() if x["selected"] and (a.tier is None or x["tier"] == a.tier)),
                   key=lambda m: (plan["models"][m]["tier"], m))
-    bad = 0
-    for m in todo:
-        if a.command == "migrate":
-            res = copier.copy_model(m)
-            bad += res["status"] == "failed"
-        elif a.command == "relink":
-            copier.relink(m)
-        else:
+
+    def run(m) -> bool:
+        """True = this model is fine."""
+        try:
+            if a.command == "migrate":
+                return copier.copy_model(m)["status"] != "failed"
+            if a.command == "relink":
+                copier.relink(m)
+                return True
             res = verify_model(copier, m, canary=a.canary)
             state.save("verify", m, res)
             log.info("verify %s: %s", m, {k: v for k, v in res.items() if not k.endswith("examples")})
-            bad += not res["ok"]
+            return res["ok"]
+        except GatewayError as e:
+            log.error("%s: %s", m, e)
+            return False
+
+    bad = 0
+    if a.command == "relink" or a.parallel_models <= 1:
+        bad = sum(not run(m) for m in todo)
+    else:
+        # a tier's models share no links, so they can run side by side; the
+        # next tier starts only when this one is through (it needs the maps)
+        for tier in sorted({plan["models"][m]["tier"] for m in todo}):
+            batch = [m for m in todo if plan["models"][m]["tier"] == tier]
+            with ThreadPoolExecutor(a.parallel_models) as pool:
+                bad += sum(not ok for ok in pool.map(run, batch))
     return 1 if bad else 0
 
 

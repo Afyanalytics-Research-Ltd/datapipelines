@@ -86,7 +86,11 @@ def _plan(vv, src, state, p, refresh=False):
         "exclude_models": Param([], type="array", items={"type": "string"}, title="Exclude models"),
         "record_limit": Param(0, type="integer", minimum=0, title="Record limit (canary)",
                               description="Post at most this many new rows per model. 0 = everything."),
-        "workers": Param(4, type="integer", minimum=1, maximum=32, title="Parallel POSTs per model"),
+        "workers": Param(16, type="integer", minimum=1, maximum=64, title="Parallel POSTs per model",
+                         description="The gateway takes one row per POST, so this is the copy's speed. "
+                                     f"Up to {PARALLEL_MODELS} models run at once: total in flight = that × this."),
+        "read_workers": Param(8, type="integer", minimum=1, maximum=32, title="Parallel page reads per table",
+                              description="The gateway serves at most 500 rows a page; 8 readers ≈ 4k rows/s."),
         "refresh_plan": Param(False, type="boolean", title="Rebuild the plan",
                               description="Re-read the source catalogue (new models / columns)."),
         "skip_verify": Param(False, type="boolean", title="Skip verify after migrate"),
@@ -135,8 +139,12 @@ def v3_to_v3_migration():
         p = ctx["params"]
         vv, src, dst, state = _setup(p)
         pl = _plan(vv, src, state, p)
-        copier = vv.Copier(src, dst, state, pl, workers=int(p["workers"]), record_limit=int(p["record_limit"]))
-        res = copier.copy_model(job["model"])
+        copier = vv.Copier(src, dst, state, pl, workers=int(p["workers"]), record_limit=int(p["record_limit"]),
+                           read_workers=int(p["read_workers"]))
+        try:
+            res = copier.copy_model(job["model"])
+        except vv.GatewayError as e:          # target down / rejecting everything: state is saved, retry later
+            raise AirflowFailException(str(e)) if "all rejected" in str(e) else RuntimeError(str(e))
         log.info("%s: %s", job["model"], res)
         if res["status"] == "failed":
             raise AirflowFailException(f"{res['failed']} row(s) dead-lettered — see dead_letters/{job['model']}")
@@ -151,7 +159,7 @@ def v3_to_v3_migration():
             raise AirflowSkipException("migrate mode only")
         vv, src, dst, state = _setup(p)
         pl = _plan(vv, src, state, p)
-        copier = vv.Copier(src, dst, state, pl, workers=int(p["workers"]))
+        copier = vv.Copier(src, dst, state, pl, workers=int(p["workers"]), read_workers=int(p["read_workers"]))
         out = {m: copier.relink(m) for m, x in sorted(pl["models"].items(), key=lambda kv: kv[1]["tier"] or 0)
                if x["selected"]}
         left = {m: r["still_missing"] for m, r in out.items() if r["still_missing"]}
@@ -177,7 +185,8 @@ def v3_to_v3_migration():
         pl = _plan(vv, src, state, ctx["params"])
         # a canary run compares just the rows it copied, field by field
         canary = ctx["params"]["mode"] == "migrate" and int(ctx["params"]["record_limit"]) > 0
-        res = vv.verify_model(vv.Copier(src, dst, state, pl), job["model"], canary=canary)
+        res = vv.verify_model(vv.Copier(src, dst, state, pl, read_workers=int(ctx["params"]["read_workers"])),
+                              job["model"], canary=canary)
         state.save("verify", job["model"], res)
         log.info("%s: %s", job["model"], json.dumps(res, default=str)[:4000])
         if not res["ok"]:

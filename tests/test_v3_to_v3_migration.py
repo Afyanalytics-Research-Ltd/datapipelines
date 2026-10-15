@@ -45,7 +45,7 @@ class FakeGateway:
         rows = self._visible(f"{svc}/{alias}")
         return [dict(r) for r in rows[(page - 1) * per_page: page * per_page]], {"total": len(rows)}
 
-    def read_all(self, svc, alias, per_page=500):
+    def read_all(self, svc, alias, per_page=500, workers=1):
         yield from (dict(r) for r in self._visible(f"{svc}/{alias}"))
 
     def insert(self, svc, alias, data, match_on="uuid"):
@@ -139,6 +139,16 @@ def test_plan_orders_parents_first_and_skips_the_org_itself():
     assert m["evaluation/symptoms"]["kind"] == "reference"
     assert m["reception/patient"]["tier"] < m["evaluation/visits"]["tier"] < m["evaluation/investigations"]["tier"]
     assert m["evaluation/investigation_results"]["tier"] < m["evaluation/investigation_result_details"]["tier"]
+
+
+def test_audit_ignores_other_orgs_rows_of_a_model_without_tenant_column():
+    src, _ = _pair()
+    for k in range(50):                     # mostly other orgs' rows: they'd read as broken links
+        src.add("evaluation/investigation_result_details", uuid=f"o{k}", investigation_result_id=5000 + k, value="1")
+    plan = vv.build_plan(src)
+    audit = vv.audit_links(src, plan)
+    assert vv.print_plan(plan, audit) == []
+    assert audit["evaluation/investigation_result_details"]["investigation_result_id"]["rate"] == 1.0
 
 
 def test_full_copy_mirrors_every_row_and_link(tmp_path):

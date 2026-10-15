@@ -15,8 +15,11 @@ from __future__ import annotations
 import json
 import logging
 import os
+import random
 import threading
 import time
+from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 
 import requests
 
@@ -26,6 +29,10 @@ SERVICES = ("core", "reception", "evaluation", "inventory", "finance", "theatre"
 DEFAULT_URL_TEMPLATE = "https://{service}migrate.afyaanalytics.ai/api/"
 MIGRATION_KEY_SERVICES = {"theatre", "dialysis"}
 TOKEN_TTL = 50 * 60
+MAX_PER_PAGE = 500                       # the gateway's validation cap
+# connections kept open per host: a model's POST workers and page readers
+# share them, so this bounds the useful concurrency of one client
+HTTP_POOL = int(os.getenv("V3V3_HTTP_POOL") or 96)
 
 
 class GatewayError(RuntimeError):
@@ -36,7 +43,7 @@ class V3Client:
     def __init__(self, key: str, *, urls: dict[str, str] | None = None, username: str | None = None,
                  password: str | None = None, organization_id: int | None = None,
                  facility_id: int | None = None, migration_key: str | None = None,
-                 session: requests.Session | None = None):
+                 session: requests.Session | None = None, pool_size: int = HTTP_POOL):
         self.key = key
         up = key.upper()
         env = lambda name: (os.getenv(f"AFYA_{up}_{name}") or "").strip()
@@ -50,7 +57,8 @@ class V3Client:
         self.migration_key = migration_key or env("MIGRATION_KEY") or (os.getenv("MODEL_GATEWAY_MIGRATION_KEY") or "").strip()
         self.user_id: int | None = None
         self._session = session or requests.Session()
-        adapter = requests.adapters.HTTPAdapter(pool_connections=32, pool_maxsize=32, max_retries=0)
+        adapter = requests.adapters.HTTPAdapter(pool_connections=len(SERVICES), pool_maxsize=pool_size,
+                                                max_retries=0, pool_block=True)
         self._session.mount("https://", adapter)
         self._session.mount("http://", adapter)
         self._token: tuple[str, float] | None = None
@@ -110,26 +118,31 @@ class V3Client:
         return h
 
     # ── gateway ───────────────────────────────────────────────────────────
-    def post(self, service: str, body: dict, *, timeout: int = 120, retries: int = 5) -> requests.Response:
+    def post(self, service: str, body: dict, *, timeout: int = 120, retries: int = 5,
+             retry_500: bool = False) -> requests.Response:
+        """One gateway call. Connection errors, 429 and 502–504 (and 500 with
+        retry_500 — reads, which change nothing) are retried with jittered
+        backoff, so threads that fail together don't all retry together."""
         url = f"{self.urls[service].rstrip('/')}/v1/gateway"
         data = json.dumps(body, default=str).encode()
-        wait = 5
+        transient = {429, 502, 503, 504} | ({500} if retry_500 else set())
+        wait = 2
         for attempt in range(1, retries + 1):
             try:
                 r = self._session.post(url, headers=self._headers(service), data=data, timeout=timeout)
             except requests.RequestException as e:
                 if attempt == retries:
                     raise
-                log.warning("%s %s: %s — retry in %ss", self.key, service, e, wait)
-                time.sleep(wait)
+                log.warning("%s %s: %s — retry in ~%ss", self.key, service, e, wait)
+                time.sleep(wait * random.uniform(0.5, 1.5))
                 wait = min(wait * 2, 60)
                 continue
             if r.status_code == 401 and attempt < retries:
                 with self._lock:
                     self._token = None
                 continue
-            if r.status_code in (429, 502, 503, 504) and attempt < retries:
-                time.sleep(wait)
+            if r.status_code in transient and attempt < retries:
+                time.sleep(wait * random.uniform(0.5, 1.5))
                 wait = min(wait * 2, 60)
                 continue
             return r
@@ -147,11 +160,11 @@ class V3Client:
             raise GatewayError(f"{self.key} {service}/{alias} describe: {r.status_code} {r.text[:200]}")
         return r.json().get("data") or {}
 
-    def read_page(self, service: str, alias: str, page: int, per_page: int = 500) -> tuple[list[dict], dict]:
+    def read_page(self, service: str, alias: str, page: int, per_page: int = MAX_PER_PAGE) -> tuple[list[dict], dict]:
         self.token()                                  # the tenant id comes from the login
         body = {"action": "read", "model": alias, "source_tenant_id": self.organization_id,
-                "per_page": per_page, "page": page}
-        r = self.post(service, body, timeout=120)
+                "per_page": min(per_page, MAX_PER_PAGE), "page": page}
+        r = self.post(service, body, timeout=120, retry_500=True)
         if not r.ok:
             raise GatewayError(f"{self.key} {service}/{alias} read p{page}: {r.status_code} {r.text[:200]}")
         j = r.json()
@@ -164,13 +177,52 @@ class V3Client:
         _, meta = self.read_page(service, alias, 1, per_page=1)
         return meta.get("total")
 
-    def read_all(self, service: str, alias: str, per_page: int = 500):
-        """Every row this tenant has, oldest id first, page by page (generator)."""
-        page = 1
+    def read_all(self, service: str, alias: str, per_page: int = MAX_PER_PAGE, workers: int = 1):
+        """Every row this tenant has, in page order (generator).
+
+        workers > 1 reads pages ahead in parallel: the gateway caps a page at
+        500 rows, so one reader tops out at a few hundred rows/s. Rows still
+        come out in page order, and at most 2×workers pages are in memory. A
+        row seen twice (offset paging over a table that is being written to)
+        is yielded once."""
+        per_page = min(per_page, MAX_PER_PAGE)
+        seen: set = set()
+
+        def fresh(batch):
+            for r in batch:
+                rid = r.get("id")
+                if rid is not None:
+                    if rid in seen:
+                        continue
+                    seen.add(rid)
+                yield r
+
+        rows, meta = self.read_page(service, alias, 1, per_page)
+        yield from fresh(rows)
+        last = meta.get("last_page")
+        if not rows or len(rows) < per_page or (last and last <= 1):
+            return
+        page = 2
+        if workers > 1 and last:
+            with ThreadPoolExecutor(workers, thread_name_prefix=f"read-{alias}") as pool:
+                window: deque = deque()
+                try:
+                    while page <= last or window:
+                        while page <= last and len(window) < workers * 2:
+                            window.append(pool.submit(self.read_page, service, alias, page, per_page))
+                            page += 1
+                        rows, _ = window.popleft().result()
+                        yield from fresh(rows)
+                finally:
+                    for f in window:
+                        f.cancel()
+            if len(rows) < per_page:
+                return
+            # rows added after page 1 was read land past the old last page
         while True:
             rows, meta = self.read_page(service, alias, page, per_page)
-            yield from rows
-            last = meta.get("last_page")
+            yield from fresh(rows)
+            last = meta.get("last_page") or last
             if not rows or len(rows) < per_page or (last and page >= last):
                 return
             page += 1
