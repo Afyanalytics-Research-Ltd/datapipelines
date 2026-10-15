@@ -89,6 +89,10 @@ LINKS: dict[str, str] = {
 # per model: column → target (overrides LINKS); None = not an id here
 MODEL_LINKS: dict[str, dict[str, str | None]] = {
     "core/departments": {"parent_id": "core/departments"},
+    # staff profiles (gateway model since 2026-10-15): user_id/department_id via LINKS
+    "core/user_profile": {"speciality_id": "core/specialties",
+                          "employee_category_id": "core/employee_categories",
+                          "partner_institution_id": "core/partner_institutions"},
     "core/insurance_schemes": {"company_id": "core/insurance_companies"},
     "finance/insurance_scheme": {"company_id": "finance/insurance_company"},
     "finance/invoice": {"company_id": "finance/insurance_company"},
@@ -218,6 +222,12 @@ SKIP_MODELS: dict[str, str] = {
        for svc in ("core", "reception", "evaluation", "inventory", "finance", "theatre", "inpatient", "dialysis")},
 }
 
+# V3 tables the copy can't reach because the gateway has no model for them (checked 2026-10-15 on every
+# service) — they're copied with SQL by a DBA instead, so a "complete" copy still needs these done
+NOT_IN_GATEWAY: dict[str, str] = {
+    # (core user_profiles had none until 2026-10-15 — it's core/user_profile now and copies like any model)
+}
+
 # models with no tenant column that are reference data shared by every org on
 # an instance: linked to the target's own row (uuid, then these fields), and
 # inserted only when the target lacks it
@@ -231,11 +241,20 @@ REFERENCE_MATCH: dict[str, tuple[str, ...]] = {
     "inpatient/bed_type": ("name",),
 }
 
-# never sent: the gateway sets them, or they're the source's own bookkeeping
-NOT_COPIED = {"id", "organization_id", "updated_at", "deleted_at"}
+# never sent: the gateway sets them, or they're the source's own bookkeeping.
+# created_at / updated_at ARE sent (the gateway takes them, checked on org 284
+# 2026-10-15), as the source's wall-clock time — see Copier.translate
+NOT_COPIED = {"id", "organization_id", "deleted_at"}
 # never compared by verify (the gateway / target sets them)
-NOT_COMPARED = NOT_COPIED | {"created_at", "password", "remember_token", "email_token", "signature",
+NOT_COMPARED = NOT_COPIED | {"password", "remember_token", "email_token", "signature",
                              "last_login", "last_login_ip"}
+
+
+def is_instance_derived(col: str) -> bool:
+    """Values each V3 instance computes with its own key (mobile_hash,
+    id_no_hash …): the target recomputes them, so they can't — and mustn't —
+    equal the source's."""
+    return col.endswith("_hash")
 
 _ID_SUFFIXES = ("_id", "_by")
 

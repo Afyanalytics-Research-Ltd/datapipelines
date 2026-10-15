@@ -15,6 +15,7 @@ what came out wrong:
 """
 from __future__ import annotations
 
+import snowflake_to_v3_migration  # noqa: F401 — registers v3_extra_mappings' tables (xm.apply) on import
 import v2_to_v3_api_migration as v2v3
 import v3_extra_mappings as xm
 
@@ -98,3 +99,21 @@ def test_product_prices_use_the_v2_price_list():
     assert 'COALESCE(s."PRICE", pl."PRICE", p."SELLING_PRICE")' in sql       # store first, then the list
     without = xm._product_prices_sql("C", lambda t: cols.get(t, set()), set(cols) - {"inventory_product_price"})
     assert "INVENTORY_PRODUCT_PRICE" not in without
+
+
+def test_user_profiles_map_to_the_core_gateway_model():
+    spec = xm.MAPPINGS["users_user_profiles"]
+    assert (spec["alias"], spec["service"], spec["critical"]) == ("user_profile", "core", ["user_id"])
+    tk = xm.transform_key("users_user_profiles")
+    out = v2v3.transform_record({"id": 5, "user_id": 5, "first_name": "Carole", "last_name": None, "gender": "M",
+                                 "dob": "", "date_of_employment": "0000-00-00", "title": "1"}, tk, ORG, "kisumu_v3")
+    assert out["gender"] == "male" and out["last_name"] == "-"           # Laravel turns '' into null
+    assert out["dob"] is None and out["date_of_employment"] is None
+
+
+def test_v3_to_v3_links_profile_ids():
+    import v3_to_v3_links as L
+    assert L.link_target("core/user_profile", "user_id") == "core/users"
+    assert L.link_target("core/user_profile", "speciality_id") == "core/specialties"
+    assert L.link_target("core/user_profile", "employee_category_id") == "core/employee_categories"
+    assert not L.NOT_IN_GATEWAY.get("core/user_profiles")

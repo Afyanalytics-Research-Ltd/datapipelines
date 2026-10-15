@@ -115,6 +115,8 @@ CONTENT_KEY = {
     "patient": lambda r: (_s(r.get("patient_no")),),
     "admission": lambda r: (_s(r.get("admission_number")),),
     "stock": lambda r: (str(r.get("product_id")), str(r.get("store_id"))),
+    # one profile per user (user_id unique in V3): a user that has one already is skipped
+    "user_profile": lambda r: (str(r.get("user_id") or ""),),
     # V3's per-org unique code; names repeat (Main Store in several facilities)
     "product": lambda r: (_s(r.get("code")),),
     "store": lambda r: (_s(r.get("code") or r.get("name")),),

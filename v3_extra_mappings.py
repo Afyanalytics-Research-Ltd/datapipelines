@@ -340,6 +340,27 @@ MAPPINGS: dict[str, dict] = {
         "inject": {"guard_name": ("const", "api"),
                    "description": ("join_or", ["description"], "display_name")},
     },
+    # ── core-service: staff profiles ──────────────────────────────────────
+    # V2 users_user_profiles → V3 user_profiles (gateway model core/user_profile, registered 2026-10-15).
+    # One profile per user (user_id unique): a user V3 already has a profile for keeps it, and a profile
+    # waits for its user's V3 account (user_id NOT NULL).
+    "users_user_profiles": {
+        "namespace": r"Ignite\Users\Entities\UserProfile",
+        "namespaces": [r"Ignite\Users\Entities\UserProfiles"],
+        "v3": r"App\Models\UserProfile", "alias": "user_profile", "service": "core",
+        "renames": {"gender": "v2_gender"},          # V2 'M' / 'Male' → V3's enum (inject below)
+        "keep":["user_id", "title", "first_name", "middle_name", "last_name", "dob", "gender", "phone",
+                 "secondary_phone", "work_email", "secondary_email", "photo", "coverphoto", "address", "town",
+                 "county", "district", "country", "location", "job_description", "staff_number", "roll_no",
+                 "date_of_employment", "mpdb", "pin", "id_number"],
+        # NOT NULL; 2 kisumu_v3 staff have none in V2 — '-' (Laravel turns '' into null)
+        "inject": {"last_name": ("const", "-"),
+                   "gender": ("map", "v2_gender", {"m": "male", "male": "male", "f": "female", "female": "female",
+                                                "o": "other", "other": "other"}, None)},
+        "dates": ["dob", "date_of_employment"],      # V2 holds '' / '0000-00-00'
+        "fk": {"user_id": "users"},
+        "critical": ["user_id"],
+    },
     # ── inventory-service: current stock balances ────────────────────────
     # V2 store_products is one row per product + store with its on-hand
     # quantity and unit cost — exactly V3 inv_stocks (unique product + store +
@@ -813,8 +834,6 @@ NOT_MIGRATED: dict[str, str] = {
     "settings_rooms": "no V3 room model; consultation rooms would be core service_destinations (see settings_destinations)",
     "settings_pos": SETUP + " (pos_configs is facility-specific — the gateway marks it 'no safe copy')",
     "user_specialities": SETUP + " (2 V2 rows, one a test entry; only users link to them)",
-    "users_user_profiles": "profiles belong to the user accounts the V3 backend creates; user_profiles has no "
-                           "gateway model and needs user_id, which waits for users",
     # theatre / dialysis
     # older KISUMU_CLEAN extract names
     "theatre_medic": PENDING_KEY,
@@ -952,6 +971,12 @@ def apply(v2v3, s2v3) -> int:
             v2v3._FK_REMAP.setdefault(tk, dict(spec["fk"]))
         if spec.get("inject"):
             v2v3._PER_KEY_INJECT.setdefault(tk, {f: _injector(s) for f, s in spec["inject"].items()})
+        if spec.get("dates"):
+            # date columns: '' / '0000-00-00' / anything not a date → null (V3 refuses them)
+            import re as _re
+            v2v3._PER_KEY_COERCIONS.setdefault(tk, {}).update({
+                f: (lambda v: str(v)[:10] if _re.match(r"(19|20)\d\d-\d\d-\d\d", str(v or "")) else None)
+                for f in spec["dates"]})
         if spec.get("vital_numbers"):
             # the vitals number rules (v2v3._vital_reading: decimal comma, first of several readings,
             # 0 height/weight, implausible values) — a mapped table gets none of inpatient_vital's coercions

@@ -38,7 +38,9 @@ import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import v3_to_v3_links as L
 from v3_to_v3_client import SERVICES, GatewayError, V3Client
@@ -55,6 +57,36 @@ READ_WORKERS = int(os.getenv("V3V3_READ_WORKERS") or 8)   # parallel page reads 
 MAX_ERROR_STREAK = 50
 _UNKNOWN_COL = re.compile(r"Unknown column '(?:[\w]+\.)?(\w+)'")
 _UUID_KEY = "__uuid__"      # deferred links: the row's uuid, so relink needn't re-read the source
+# The gateway serialises dates in UTC ('2026-10-05T21:00:00.000000Z' for a
+# DATE 2026-10-06 in Nairobi) but stores what it is sent as wall-clock time:
+# posting the UTC text back shifts every date a day and every time 3 h
+# earlier. So dates go out as the source's wall-clock time.
+SOURCE_TZ = ZoneInfo(os.getenv("V3V3_SOURCE_TZ") or "Africa/Nairobi")
+_ISO_UTC = re.compile(r"^(\d{4}-\d\d-\d\d)T(\d\d:\d\d:\d\d)(?:\.\d+)?Z$")
+
+
+def to_wall_time(v):
+    """'2026-10-05T21:00:00.000000Z' → '2026-10-06' (midnight) / 'YYYY-MM-DD HH:MM:SS'
+    in SOURCE_TZ; anything else unchanged."""
+    m = _ISO_UTC.match(v) if isinstance(v, str) else None
+    if not m:
+        return v
+    t = datetime.fromisoformat(f"{m.group(1)}T{m.group(2)}+00:00").astimezone(SOURCE_TZ)
+    return t.strftime("%Y-%m-%d") if (t.hour, t.minute, t.second) == (0, 0, 0) else t.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def from_wall_time(v):
+    """The other way, for comparing what we sent with what the gateway serialises."""
+    if not isinstance(v, str):
+        return v
+    m = re.fullmatch(r"(\d{4}-\d\d-\d\d)(?: (\d\d:\d\d:\d\d))?", v)
+    if not m:
+        return v
+    t = datetime.fromisoformat(f"{m.group(1)}T{m.group(2) or '00:00:00'}").replace(tzinfo=SOURCE_TZ)
+    return t.astimezone(ZoneInfo("UTC")).strftime("%Y-%m-%dT%H:%M:%S.000000Z")
+
+
+TIMESTAMPS: set[str] = set()       # (all fields are compared and patched now)
 
 
 # ─── state ──────────────────────────────────────────────────────────────────
@@ -479,6 +511,7 @@ class Copier:
         self.workers = max(1, workers)
         self.read_workers = max(1, read_workers)
         self.record_limit = record_limit
+        self.map_only = False      # True: rebuild id maps from the target by uuid, post nothing (read-only audit)
         self._dropped_cols: dict[str, set[str]] = {}
         self._src_id_sets: dict[str, set[str]] = {}
         self._lock = threading.Lock()
@@ -517,7 +550,7 @@ class Copier:
                 continue
             target = x["links"].get(col)
             if target is None or val in (None, "") or isinstance(val, bool):
-                out[col] = val
+                out[col] = to_wall_time(val)
                 continue
             if target == L.FACILITY:
                 out[col] = self.dst.facility_id
@@ -647,8 +680,10 @@ class Copier:
                     break
                 counts["read"] += 1
                 sid = str(row.get("id"))
+                uuid = str(row.get("uuid") or "").lower()
                 payload, missing_crit, deferred = self.translate(model, row)
-                if missing_crit:
+                there = (uuid and uuid in on_target) or (not uuid and sid in idm)
+                if missing_crit and not there:
                     # model without a tenant column: a parent outside the source
                     # org means the row is another org's
                     if x["kind"] == "parent_rows" and not self._parent_in_source(model, row, missing_crit):
@@ -659,8 +694,9 @@ class Copier:
                     src_ids.append(sid)
                     continue
                 src_ids.append(sid)
-                uuid = str(row.get("uuid") or "").lower()
-                if (uuid and uuid in on_target) or (not uuid and sid in idm):
+                if there:
+                    # on the target already, whatever its parents' state: always
+                    # paired (its children link through this map)
                     # already on the target (earlier run, or posted just before a
                     # crash): never re-posted — a full re-post would overwrite the
                     # row (a user's password …). Links still missing go to relink,
@@ -672,7 +708,7 @@ class Copier:
                         if deferred:
                             deferred_all[sid] = {**deferred, _UUID_KEY: row.get("uuid")}
                     continue
-                if self.record_limit and new >= self.record_limit:
+                if self.map_only or (self.record_limit and new >= self.record_limit):
                     continue
                 new += 1
                 pool.submit(row, payload, deferred, done)
@@ -763,7 +799,7 @@ class Copier:
                         idm[sid] = hit
                         counts["linked"] += 1
                     continue
-                if self.record_limit and posting >= self.record_limit:
+                if self.map_only or (self.record_limit and posting >= self.record_limit):
                     continue
                 posting += 1
                 payload, _, _ = self.translate(model, row)
@@ -925,9 +961,10 @@ def _norm(v):
     return s
 
 
-def verify_model(copier: Copier, model: str, examples: int = 5, canary: bool = False) -> dict:
+def verify_model(copier: Copier, model: str, examples: int = 5, canary: bool = False, collect: bool = False) -> dict:
     """canary: only the rows a canary run put on the target are compared
-    (missing rows aren't counted; at least one must be there)."""
+    (missing rows aren't counted; at least one must be there). collect: also
+    return `_patches` {uuid: {uuid, differing fields…}} for sync_fields."""
     x = copier.models[model]
     if x["kind"] == "reference":
         src_ids = [str(r["id"]) for r in copier.source_rows(model)]
@@ -937,19 +974,40 @@ def verify_model(copier: Copier, model: str, examples: int = 5, canary: bool = F
             miss = []
         return {"source": len(src_ids), "linked": len(src_ids) - len(miss), "missing": len(miss),
                 "missing_examples": miss[:examples], "ok": not miss}
-    dst = {}
+    # target rows kept compact (a tuple of normalised values per uuid): the
+    # biggest tables are ~0.5M rows and several verify at once
+    absent = object()
+    keys: list[str] = []
+    idx: dict[str, int] = {}
+    tkeys: list[str] = []
+    tidx: dict[str, int] = {}
+    fac_diff: dict[str, int] = {}
+    fac_ex: dict[str, dict] = {}
+    dst: dict[str, tuple] = {}
+    n_target = 0
     for r in copier.target_rows(model):
+        n_target += 1
+        if not keys:
+            keys = sorted(set(r) - L.NOT_COMPARED)
+            idx = {k: i for i, k in enumerate(keys)}
+            tkeys = sorted(set(r) & TIMESTAMPS)
+            tidx = {k: i for i, k in enumerate(tkeys)}
         if r.get("uuid"):
-            dst[str(r["uuid"]).lower()] = r
+            dst[str(r["uuid"]).lower()] = (tuple(_norm(r[k]) if k in r else absent for k in keys),
+                                           tuple(_norm(r[k]) if k in r else absent for k in tkeys))
     held = copier.state.load("held", model, {})
+    dead = _dead_letter_uuids(copier.state, model)
     excluded = set()
     try:
         excluded = set(copier.src.describe(x["service"], x["alias"]).get("excluded") or [])
     except GatewayError:
         pass
-    n_src = missing = 0
+    n_src = missing = no_uuid = 0
+    why_missing = {"held: a parent it needs isn't on the target": 0, "refused by the target (dead-lettered)": 0,
+                   "not posted yet (new in the source since the copy, or a canary run)": 0}
     mismatch: dict[str, int] = {}
     miss_ex, mm_ex = [], {}
+    patches: dict[str, dict] = {}
     seen = set()
     for row in copier.source_rows(model):
         payload, missing_crit, _ = copier.translate(model, row)
@@ -957,28 +1015,102 @@ def verify_model(copier: Copier, model: str, examples: int = 5, canary: bool = F
             continue                                            # another org's row
         n_src += 1
         uuid = str(row.get("uuid") or "").lower()
+        if not uuid:
+            no_uuid += 1
+            continue
         seen.add(uuid)
-        got = dst.get(uuid)
+        got_pair = dst.get(uuid)
+        got, got_ts = got_pair if got_pair is not None else (None, None)
         if got is None and canary:
             n_src -= 1
             continue
         if got is None:
             missing += 1
+            sid = str(row.get("id"))
+            reason = (list(why_missing)[0] if sid in held else list(why_missing)[1] if uuid in dead
+                      else list(why_missing)[2])
+            why_missing[reason] += 1
             if len(miss_ex) < examples:
-                miss_ex.append({"id": row.get("id"), "uuid": uuid, "held": str(row.get("id")) in held})
+                miss_ex.append({"id": row.get("id"), "uuid": uuid, "held": sid in held, "why": reason,
+                                **({"held_for": held[sid]} if sid in held else {})})
             continue
-        for col, want in payload.items():
-            if col in L.NOT_COMPARED or col in excluded or col not in got:
+        row_patch = None
+        for col, sent in payload.items():
+            if (col in L.NOT_COMPARED or col in excluded or col not in idx or got[idx[col]] is absent
+                    or L.is_instance_derived(col)
+                    or (isinstance(sent, dict) and "uuid" in sent)):     # an embedded related record, not a column
                 continue
-            if _norm(want) != _norm(got.get(col)):
-                mismatch[col] = mismatch.get(col, 0) + 1
-                mm_ex.setdefault(col, [])
-                if len(mm_ex[col]) < examples:
-                    mm_ex[col].append({"uuid": uuid, "expected": want, "target": got.get(col)})
+            # a link: what was sent (target ids); a plain value: the source's own
+            # (sent dates are wall-clock text, the gateway serialises them in UTC)
+            # (a value the copier sets on purpose — a user's enforce_password_reset — is compared as sent)
+            want = (row.get(col) if not x["links"].get(col) and col in row and to_wall_time(row.get(col)) == sent
+                    else sent)
+            if _norm(want) == got[idx[col]]:
+                continue
+            if col == x.get("facility") or x["links"].get(col) == L.FACILITY:
+                # the target gateway stamps its own facility — not patchable through it
+                fac_diff[col] = fac_diff.get(col, 0) + 1
+                fac_ex.setdefault(col, {"sent": sent, "target": got[idx[col]]})
+                continue
+            mismatch[col] = mismatch.get(col, 0) + 1
+            if collect:
+                if row_patch is None:
+                    row_patch = patches.setdefault(uuid, {"uuid": row.get("uuid"), "_source_id": row.get("id")})
+                    if "updated_at" in payload:     # else the update itself would stamp a new updated_at
+                        row_patch["updated_at"] = payload["updated_at"]
+                row_patch[col] = sent
+            mm_ex.setdefault(col, [])
+            if len(mm_ex[col]) < examples:
+                mm_ex[col].append({"uuid": uuid, "expected": want, "target": got[idx[col]]})
     extra = len(set(dst) - seen)
-    return {"source": n_src, "target": len(dst), "missing": missing, "extra_on_target": extra,
-            "mismatched_fields": mismatch, "missing_examples": miss_ex, "mismatch_examples": mm_ex,
-            "ok": missing == 0 and not mismatch and (n_src > 0 or not canary)}
+    out = {"source": n_src, "target": n_target, "missing": missing, "extra_on_target": extra,
+           "facility_differs": fac_diff, "facility_example": fac_ex,
+           "source_without_uuid": no_uuid, "missing_why": {k: v for k, v in why_missing.items() if v},
+           "mismatched_fields": mismatch, "mismatched_rows": len(patches) if collect else None,
+           "missing_examples": miss_ex, "mismatch_examples": mm_ex,
+           "ok": missing == 0 and not mismatch and (n_src > 0 or not canary)}
+    if collect:
+        out["_patches"] = patches
+    return out
+
+
+def _dead_letter_uuids(state: "State", model: str) -> set[str]:
+    p = state._path("dead_letters", model, "jsonl")
+    out = set()
+    if p.exists():
+        for line in p.read_text().splitlines():
+            try:
+                u = (json.loads(line).get("row") or {}).get("uuid")
+            except ValueError:
+                continue
+            if u:
+                out.add(str(u).lower())
+    return out
+
+
+def sync_fields(copier: Copier, model: str, patches: dict[str, dict]) -> dict:
+    """Rows on both sides whose fields differ: post just those fields
+    (match_on uuid updates the row in place) so the target matches."""
+    if not patches:
+        return {"patched": 0, "failed": 0}
+    counts = {"patched": 0, "failed": 0}
+
+    def done(row, patch, _extra, _id, err):
+        if err:
+            counts["failed"] += 1
+            copier.record_error(model, row, patch, err, stage="sync")
+        else:
+            counts["patched"] += 1
+
+    pool = copier._post_pool(model)
+    try:
+        for p in patches.values():
+            row = {"id": p.pop("_source_id", None), "uuid": p["uuid"]}
+            pool.submit(row, p, None, done)
+    finally:
+        pool.close()
+    log.info("%s sync: %s", model, counts)
+    return counts
 
 
 # ─── entry points ───────────────────────────────────────────────────────────
@@ -1012,6 +1144,8 @@ def print_plan(plan: dict, audit: dict | None = None) -> list[str]:
     for m, x in sorted(models.items()):
         if x["kind"] in ("error", "skip", "empty") or not x["selected"]:
             log.info("not copied: %s — %s", m, x.get("error") or L.SKIP_MODELS.get(m) or x["kind"])
+    for m, why in sorted(getattr(L, "NOT_IN_GATEWAY", {}).items()):
+        log.warning("not copied (no gateway model — copy with SQL): %s — %s", m, why)
     if audit:
         for m, cols in sorted(audit.items()):
             for col, a in cols.items():
