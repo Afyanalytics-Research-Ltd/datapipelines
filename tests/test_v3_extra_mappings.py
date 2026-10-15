@@ -138,7 +138,8 @@ class TestTransforms:
         out = transform("inpatient_vitals", row)
         assert out == {"id": 1902, "admission_id": 7275, "recorded_by": 1507, "systolic_bp": 101,
                        "diastolic_bp": 52, "pulse_rate": 98, "respiratory_rate": 20, "oxygen_saturation": 96,
-                       "temperature": "37.9", "recorded_date": "2024-06-01", "recorded_time": "06:28",
+                       # a number: V3's decimal column (the vitals rules also mend '36,6' / '.36.5')
+                       "temperature": 37.9, "recorded_date": "2024-06-01", "recorded_time": "06:28",
                        "recorded_at": "2024-06-01 06:29:52"}
 
     @pytest.mark.parametrize("flags,status", [({"cancelled": 1, "order_dispatched": 1}, "cancelled"),

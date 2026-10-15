@@ -121,6 +121,9 @@ CONTENT_KEY = {
     "stock_movement": lambda r: (str(r.get("product_id")), str(r.get("store_id")), _s(r.get("type")),
                                  _n(r.get("quantity")), _t(r.get("created_at") or r.get("movement_date"))),
     "visit_ward": lambda r: (str(r.get("admission_id")), str(r.get("ward_id")), _t(r.get("allocation_date"))),
+    # inpatient notes: 1,253 of V3's are under uuids the migration didn't make; note_date is shifted on
+    # some older loads, the admission + title + text is what every load wrote the same way
+    "note": lambda r: (str(r.get("admission_id")), _s(r.get("title")), _s(r.get("note_content"))[:200]),
     # V2's own visit key, carried into V3
     "visits": lambda r: (_s(r.get("unique_id")),),
     "investigations": lambda r: (str(r.get("visit") or r.get("visit_id")), _t(r.get("created_at")),
@@ -222,6 +225,17 @@ class Loader:
         """The V2 class a table is read from: TABLES, else what the migration resolved for it."""
         if table in TABLES:
             return TABLES[table]
+        # the V2 class the extraction queue reads it with (the class the API serves): the migration's
+        # resolved name 404s for some (evaluation_procedure_tags is Tag, reception_patient_schemes
+        # PatientInsurance)
+        queue = getattr(self, "_queue_ns", None)
+        if queue is None:
+            import csv
+            path = Path(__file__).resolve().parent / "mapping" / "v2_extraction_queue.csv"
+            queue = self._queue_ns = ({r["table"]: r["namespace"] for r in csv.DictReader(path.open())}
+                                      if path.exists() else {})
+        if queue.get(table):
+            return queue[table]
         if not self._namespaces:
             with self.s2v3._snowflake_connect() as conn:
                 cur = conn.cursor()
@@ -316,9 +330,11 @@ class Loader:
             tail = self.api_tail(ns, self.snapshot_max_id(table))
         if table == "evaluation_visit_destinations" and tail:
             clean = s2v3.sf_schema(self.facility, "CLEAN")
-            names = {str(i): n for i, n in self.sf(f'SELECT "ID", "NAME" FROM {clean}.SETTINGS_DESTINATIONS')}
+            names = {str(i): (n, s) for i, n, s in self.sf(f'SELECT "ID", "NAME", "SLUG" FROM {clean}.SETTINGS_DESTINATIONS')}
             for r in tail:
-                r.setdefault("destination_setting_name", names.get(str(r.get("destination_id"))))
+                n, s = names.get(str(r.get("destination_id")), (None, None))
+                r.setdefault("destination_setting_name", n)
+                r.setdefault("destination_setting_slug", s)
         if table == "inpatient_visit_wards" and tail:
             # the snapshot's join (v3_extra_mappings._visit_wards_sql) for the API rows: the visit's
             # latest admission — its id, bed and discharge

@@ -380,6 +380,30 @@ MAPPINGS: dict[str, dict] = {
         "fk": {"admission_id": "admission", "visit_id": "visit", "user_id": "users"},
         "critical": ["admission_id", "visit_id", "user_id"],      # all NOT NULL
     },
+    # V2 visit wards are a ward's daily charge on a visit (price × quantity days = amount); V3
+    # visit_ward is the stay on an admission. Agreed 2026-10-15 to load them all: the admission,
+    # its bed and its discharge come from the visit's V2 admission (FETCH_SQL), and a stay is
+    # "active" only while that admission is undischarged (an active row occupies the bed in V3).
+    "inpatient_visit_wards": {
+        "namespace": r"Ignite\Inpatient\Entities\InpatientVisitWard",
+        # the KISUMU_CLEAN extract's name for the same V2 class
+        "namespaces": [r"Ignite\Inpatient\Entities\VisitWards", r"Ignite\Inpatient\Entities\VisitWard"],
+        "v3": r"App\Models\VisitWard", "alias": "visit_ward", "service": "inpatient",
+        "renames": {"price": "daily_charge", "amount": "total_charge", "quantity": "days_stayed",
+                    "user_id": "allocated_by", "changes_track": "notes"},
+        "keep": ["admission_id", "ward_id", "bed_id", "allocation_date", "release_date", "discharge_date",
+                 "allocated_by", "created_by", "status", "allocation_type", "daily_charge", "days_stayed",
+                 "total_charge", "notes"],
+        "inject": {"admission_id": ("admission_for_visit",), "allocation_date": ("copy", "created_at"),
+                   "release_date": ("copy", "release_at"), "discharge_date": ("copy", "release_at"),
+                   "bed_id": ("copy", "adm_bed_id"), "created_by": ("copy", "allocated_by"),
+                   "status": ("map", "alloc_status", {"discharged": "discharged"}, "active"),
+                   "allocation_type": ("const", "admission")},
+        "fk": {"admission_id": "admission", "ward_id": "ward", "bed_id": "bed", "allocated_by": "users",
+               "created_by": "users"},
+        "critical": ["admission_id", "ward_id", "allocated_by"],       # all NOT NULL
+        "null_if_unresolved": ["bed_id", "created_by"],
+    },
     "inpatient_fluid_balances": {
         "namespace": r"Ignite\Inpatient\Entities\FluidBalance",
         "v3": r"App\Models\FluidBalance", "alias": "fluid_balance", "service": "inpatient",
@@ -510,6 +534,9 @@ MAPPINGS: dict[str, dict] = {
         "inject": {"admission_id": ("admission_for_visit",), "recorded_at": ("copy", "created_at")},
         "fk": {"admission_id": "admission", "recorded_by": "users"},
         "critical": ["admission_id", "recorded_by"],               # both NOT NULL
+        # '36,6' / '.36.5' temperatures and 0 heights were refused by V3 (2026-10-15: 114 rows)
+        "vital_numbers": ["temperature", "weight", "height", "pulse_rate", "respiratory_rate", "systolic_bp",
+                          "diastolic_bp", "oxygen_saturation", "blood_glucose"],
     },
     # ── reception-service ─────────────────────────────────────────────────
     "evaluation_visit_consultants": {
@@ -676,7 +703,6 @@ NOT_MIGRATED: dict[str, str] = {
     "inventory_customers": "V3 customer needs customer_no + name; V2 rows are patient-linked walk-ins",
     "inventory_batches": "V3 batch needs batch_no, product, cost; the one V2 row is a supplier delivery",
     "credit_notes": "V3 credit_note needs invoice_id, total_amount, reason; V2 notes are receipt-linked",
-    "inpatient_visit_wards": "V2 rows are ward charges on a visit; V3 visit_ward is a bed allocation on an admission",
     "evaluation_sub_procedures": "no column in common with V3 subprocedures",
     "finance_payments_mpesa": NO_MODEL, "finance_payments_cash": NO_MODEL, "finance_payments_card": NO_MODEL,
     "finance_payments_pesa_pal_mpesa": NO_MODEL, "finance_payments_pesa_pal_card": NO_MODEL,
@@ -926,6 +952,10 @@ def apply(v2v3, s2v3) -> int:
             v2v3._FK_REMAP.setdefault(tk, dict(spec["fk"]))
         if spec.get("inject"):
             v2v3._PER_KEY_INJECT.setdefault(tk, {f: _injector(s) for f, s in spec["inject"].items()})
+        if spec.get("vital_numbers"):
+            # the vitals number rules (v2v3._vital_reading: decimal comma, first of several readings,
+            # 0 height/weight, implausible values) — a mapped table gets none of inpatient_vital's coercions
+            v2v3._PER_KEY_COERCIONS.setdefault(tk, {f: v2v3._vital_reading(f) for f in spec["vital_numbers"]})
         if spec.get("critical"):
             s2v3._CRITICAL_FK_FIELDS.setdefault(tk, list(spec["critical"]))
         if spec.get("null_if_unresolved"):
@@ -1000,7 +1030,8 @@ def _visit_destinations_sql(clean: str, cols_of, clean_set: set[str]) -> str | N
         return None
     if not {"id", "name"} <= cols_of("settings_destinations"):
         return None
-    return (f'SELECT d.*, s."NAME" AS "DESTINATION_SETTING_NAME" FROM {clean}.EVALUATION_VISIT_DESTINATIONS d '
+    slug = ', s."SLUG" AS "DESTINATION_SETTING_SLUG"' if "slug" in cols_of("settings_destinations") else ""
+    return (f'SELECT d.*, s."NAME" AS "DESTINATION_SETTING_NAME"{slug} FROM {clean}.EVALUATION_VISIT_DESTINATIONS d '
             f'LEFT JOIN {clean}.SETTINGS_DESTINATIONS s ON TO_VARCHAR(s."ID") = TO_VARCHAR(d."DESTINATION_ID")')
 
 
@@ -1106,14 +1137,56 @@ def _product_prices_sql(clean: str, cols_of, clean_set: set[str]) -> str | None:
     if not (prices | {"product_id", "updated_at", "id"}) <= sp or not prices <= cols_of("inventory_products"):
         return None
     deleted = "deleted_at" in sp
+    # V2's product price list (inventory_product_price: PRICE = cash, INS_PRICE = insurance — PRICE
+    # equals the store selling price on 1,542 of 1,971 kisumu_v3 products priced in both) is the only
+    # price of 1,027 products: it fills in after the store price (agreed 2026-10-15)
+    pl = ({"product", "price", "ins_price", "updated_at", "id"} <= cols_of("inventory_product_price")
+          if "inventory_product_price" in clean_set else False)
+    list_join = (f'LEFT JOIN (SELECT "PRODUCT", IFF(TRY_TO_DOUBLE(TO_VARCHAR("PRICE")) > 0, "PRICE", NULL) AS "PRICE", '
+                 f'IFF(TRY_TO_DOUBLE(TO_VARCHAR("INS_PRICE")) > 0, "INS_PRICE", NULL) AS "INS_PRICE" '
+                 f'FROM {clean}.INVENTORY_PRODUCT_PRICE QUALIFY ROW_NUMBER() OVER (PARTITION BY "PRODUCT" '
+                 f'ORDER BY "UPDATED_AT" DESC NULLS LAST, "ID" DESC) = 1) pl '
+                 f'ON TO_VARCHAR(pl."PRODUCT") = TO_VARCHAR(p."ID") ') if pl else ""
     return (f'SELECT p.* EXCLUDE ("SELLING_PRICE", "INSURANCE_PRICE"), '
-            f'COALESCE(s."PRICE", p."SELLING_PRICE") AS "SELLING_PRICE", '
-            f'COALESCE(i."PRICE", p."INSURANCE_PRICE") AS "INSURANCE_PRICE" '
+            f'COALESCE(s."PRICE", {"pl.\"PRICE\", " if pl else ""}p."SELLING_PRICE") AS "SELLING_PRICE", '
+            f'COALESCE(i."PRICE", {"pl.\"INS_PRICE\", " if pl else ""}p."INSURANCE_PRICE") AS "INSURANCE_PRICE" '
             f'FROM {clean}.INVENTORY_PRODUCTS p '
             f'LEFT JOIN ({_latest_store_price(clean, "SELLING_PRICE", deleted)}) s '
             f'ON TO_VARCHAR(s."PRODUCT_ID") = TO_VARCHAR(p."ID") '
             f'LEFT JOIN ({_latest_store_price(clean, "INSURANCE_PRICE", deleted)}) i '
-            f'ON TO_VARCHAR(i."PRODUCT_ID") = TO_VARCHAR(p."ID")')
+            f'ON TO_VARCHAR(i."PRODUCT_ID") = TO_VARCHAR(p."ID") ' + list_join)
+
+
+def _visit_wards_sql(clean: str, cols_of, clean_set: set[str]) -> str | None:
+    """V2 visit wards + their visit's admission (latest per visit): its id, bed and discharge."""
+    if "inpatient_admissions" not in clean_set or "visit_id" not in cols_of("inpatient_visit_wards"):
+        return None
+    if not {"id", "visit_id", "bed_id", "discharged_at"} <= cols_of("inpatient_admissions"):
+        return None
+    return (f'SELECT w.*, a."ID" AS "ADMISSION_ID", a."BED_ID" AS "ADM_BED_ID", '
+            f'a."DISCHARGED_AT" AS "RELEASE_AT", IFF(a."DISCHARGED_AT" IS NULL, \'active\', \'discharged\') '
+            f'AS "ALLOC_STATUS" FROM {clean}.INPATIENT_VISIT_WARDS w LEFT JOIN (SELECT "ID", "VISIT_ID", '
+            f'"BED_ID", "DISCHARGED_AT" FROM {clean}.INPATIENT_ADMISSIONS QUALIFY ROW_NUMBER() OVER '
+            f'(PARTITION BY "VISIT_ID" ORDER BY "ID" DESC) = 1) a ON TO_VARCHAR(a."VISIT_ID") = TO_VARCHAR(w."VISIT_ID")')
+
+
+def _visit_admission_sql(table: str):
+    """table rows + their visit's latest admission as ADMISSION_ID, when the row has none — the
+    visit→admission side map is incomplete (52 kisumu_v3 daily-charge verifications went out with
+    admission_id null, 2026-10-15)."""
+    def build(clean: str, cols_of, clean_set: set[str]) -> str | None:
+        cols = cols_of(table)
+        visit = "visit_id" if "visit_id" in cols else "visit" if "visit" in cols else None
+        if not visit or "inpatient_admissions" not in clean_set:
+            return None
+        has_own = "admission_id" in cols
+        keep = ' EXCLUDE ("ADMISSION_ID")' if has_own else ""
+        adm = 'COALESCE(t."ADMISSION_ID", a."ID")' if has_own else 'a."ID"'     # Snowflake COALESCE needs 2+ args
+        return (f'SELECT t.*{keep}, {adm} AS "ADMISSION_ID" FROM {clean}.{table.upper()} t '
+                f'LEFT JOIN (SELECT "ID", "VISIT_ID" FROM {clean}.INPATIENT_ADMISSIONS QUALIFY ROW_NUMBER() OVER '
+                f'(PARTITION BY "VISIT_ID" ORDER BY "ID" DESC) = 1) a ON TO_VARCHAR(a."VISIT_ID") = '
+                f'TO_VARCHAR(t."{visit.upper()}")')
+    return build
 
 
 def _latest_procedure_price_sql(clean: str, cols_of, clean_set: set[str]) -> str | None:
@@ -1132,6 +1205,8 @@ def _latest_procedure_price_sql(clean: str, cols_of, clean_set: set[str]) -> str
 # object names) → SQL, or None to read the table as is
 FETCH_SQL = {"evaluation_icd10_notes": _icd10_notes_sql,
              "evaluation_procedure_prices": _latest_procedure_price_sql,
+             "inpatient_visit_wards": _visit_wards_sql,
+             "inpatient_daily_charges_verifications": _visit_admission_sql("inpatient_daily_charges_verifications"),
              "inventory_products": _product_prices_sql,
              "evaluation_critical_values": _critical_values_sql,
              "settings_scheme_exclusions": _scheme_prices_sql,

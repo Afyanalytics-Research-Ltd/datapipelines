@@ -627,6 +627,8 @@ _CRITICAL_FK_FIELDS: dict[str, list] = {
 # V2 id (which would point at an unrelated V3 row, or fail the FK).
 _NULL_IF_UNRESOLVED: dict[str, set[str]] = {
     "evaluation_sample":           {"investigation_id"},
+    # a V2 destination with no V3 service destination: none, never the raw V2 id
+    "evaluation_visit_destination": {"destination_id"},
     "inpatient_discharge_request": {"visit_id"},
     # stores are posted in parallel, so a parent may not be in V3 yet
     "inventory_store":             {"parent_store_id"},
@@ -1470,6 +1472,10 @@ def _run_table_job(entry: dict, facility: str, org_cfg: dict, dry_run: bool) -> 
     if job_key in v2v3._permanently_done:
         log.info("⊘ %s — already migrated in a previous run", label)
         return True
+    try:
+        ensure_clean_view(facility, table)
+    except Exception as e:                           # the read below reports the real problem
+        log.warning("  %s: couldn't build its missing CLEAN view: %s", label, str(e)[:200])
 
     _canary_sent[_canary_key(job_key)] = 0
     vitals = transform_key == "inpatient_vital"
@@ -1817,6 +1823,31 @@ def run_migration(facility: str, only_tables: list[str] | None,
         "".join(f"  WAITING: {t} — {_waiting[t]}\n" for t in waiting),
     )
     return failures
+
+
+def ensure_clean_view(facility: str, table: str) -> bool:
+    """Build a table's CLEAN view from RAW when it's missing. v2_facility_to_snowflake asks
+    snowflake_flatten_clean to flatten only the tables loaded in that run, so a table whose flatten once
+    failed stayed in RAW with no CLEAN view, and its migration failed on "Object … does not exist"
+    (kisumu_v3 evaluation_reference_range / evaluation_refraction, 2026-10-15). Returns True when the
+    view exists (or was built), False when RAW has no rows for the table either."""
+    with _snowflake_connect() as conn:
+        cur = conn.cursor()
+        if table.lower() in clean_tables(cur, facility):
+            return True
+        raw, clean = f"{facility.upper()}_RAW", f"{facility.upper()}_CLEAN"
+        cur.execute(f"SELECT COUNT(*) FROM {sf_schema(facility, 'RAW')}.EVENTS_RAW WHERE source_table = %s",
+                    (table,))
+        if not cur.fetchone()[0]:
+            return False
+        import flatten_jsons_schemas as fl
+        fields = fl.discover_fields(cur, raw, table)
+        if not fields:
+            return False
+        expanded = fl.expand_objects(cur, raw, table, fields)
+        fl.flatten_table(cur, raw, clean, table, expanded, materialize="view")
+        log.info("  built the missing CLEAN view %s.%s from RAW (%d columns)", clean, table, len(expanded))
+        return True
 
 
 def clean_tables(cur, facility: str) -> list[str]:

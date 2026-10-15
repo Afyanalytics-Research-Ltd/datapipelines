@@ -683,7 +683,8 @@ def _namespace_tier(ns: str) -> int:
 _PER_KEY_LIFT_NESTED: dict[str, dict[str, tuple[str, str]]] = {
     # the CLEAN view carries the destination as an object ({"id": 9, "name":
     # "Pharmacy", …}) rather than a flattened destination_name
-    "evaluation_visit_destination": {"destination_name": ("destination", "name")},
+    "evaluation_visit_destination": {"destination_name": ("destination", "name"),
+                                     "destination_slug": ("destination", "slug")},
 }
 
 # Layer 1: global boolean renames (apply to every record)
@@ -1007,8 +1008,10 @@ _PER_KEY_KEEP_ONLY: dict[str, set[str]] = {
     # out: destination_id/department_id (V2 ids, their lookups aren't
     # migrated), status (V3's allowed values unknown), created_by (V2 users
     # don't exist in V3).
+    # destination_id: V2's settings destination, remapped to V3's service destination (_FK_REMAP) —
+    # it was left out, so every migrated row had none (reported 2026-10-15)
     "evaluation_visit_destination": {"visit_id", "department_id", "department_name", "arrived_at",
-                                     "completed_at", "notes"},
+                                     "completed_at", "notes", "destination_id", "destination_slug"},
     # columns of inpatient-service's inp_admission_types (gateway describe)
     "inpatient_admission_type": {"code", "name", "description", "deposit", "associated_procedure"},
     # columns of evaluation-service's `procedures` table (gateway describe)
@@ -1129,6 +1132,7 @@ _V3_NULL_DEFAULTS: dict[str, Any] = {
     "is_walkin":            0,            # investigations flags, null on most V2 rows
     "preauth_approved":     0,
     "requires_preauth":     0,
+    "requested_by":         1,            # requisitions with no V2 requestor (2026-10-15)
 }
 # Layer 2: coercions — value-level transforms applied after renaming.
 # Each entry: (source_field_after_rename, transform_fn)
@@ -1427,6 +1431,36 @@ def _first_reading(v):
     return int(n) if n.is_integer() else n
 
 
+# vitals with decimals: V2 sometimes holds a decimal comma ('36,6' — refused by V3 as "Incorrect decimal
+# value" on kisumu_v3 inpatient temperatures, 2026-10-15)
+_DECIMAL_VITALS = {"temperature", "weight", "height", "bmi", "head_circumference", "muac", "random_blood_sugar",
+                   "fasting_blood_sugar", "blood_sugar", "waist", "hip", "body_fat", "muscle_mass", "bone_mass",
+                   "body_water", "visceral_fat", "intracular_pressure"}
+_DECIMAL_COMMA = re.compile(r"\s*-?\d+,\d{1,2}\s*")
+
+
+def _vital_reading(field: str):
+    """The coercion for one vital: a decimal comma becomes a point (decimal fields only — '120,80' in a
+    blood pressure is two readings), then _first_reading. Height / weight 0 means not measured: V3
+    computes BMI from them and a 0 failed the insert with "Division by zero"."""
+    def read(v):
+        if field in _DECIMAL_VITALS and isinstance(v, str) and _DECIMAL_COMMA.fullmatch(v):
+            v = v.replace(",", ".")
+        n = _first_reading(v)
+        if isinstance(n, (int, float)) and abs(n) >= 1e7:      # a typo no vital can be (an outpatient value
+            return None                                        # overflowed 64 bits: "Integer exceeds N-bit range")
+        return None if field in ("height", "weight") and n == 0 else n
+    return read
+
+
+def _v3_user_or_system(v):
+    """A V2 user id → V3 user; a V2 user V3 doesn't have → the system user (1, as _V3_NULL_DEFAULTS).
+    For NOT NULL *_by columns only — agreed 2026-10-15 (as for admissions by an external doctor)."""
+    if _blank_to_none(v) is None:
+        return None
+    return _v3_user_for_v2_id(v) or 1
+
+
 def _note_multiple_readings(note_field: str, fields: tuple[str, ...]):
     """Pre-coercion hook: record every field holding more than one reading in
     the vital's notes before _first_reading keeps only the first."""
@@ -1472,6 +1506,9 @@ def _flag_with_message(flag: str, note_field: str):
 # run before the per-key coercions, on the renamed record
 _PER_KEY_PRE_COERCE: dict[str, Any] = {
     "evaluation_prescription": _flag_with_message("moved_from_chargesheet", "notes"),
+    # same V2 message-in-a-flag on investigations (all 11,491 kisumu_v3 rows missing from V3 on
+    # 2026-10-15 were refused for it: "Incorrect integer value: 'Item removed from chargesheet …'")
+    "evaluation_investigation": _flag_with_message("moved_from_chargesheet", "comments"),
     "inpatient_vital":  _note_multiple_readings("notes", _INPATIENT_VITAL_NUMBERS),
     "outpatient_vital": _note_multiple_readings("nurse_notes", _OUTPATIENT_VITAL_NUMBERS),
 }
@@ -1542,6 +1579,12 @@ _PER_KEY_INJECT: dict[str, dict[str, Any]] = {
         "payment_status": lambda r: "pending",   # only if V2 had none (see _PER_KEY_COERCIONS)
         "notes":          _dispensing_notes,
     },
+    "theatre_schedule": {
+        # V3 scheduled_date (date) is empty on V2 rows: the day the schedule starts (reported 2026-10-15)
+        "scheduled_date": lambda r: (str(r["schedule_start_time"])[:10]
+                                     if re.match(r"\d{4}-\d{2}-\d{2}", str(r.get("schedule_start_time") or ""))
+                                     else None),
+    },
     "inpatient_discharge_type": {
         # inp_discharge_types needs a code (unique per org); V2 types only have a name
         "code": lambda r: "_".join(str(r.get("name") or f"TYPE {r.get('id')}").upper().split()),
@@ -1597,6 +1640,10 @@ _PER_KEY_INJECT: dict[str, dict[str, Any]] = {
         # V2 has no departments; one V3 department per V2 destination is
         # created before this job runs (ensure_departments_from_destinations)
         "department_id": lambda r: _v3_department_id_by_name(r.get("department_name")),
+        # the destination's slug (requested 2026-10-15): from the embedded destination, else its
+        # settings_destinations row (joined in). NOTE: VisitDestination's $fillable lacks
+        # destination_slug, so the gateway drops it until the backend adds it
+        "destination_slug": lambda r: (str(r.get("destination_setting_slug") or "").strip() or None),
     },
     "reception_patient_nok": {
         # NOT NULL in V3; V2 next of kin carry neither relationship nor relationship_id
@@ -1729,7 +1776,14 @@ _PER_KEY_INJECT: dict[str, dict[str, Any]] = {
         # V2 doctor (embedded, flattened as doctor_email) -> V3 user by email.
         # None until the backend has created the doctor as a V3 user; the
         # required-field check then holds the admission back for a later run.
-        "admitting_doctor_id": lambda r: _v3_user_id_for_v2(r.get("doctor_id"), r.get("doctor_email")),
+        # An admission by an external doctor only (doctor_id empty, external_doctor "DR BITTA" — 15
+        # kisumu_v3 rows) has no V3 user to name: agreed 2026-10-15 — the system user (1, as
+        # _V3_NULL_DEFAULTS) admits it and the doctor's name is kept in `reason`.
+        "admitting_doctor_id": lambda r: (_v3_user_id_for_v2(r.get("doctor_id"), r.get("doctor_email"))
+                                          or (1 if not r.get("doctor_id") and _blank_to_none(r.get("external_doctor"))
+                                              else None)),
+        "reason": lambda r: (f"External doctor: {' '.join(str(r['external_doctor']).split())}"
+                             if not r.get("doctor_id") and _blank_to_none(r.get("external_doctor")) else None),
         # V3 inp_admissions requires a unique admission_number; V2 had none.
         "admission_number": lambda r: f"ADM-{r.get('id', 'unknown')}",
         # Fall back to created_at if V2 didn't carry an explicit admission_date.
@@ -1792,20 +1846,26 @@ _PER_KEY_COERCIONS: dict[str, dict[str, Any]] = {
     # V2 user ids → V3 user ids (None when V3 doesn't have that user yet:
     # required *_by fields then hold the record back, optional ones go null)
     "inpatient_discharge_request": {
-        "requested_by": _v3_user_for_v2_id,
+        "requested_by": _v3_user_or_system,         # NOT NULL in V3 (2026-10-15: user missing → system user)
         "reviewed_by":  _v3_user_for_v2_id,
     },
     "inpatient_discharge": {
-        "discharged_by": _v3_user_for_v2_id,
+        "discharged_by": _v3_user_or_system,        # NOT NULL in V3
         "approved_by":   _v3_user_for_v2_id,
+    },
+    # V3 applies_to is a module id (ProcedureCategory::DEPARTMENTS: lab 3, radiology 4); a few V2 rows hold
+    # text ('Ward', the literal 'NULL') — refused as "Incorrect integer value" (2026-10-15)
+    "eval_procedure_category": {
+        "applies_to": lambda v: (int(v) if str(v).strip().isdigit() else
+                                 {"lab": 3, "laboratory": 3, "radiology": 4}.get(str(v or "").strip().lower())),
     },
     "inpatient_vital": {
         "recorded_by": _v3_user_for_v2_id,
-        **{f: _first_reading for f in _INPATIENT_VITAL_NUMBERS},
+        **{f: _vital_reading(f) for f in _INPATIENT_VITAL_NUMBERS},
     },
     "outpatient_vital": {
         "recorded_by": _v3_user_for_v2_id,
-        **{f: _first_reading for f in _OUTPATIENT_VITAL_NUMBERS},
+        **{f: _vital_reading(f) for f in _OUTPATIENT_VITAL_NUMBERS},
         "lmp": _blank_to_none,                       # a date, not a reading
     },
     "inventory_dispensing": {
@@ -3504,6 +3564,7 @@ _FK_REMAP: dict[str, dict[str, str]] = {
     },
     "evaluation_visit_destination": {
         "visit_id": "visit",
+        "destination_id": "service_destinations",
     },
     # Here (not only in _NS_FK_REMAP) so _ensure_id_maps rebuilds the map by
     # name from V2 + V3 when it's empty — 6 rows, one page — e.g. after the
