@@ -304,6 +304,83 @@ def test_failed_model_says_why_in_words(tmp_path):
     assert line["row"]["_source_id"] and "requires gender" in line["error"]
 
 
+def test_sync_patches_fields_that_differ_and_explains_missing_rows(tmp_path):
+    src, dst = _pair()
+    _, _, copier, _, _ = _run(src, dst, tmp_path)
+    dst.rows["evaluation/visits"][0]["status"] = "tampered"
+    dst.rows["reception/patient"].pop()                       # p2 gone from the target
+    res = vv.verify_model(copier, "evaluation/visits", collect=True)
+    assert res["mismatched_rows"] == 1 and set(res["_patches"]) == {"v1"}
+    assert vv.sync_fields(copier, "evaluation/visits", res["_patches"]) == {"patched": 1, "failed": 0}
+    assert vv.verify_model(copier, "evaluation/visits")["ok"]
+    assert dst.rows["evaluation/visits"][0]["status"] == "open"
+    p = vv.verify_model(copier, "reception/patient")
+    assert p["missing"] == 1 and p["missing_why"] == {
+        "not posted yet (new in the source since the copy, or a canary run)": 1}
+    assert copier.copy_model("reception/patient")["posted"] == 1          # the reload puts it back
+    assert vv.verify_model(copier, "reception/patient")["ok"]
+
+
+class _ClockGateway(FakeGateway):
+    """Like the real V3 instances: stores dates as the wall-clock text it is
+    sent, serialises them in UTC ('…T21:00:00.000000Z' for a Nairobi
+    midnight), and stamps its own facility whatever is sent."""
+
+    def __init__(self, *a, stamp_facility=None, **kw):
+        super().__init__(*a, **kw)
+        self.stamp_facility = stamp_facility
+
+    def insert(self, svc, alias, data, match_on="uuid"):
+        import re
+        stored = {}
+        for k, v in data.items():
+            m = re.fullmatch(r"(\d{4}-\d\d-\d\d)T(\d\d:\d\d:\d\d)(?:\.\d+)?Z", v) if isinstance(v, str) else None
+            stored[k] = f"{m.group(1)} {m.group(2)}" if m else v      # a UTC text is taken as wall time
+        if self.stamp_facility and "facility_id" in stored:
+            stored["facility_id"] = self.stamp_facility
+        return super().insert(svc, alias, stored, match_on)
+
+    def _serialise(self, r):
+        return {k: vv.from_wall_time(v) if k in ("dob", "visit_date") else v for k, v in r.items()}
+
+    def read_page(self, svc, alias, page, per_page=500):
+        rows, meta = super().read_page(svc, alias, page, per_page)
+        return [self._serialise(r) for r in rows], meta
+
+    def read_all(self, svc, alias, per_page=500, workers=1):
+        yield from (self._serialise(r) for r in super().read_all(svc, alias))
+
+
+def test_dates_survive_the_copy_and_a_shifted_copy_is_repaired(tmp_path):
+    src, dst0 = _pair()
+    dst = _ClockGateway("dst", 250, 247, MODELS, id_start=90_000, stamp_facility=999)
+    dst.rows["evaluation/symptoms"] = dst0.rows["evaluation/symptoms"]
+    for r in src.rows["reception/patient"]:
+        r["dob"] = "2082-03-21T21:00:00.000000Z"                   # DATE 2082-03-22 in Nairobi
+    state, plan, copier, order, _ = _run(src, dst, tmp_path)
+    assert {r["dob"] for r in dst.rows["reception/patient"]} == {"2082-03-22"}    # stored as the right day
+    v = vv.verify_model(copier, "reception/patient")
+    assert v["ok"], v
+    assert v["facility_differs"] == {"facility_id": 2}            # the target's own stamp: reported, not a mismatch
+    # an older copy that posted the UTC text: a day early
+    dst.rows["reception/patient"][0]["dob"] = "2082-03-21"
+    v = vv.verify_model(copier, "reception/patient", collect=True)
+    assert v["mismatched_fields"] == {"dob": 1}
+    patch = next(iter(v["_patches"].values()))
+    assert patch["dob"] == "2082-03-22" and "facility_id" not in patch
+    vv.sync_fields(copier, "reception/patient", v["_patches"])
+    assert vv.verify_model(copier, "reception/patient")["ok"]
+
+
+def test_wall_time_round_trip():
+    assert vv.to_wall_time("2082-03-21T21:00:00.000000Z") == "2082-03-22"
+    assert vv.to_wall_time("2024-05-31T06:28:47.000000Z") == "2024-05-31 09:28:47"
+    assert vv.to_wall_time("not a date") == "not a date" and vv.to_wall_time(5) == 5
+    assert vv.from_wall_time("2024-05-31 09:28:47") == "2024-05-31T06:28:47.000000Z"
+    assert vv._norm(vv.from_wall_time(vv.to_wall_time("2026-10-05T21:00:00.000000Z"))) == \
+        vv._norm("2026-10-05T21:00:00.000000Z")
+
+
 def test_norm_treats_formats_alike():
     assert vv._norm("2026-10-13T08:00:00.000000Z") == vv._norm("2026-10-13 08:00:00")
     assert vv._norm(True) == vv._norm(1) == vv._norm("1") == vv._norm("1.00")

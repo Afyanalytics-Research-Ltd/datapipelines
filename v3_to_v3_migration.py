@@ -362,7 +362,10 @@ _ERR_HINTS: list[tuple[re.Pattern, str]] = [(re.compile(p, re.I), h) for p, h in
     (r"\b401\b|Unauthenticated", "the login token was refused — check the account's password"),
     (r"Timeout|timed out|ConnectionError|Connection refused|RemoteDisconnected",
      "the target didn't answer (network / overloaded) — re-run; rows already in are matched by uuid"),
-    (r"^5\d\d\b", "the target's server failed on this row (HTTP 5xx) — see its message"),
+    (r"^5\d\d\b", "the target's server crashed inserting this row (HTTP 5xx) and hides the reason — it happens for "
+                  "every new row of the model whatever its fields, while updates of existing rows work, so most "
+                  "likely a unique key (code / name) taken instance-wide or a server bug; the backend team can read "
+                  "the exact exception in its log under the error_id"),
 )]
 
 
@@ -377,6 +380,8 @@ def describe_error(err: str) -> tuple[str, str]:
         if isinstance(j.get("errors"), dict):        # Laravel validation: field → [messages]
             msg += " — " + "; ".join(f"{k}: {' '.join(v) if isinstance(v, list) else v}"
                                      for k, v in j["errors"].items())
+        if j.get("error_id"):                        # production hides the reason: its log has it under this id
+            msg += f" [server log error_id {j['error_id']}]"
     except ValueError:
         msg = str(err)
     msg = re.sub(r"\s*\(SQL: .*", "", " ".join(str(msg).split()))[:400]
@@ -1048,7 +1053,7 @@ def verify_model(copier: Copier, model: str, examples: int = 5, canary: bool = F
             if _norm(want) == got[idx[col]]:
                 continue
             if col == x.get("facility") or x["links"].get(col) == L.FACILITY:
-                # the target gateway stamps its own facility — not patchable through it
+                # the gateway ignores facility_id on updates (it keeps what the first insert wrote): reported, not patched
                 fac_diff[col] = fac_diff.get(col, 0) + 1
                 fac_ex.setdefault(col, {"sent": sent, "target": got[idx[col]]})
                 continue

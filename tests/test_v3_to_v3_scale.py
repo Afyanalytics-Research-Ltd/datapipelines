@@ -168,8 +168,10 @@ def test_parent_rows_scale_linearly(tmp_path):
     for n in (500, 2000):
         src, dst = _big(n_patients=n, visits_per=1, details_per=4)
         state, plan, copier, _ = _copy_all(src, dst, tmp_path / str(n), workers=8)
-        # only the details pass (rows held: their parents are skipped), timed alone
-        copier2 = vv.Copier(src, dst, vv.State("src", "dst", root=tmp_path / f"{n}b"), plan, workers=8)
+        # only the details pass, into an empty target with no parent maps (every
+        # row held or foreign), timed alone
+        empty = FastGateway("dst2", 250, 247, MODELS, id_start=9_000_000)
+        copier2 = vv.Copier(src, empty, vv.State("src", "dst", root=tmp_path / f"{n}b"), plan, workers=8)
         (tmp_path / f"{n}b" / "v3v3_src_to_dst" / "src_ids").mkdir(parents=True)
         for m in ("evaluation/investigation_results",):
             src_ids = state.load("src_ids", m, [])
