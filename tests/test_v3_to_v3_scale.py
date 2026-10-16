@@ -16,7 +16,7 @@ import pytest
 import requests
 
 import v3_to_v3_migration as vv
-from v3_to_v3_client import V3Client
+from v3_to_v3_client import GatewayError, V3Client
 from tests.test_v3_to_v3_migration import FakeGateway, _Resp
 
 
@@ -349,6 +349,100 @@ def test_relink_many_deferred_rows_in_parallel(tmp_path):
     assert vv.verify_model(copier, "core/users")["ok"]
 
 
+def test_duplicate_key_pairs_with_the_targets_own_row(tmp_path):
+    src, dst = _big(n_patients=30, visits_per=1, details_per=0)
+    # the target already has user 'user3' as its own account (another uuid), and 'user5' is
+    # another org's username (unique instance-wide, not visible in this org)
+    own = dst.add("core/users", uuid="theirs-3", username="user3", created_by=None)
+    taken_elsewhere = {"user5"}
+
+    def unique_username(d):
+        u = d.get("username")
+        if u is None:
+            return None
+        if u in taken_elsewhere or any(r.get("username") == u and r.get("uuid") != d.get("uuid")
+                                       for r in dst.rows["core/users"]):
+            return _Resp(422, {"success": False, "message": f"insert rejected: Duplicate entry '{u}' for key "
+                                                            f"'users.users_username_unique'"})
+        return None
+
+    dst.fail = unique_username
+    state = vv.State("src", "dst", root=tmp_path)
+    plan = vv.build_plan(src)
+    copier = vv.Copier(src, dst, state, plan, workers=4)
+    res = copier.copy_model("core/users")
+    assert res["paired_by_key"] == 1 and res["renamed"] == 1 and res["failed"] == 0
+    u5 = next(r for r in dst.rows["core/users"] if r["uuid"] == "u5")
+    assert u5["username"] == "user5.250"                       # another org's username: created renamed
+    assert "aborted" not in res                                   # duplicates don't trip the brake
+    u3 = str(next(r["id"] for r in src.rows["core/users"] if r["uuid"] == "u3"))
+    assert state.id_map("core/users")[u3] == own
+    # children of user3 link to the target's own account
+    copier.copy_model("reception/patient")
+    p = next(r for r in dst.rows["reception/patient"] if r["uuid"] == "p3")
+    assert p["created_by"] == own
+    # their row differs from the source's: rewritten to the source's values (identical but for the
+    # uuid, which this gateway only matches on — it can't be changed)
+    next(r for r in dst.rows["core/users"] if r["uuid"] == "theirs-3")["full_name"] = "Their Name"
+    next(r for r in src.rows["core/users"] if r["uuid"] == "u3")["full_name"] = "Source Name"
+    v = vv.verify_model(copier, "core/users", collect=True)
+    assert v["paired_by_key"] == 1 and v["missing"] == 0 and v["renamed"] == 1
+    p3 = v["_patches"]["theirs-3"]
+    assert p3["_source_uuid"] == "u3" and p3["full_name"] == "Source Name"
+    assert "enforce_password_reset" not in p3 and "password" not in p3        # their login is never touched
+    n_users = len(dst.rows["core/users"])
+    s = vv.sync_fields(copier, "core/users", v["_patches"])
+    assert s["uuid_kept"] == 1
+    assert len(dst.rows["core/users"]) == n_users                  # updated in place, never a new row
+    assert next(r for r in dst.rows["core/users"] if r["uuid"] == "theirs-3")["full_name"] == "Source Name"
+    # a re-run doesn't post the paired row again
+    posts = dst.posts
+    again = vv.Copier(src, dst, vv.State("src", "dst", root=tmp_path), plan, workers=4).copy_model("core/users")
+    assert again.get("paired_by_key", 0) == 0 and dst.posts - posts == 0     # nothing posted again
+
+
+def test_required_user_left_empty_in_the_source_gets_the_migration_user(tmp_path):
+    src, dst = _big(n_patients=5, visits_per=0, details_per=0)
+    dst.user_id = 4242
+    dst.fail = lambda d: (_Resp(422, {"message": "insert rejected: Column 'created_by' cannot be null"})
+                          if "username" in d and d.get("created_by") is None else None)
+    plan = vv.build_plan(src)
+    copier = vv.Copier(src, dst, vv.State("src", "dst", root=tmp_path), plan, workers=2)
+    res = copier.copy_model("core/users")
+    assert res["failed"] == 0 and res["filled_with_migration_user"] == {"created_by": 20}
+    assert all(r["created_by"] == 4242 for r in dst.rows["core/users"])
+    v = vv.verify_model(copier, "core/users")
+    assert v["ok"] and v["filled_with_migration_user"] == 20
+
+
+def test_links_resolved_by_code_when_the_id_is_another_orgs(tmp_path):
+    """ICD-10: a variation/subcategory pointing at another org's copy of its parent finds
+    the source's own parent by code (prefix) or by code range."""
+    m = {"evaluation/icd10_categories": T, "evaluation/icd10_subcategories": T,
+         "evaluation/icd10_types": T, "evaluation/icd10_variations": T}
+    src = FastGateway("src", 4, 4, m, id_start=500)
+    dst = FastGateway("dst", 250, 247, m, id_start=90_000)
+    ch = src.add("evaluation/icd10_categories", uuid="c1", code="A00-B99")
+    src.add("evaluation/icd10_subcategories", uuid="s1", code="A00-A09", category_id=3)       # other org's chapter
+    src.add("evaluation/icd10_subcategories", uuid="s2", code="A15-A19", category_id=ch)      # its own
+    a00 = src.add("evaluation/icd10_types", uuid="t1", code="A00")
+    src.add("evaluation/icd10_variations", uuid="v1", code="A00.1", type_id=1912)            # other org's type
+    src.add("evaluation/icd10_variations", uuid="v2", code="A00.9", type_id=a00)             # its own
+    plan = vv.build_plan(src)
+    for mm in ("evaluation/icd10_variations", "evaluation/icd10_subcategories"):   # copied like any org model here
+        plan["models"][mm]["kind"] = "copy"
+    copier = vv.Copier(src, dst, vv.State("src", "dst", root=tmp_path), plan, workers=2)
+    for mm in ("evaluation/icd10_categories", "evaluation/icd10_subcategories", "evaluation/icd10_types",
+               "evaluation/icd10_variations"):
+        assert copier.copy_model(mm)["failed"] == 0, mm
+    cat = {r["uuid"]: r["id"] for r in dst.rows["evaluation/icd10_categories"]}
+    typ = {r["uuid"]: r["id"] for r in dst.rows["evaluation/icd10_types"]}
+    assert {r["uuid"]: r["category_id"] for r in dst.rows["evaluation/icd10_subcategories"]} == \
+        {"s1": cat["c1"], "s2": cat["c1"]}
+    assert {r["uuid"]: r["type_id"] for r in dst.rows["evaluation/icd10_variations"]} == \
+        {"v1": typ["t1"], "v2": typ["t1"]}
+
+
 def test_relink_reads_old_state_without_uuids(tmp_path):
     src = FastGateway("src", 4, 4, {"core/users": T}, id_start=1)
     dst = FastGateway("dst", 250, 247, {"core/users": T}, id_start=900_000)
@@ -411,6 +505,30 @@ def test_read_all_drops_a_row_served_twice():
     c = _PagedClient([{"id": i} for i in range(1, 3001)], shift_at=3)
     got = [r["id"] for r in c.read_all("core", "x", workers=8)]
     assert got == sorted(set(got)) and len(got) == 3000
+
+
+@pytest.mark.parametrize("workers", [1, 8])
+def test_read_all_rereads_a_short_page_and_never_skips_rows(workers, monkeypatch):
+    """An overloaded server answers 200 with a short (or empty) page now and then:
+    every row must still come out — or the read must fail loudly."""
+    monkeypatch.setattr(time, "sleep", lambda s: None)
+    c = _PagedClient([{"id": i} for i in range(1, 5001)])
+    real = c.read_page
+    flaky = {3: 2, 7: 1}                         # page → how many times it comes back short
+
+    def read_page(service, alias, page, per_page=500):
+        rows, meta = real(service, alias, page, per_page)
+        if flaky.get(page):
+            flaky[page] -= 1
+            return rows[:120] if page == 3 else [], meta
+        return rows, meta
+
+    c.read_page = read_page
+    got = [r["id"] for r in c.read_all("core", "x", workers=workers)]
+    assert got == list(range(1, 5001))
+    flaky[5] = 99                                # a page that never comes back whole
+    with pytest.raises(GatewayError, match="keeps coming back"):
+        list(c.read_all("core", "x", workers=workers))
 
 
 def test_read_all_stops_reading_when_the_caller_stops():

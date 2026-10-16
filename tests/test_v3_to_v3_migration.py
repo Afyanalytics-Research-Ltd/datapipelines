@@ -311,7 +311,8 @@ def test_sync_patches_fields_that_differ_and_explains_missing_rows(tmp_path):
     dst.rows["reception/patient"].pop()                       # p2 gone from the target
     res = vv.verify_model(copier, "evaluation/visits", collect=True)
     assert res["mismatched_rows"] == 1 and set(res["_patches"]) == {"v1"}
-    assert vv.sync_fields(copier, "evaluation/visits", res["_patches"]) == {"patched": 1, "failed": 0}
+    s = vv.sync_fields(copier, "evaluation/visits", res["_patches"])
+    assert s["patched"] == 1 and s["failed"] == 0
     assert vv.verify_model(copier, "evaluation/visits")["ok"]
     assert dst.rows["evaluation/visits"][0]["status"] == "open"
     p = vv.verify_model(copier, "reception/patient")

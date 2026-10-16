@@ -115,8 +115,11 @@ MODEL_LINKS: dict[str, dict[str, str | None]] = {
     "evaluation/investigations": {"invoiced": None},
     "finance/receipt": {"invoice_id": "finance/invoice"},
     "inpatient/visit_ward": {"bed_id": "inpatient/bed"},
-    # polymorphic, but every row of kisumu_v3 is priceable_type = 'procedure'
-    "core/scheme_pricing": {"priceable_id": "evaluation/procedures"},
+    # polymorphic, but every row of kisumu_v3 is priceable_type = 'procedure'.
+    # scheme_id: core-service's own schemes (FK → core_insurance_schemes), NOT finance's — the two
+    # id ranges overlap, so the finance map silently links the wrong scheme (found 2026-10-16)
+    "core/scheme_pricing": {"priceable_id": "evaluation/procedures", "scheme_id": "core/insurance_schemes"},
+    "core/scheme_exclusions": {"scheme_id": "core/insurance_schemes", "item_id": "evaluation/procedures"},
 }
 
 # Columns a V2 → V3 load left holding V2 ids (kisumu_v3, audited 2026-10-15:
@@ -140,7 +143,19 @@ V2_KEYED: dict[tuple[str, str], str] = {
     ("evaluation/visits", "marked_as_em_by"): "users",
     ("reception/patient_random_note", "patient_id"): "patient",
     ("evaluation/subprocedures", "procedure"): "procedures",
-    ("evaluation/icd10_variations", "type_id"): "icd10_types",
+}
+
+# A link whose value isn't one of the source org's ids can still be resolved by the
+# parent's code: (model, column) → (parent model, parent's code column, the row's code
+# column, how many leading characters of the row's code are the parent's code).
+# ICD-10 variations are shared reference data: their type_id points at whichever org's
+# copy of the 1,910 types loaded them (2026-10-16: 73,125 org 4's own, 11,200 another
+# org's) — a variation A00.1 belongs to type A00; where both resolve they agree 55,557/55,557
+LINK_BY_CODE: dict[tuple[str, str], tuple[str, str, str, int]] = {
+    ("evaluation/icd10_variations", "type_id"): ("evaluation/icd10_types", "code", "code", 3),
+    # a block A00-A09 belongs to the chapter whose range contains it (A00-B99); 0 = range match.
+    # 53 of org 4's 283 point at another org's copy of the 21 chapters (category_id 1–4)
+    ("evaluation/icd10_subcategories", "category_id"): ("evaluation/icd10_categories", "code", "code", 0),
 }
 
 # Links the source itself has broken beyond repair (V2 ids no map holds):
@@ -226,6 +241,26 @@ SKIP_MODELS: dict[str, str] = {
 # service) — they're copied with SQL by a DBA instead, so a "complete" copy still needs these done
 NOT_IN_GATEWAY: dict[str, str] = {
     # (core user_profiles had none until 2026-10-15 — it's core/user_profile now and copies like any model)
+}
+
+# A key unique across the whole instance (not per org) that another org's row
+# already holds: the row is created under "<value>.<target org id>", everything
+# else as in the source (decided 2026-10-16 for org 4 → 284: 230 usernames were
+# held by another org's copies). model → column
+RENAME_ON_CLASH: dict[str, str] = {
+    "core/users": "username",
+    # instance-wide numbers another org's copy already took (2026-10-16, org 284): same rule
+    "inpatient/admission": "admission_number",
+    "finance/invoice": "invoice_no",
+    "core/pos_configs": "code",
+    "core/service_destinations": "code",
+}
+
+# Fields the TARGET computes itself (not stored): a patch can't set them, so they're reported, never
+# patched. model → {column: why}
+TARGET_COMPUTED: dict[str, dict[str, str]] = {
+    "evaluation/visits": {"patient_full_name": "org 284 derives it from the visit's patient and returns it empty "
+                                               "(likely the facility 247 vs 283 mismatch on its patients)"},
 }
 
 # models with no tenant column that are reference data shared by every org on

@@ -164,7 +164,10 @@ class V3Client:
         self.token()                                  # the tenant id comes from the login
         body = {"action": "read", "model": alias, "source_tenant_id": self.organization_id,
                 "per_page": min(per_page, MAX_PER_PAGE), "page": page}
-        r = self.post(service, body, timeout=120, retry_500=True)
+        try:
+            r = self.post(service, body, timeout=120, retry_500=True, retries=8)
+        except requests.RequestException as e:      # the server kept dropping us: a gateway error like any other
+            raise GatewayError(f"{self.key} {service}/{alias} read p{page}: {type(e).__name__}: {e}") from e
         if not r.ok:
             raise GatewayError(f"{self.key} {service}/{alias} read p{page}: {r.status_code} {r.text[:200]}")
         j = r.json()
@@ -197,9 +200,29 @@ class V3Client:
                     seen.add(rid)
                 yield r
 
+        def full_page(p: int, last_page: int | None) -> tuple[list[dict], dict]:
+            """A page that isn't the last must be full: an overloaded server sometimes
+            answers 200 with fewer rows (or none). Re-read it; if it stays short, stop
+            loudly — a silently skipped page is a silently missing table."""
+            rows_, meta_ = self.read_page(service, alias, p, per_page)
+            tries = 0
+            while last_page and p < last_page and len(rows_) < per_page and tries < 5:
+                tries += 1
+                log.warning("%s %s/%s page %d/%d came back with %d rows — reading it again", self.key, service,
+                            alias, p, last_page, len(rows_))
+                time.sleep(2 * tries)
+                rows_, meta_ = self.read_page(service, alias, p, per_page)
+            if last_page and p < last_page and len(rows_) < per_page:
+                raise GatewayError(f"{self.key} {service}/{alias}: page {p} of {last_page} keeps coming back with "
+                                   f"{len(rows_)} of {per_page} rows — the server is dropping rows; not continuing "
+                                   f"with a partial read")
+            return rows_, meta_
+
         rows, meta = self.read_page(service, alias, 1, per_page)
-        yield from fresh(rows)
         last = meta.get("last_page")
+        if last and last > 1 and len(rows) < per_page:
+            rows, meta = full_page(1, last)
+        yield from fresh(rows)
         if not rows or len(rows) < per_page or (last and last <= 1):
             return
         page = 2
@@ -209,7 +232,7 @@ class V3Client:
                 try:
                     while page <= last or window:
                         while page <= last and len(window) < workers * 2:
-                            window.append(pool.submit(self.read_page, service, alias, page, per_page))
+                            window.append(pool.submit(full_page, page, last))
                             page += 1
                         rows, _ = window.popleft().result()
                         yield from fresh(rows)
@@ -220,7 +243,8 @@ class V3Client:
                 return
             # rows added after page 1 was read land past the old last page
         while True:
-            rows, meta = self.read_page(service, alias, page, per_page)
+            rows, meta = full_page(page, last) if last and page < last else self.read_page(service, alias, page,
+                                                                                            per_page)
             yield from fresh(rows)
             last = meta.get("last_page") or last
             if not rows or len(rows) < per_page or (last and page >= last):

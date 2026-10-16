@@ -57,6 +57,8 @@ READ_WORKERS = int(os.getenv("V3V3_READ_WORKERS") or 8)   # parallel page reads 
 MAX_ERROR_STREAK = 50
 _UNKNOWN_COL = re.compile(r"Unknown column '(?:[\w]+\.)?(\w+)'")
 _UUID_KEY = "__uuid__"      # deferred links: the row's uuid, so relink needn't re-read the source
+_NOT_NULL = re.compile(r"Column '(\w+)' cannot be null")
+_DUP_KEY = re.compile(r"Duplicate entry '(.*?)' for key '([\w.]+)'")
 # The gateway serialises dates in UTC ('2026-10-05T21:00:00.000000Z' for a
 # DATE 2026-10-06 in Nairobi) but stores what it is sent as wall-clock time:
 # posting the UTC text back shifts every date a day and every time 3 h
@@ -519,6 +521,9 @@ class Copier:
         self.map_only = False      # True: rebuild id maps from the target by uuid, post nothing (read-only audit)
         self._dropped_cols: dict[str, set[str]] = {}
         self._src_id_sets: dict[str, set[str]] = {}
+        self._key_indexes: dict[tuple, dict[str, int]] = {}
+        # model → {column: rows} where the target required a user the source left empty
+        self.filled: dict[str, dict[str, int]] = {}
         self._lock = threading.Lock()
 
     # rows of the source org, with the model's own filter
@@ -573,6 +578,8 @@ class Copier:
                 mapped = self.state.id_map(target).get(str(val))
                 if mapped is None and target == model:
                     mapped = self.state.id_map(model).get(str(val))
+                if mapped is None and (model, col) in L.LINK_BY_CODE:
+                    mapped = self.link_by_code(model, col, row)
                 if mapped is not None:
                     out[col] = mapped
                 elif col in crit:
@@ -610,11 +617,123 @@ class Copier:
                 log.warning("%s: target has no column %s — not copied", model, m.group(1))
                 payload = {k: v for k, v in payload.items() if k != m.group(1)}
                 continue
+            m = _NOT_NULL.search(r.text)
+            if (m and payload.get(m.group(1)) is None and getattr(self.dst, "user_id", None) is not None
+                    and (L.is_user_column(m.group(1)) or x["links"].get(m.group(1)) == L.USERS)):
+                # the target requires who created / did it; the source left it empty:
+                # the migration account stands in (counted, and verify knows)
+                payload = {**payload, m.group(1): self.dst.user_id}
+                with self._lock:
+                    f = self.filled.setdefault(model, {})
+                    f[m.group(1)] = f.get(m.group(1), 0) + 1
+                continue
             return None, f"{r.status_code} {r.text[:1500]}"
         return None, "too many unknown columns"
 
     def _post_pool(self, model: str):
         return _PostPool(self, model)
+
+    def pair_by_key(self, model: str, err: str | None) -> list | None:
+        """A duplicate-key refusal ("Duplicate entry 'slutta' for key
+        'users.users_username_unique'"): the target already holds this record
+        under another uuid. The id of that row — the target org's own rows only —
+        or None (not a duplicate, or the clash is with another org's row)."""
+        m = _DUP_KEY.search(err or "")
+        if not m:
+            return None
+        value, key = m.group(1), m.group(2)
+        table = key.split(".", 1)[0] if "." in key else ""
+        name = key.split(".", 1)[-1]
+        name = name[len(table) + 1:] if table and name.startswith(table + "_") else name
+        name = re.sub(r"_(unique|uniq|key|index)$", "", name)
+        # composite keys the target builds from several columns ("284-it-support@…" for
+        # email + organization, "284-283-cwc" for org + facility + code, "doctor-api-284"
+        # for name + guard + org): try each column the key names, with each part of the value
+        noise = {"unique", "uniq", "key", "index", "org", "organization", "fac", "facility", "guard", "tenant"}
+        tokens = [t for t in name.split("_") if t not in noise]
+        cols = list(dict.fromkeys([name] + [name.split("_organization")[0]] + tokens))
+        org = str(self.dst.organization_id)
+        fac = str(self.dst.facility_id)
+        parts = value.split("-")
+        values = [value] + ([value[len(org) + 1:]] if value.startswith(org + "-") else [])
+        # every run of the parts that isn't just the org / facility id
+        for i in range(len(parts)):
+            for j in range(i + 1, len(parts) + 1):
+                v = "-".join(parts[i:j])
+                if v not in values and v not in (org, fac):
+                    values.append(v)
+        for col in cols:
+            idx = self._key_index(model, col)
+            for v in values:
+                hit = idx.get(str(v).strip().lower())
+                if hit is not None:
+                    return [hit, col, v]       # target id, and the key that identifies the record
+        return None
+
+    def link_by_code(self, model: str, col: str, row: dict):
+        """L.LINK_BY_CODE: the target id of the source parent whose code is the
+        start of this row's code (ICD-10 variation A00.1 → type A00), or None."""
+        parent, pcol, rcol, n = L.LINK_BY_CODE[(model, col)]
+        key = ("code", parent, pcol)
+        with self._lock:
+            idx = self._key_indexes.get(key)
+        if idx is None:
+            x = self.models[parent]
+            idx = {}
+            for r in self.src.read_all(x["service"], x["alias"], workers=self.read_workers):
+                c = str(r.get(pcol) or "").strip().upper()
+                if c and r.get("id") is not None:
+                    idx.setdefault(c, r["id"])
+            with self._lock:
+                self._key_indexes[key] = idx
+        code = str(row.get(rcol) or "").strip().upper()
+        if n == 0:
+            # range mode: the parent's code is "LO-HI"; the child's (first) code falls inside it
+            start = code.split("-")[0]
+            src_id = next((pid for pc, pid in idx.items() if "-" in pc
+                           and pc.split("-")[0] <= start <= pc.split("-")[1]), None)
+        else:
+            src_id = idx.get(code[:n])
+        return None if src_id is None else self.state.id_map(parent).get(str(src_id))
+
+    def renamed_value(self, value) -> str:
+        return f"{value}.{self.dst.organization_id}"
+
+    def insert_renamed(self, model: str, payload: dict, err: str | None) -> int | None:
+        """A model in L.RENAME_ON_CLASH refused because its key (a username) is
+        taken by another org's row: insert it again with "<value>.<org>".
+        Mutates payload (the caller records the new value). The new id, or None."""
+        col = L.RENAME_ON_CLASH.get(model)
+        m = _DUP_KEY.search(err or "")
+        if not col or not m or payload.get(col) in (None, ""):
+            return None
+        clash, mine = m.group(1).lower(), str(payload[col]).lower()
+        # the key may be composite ("284-283-cwc" for org + facility + code): the clash is on this column
+        if clash != mine and not clash.endswith("-" + mine):
+            return None
+        payload[col] = self.renamed_value(payload[col])
+        new_id, err2 = self._insert(model, payload)
+        if err2:
+            log.warning("%s: renamed insert %s=%s refused too: %s", model, col, payload[col], err2[:200])
+            return None
+        return new_id
+
+    def _key_index(self, model: str, col: str) -> dict[str, int]:
+        """{value of col: id} over the target org's rows (read once per model + column)."""
+        k = (model, col)
+        with self._lock:
+            if k in self._key_indexes:
+                return self._key_indexes[k]
+        idx: dict[str, int] = {}
+        try:
+            for r in self.target_rows(model):
+                if r.get(col) not in (None, "") and r.get("id") is not None:
+                    idx.setdefault(str(r[col]).strip().lower(), r["id"])
+        except GatewayError as e:
+            log.warning("%s: can't read the target to pair by %s: %s", model, col, e)
+        with self._lock:
+            self._key_indexes[k] = idx
+        return idx
 
     def record_error(self, model: str, row: dict, payload: dict, err: str, stage: str = "insert") -> None:
         """Dead-letter the row and count its cause (V3's message + what it
@@ -653,6 +772,8 @@ class Copier:
         on_target = self.target_uuids(model)
         held = {}
         deferred_all = self.state.load("deferred", model, {})
+        paired = self.state.load("paired_by_key", model, {})   # source id → target id of a row under another uuid
+        renamed = self.state.load("renamed", model, {})        # source id → value it was created under
         src_ids: list[str] = []
         counts = {"read": 0, "already": 0, "posted": 0, "held": 0, "foreign": 0, "failed": 0, "deferred": 0}
         new = 0
@@ -667,6 +788,23 @@ class Copier:
         def done(row, payload, deferred, new_id, err):          # runs on a POST thread, under pool.lock
             sid = str(row["id"])
             if err:
+                found = self.pair_by_key(model, err)
+                if found is not None:
+                    # the target holds this record already, under another uuid
+                    # (same username / email / code): paired, so links to it resolve
+                    idm[sid] = found[0]
+                    counts["paired_by_key"] = counts.get("paired_by_key", 0) + 1
+                    paired[sid] = found
+                    return
+                renamed_id = self.insert_renamed(model, payload, err)
+                if renamed_id is not None:
+                    # the value belongs to ANOTHER org's row (unique instance-wide): created
+                    # under "<value>.<target org>", everything else as in the source
+                    idm[sid] = renamed_id
+                    col = L.RENAME_ON_CLASH[model]
+                    renamed[sid] = payload[col]
+                    counts["renamed"] = counts.get("renamed", 0) + 1
+                    return
                 counts["failed"] += 1
                 self.record_error(model, row, payload, err)
                 return
@@ -687,7 +825,7 @@ class Copier:
                 sid = str(row.get("id"))
                 uuid = str(row.get("uuid") or "").lower()
                 payload, missing_crit, deferred = self.translate(model, row)
-                there = (uuid and uuid in on_target) or (not uuid and sid in idm)
+                there = (uuid and uuid in on_target) or (not uuid and sid in idm) or sid in paired
                 if missing_crit and not there:
                     # model without a tenant column: a parent outside the source
                     # org means the row is another org's
@@ -707,7 +845,9 @@ class Copier:
                     # row (a user's password …). Links still missing go to relink,
                     # which patches only those columns.
                     with pool.lock:
-                        if uuid:
+                        if sid in paired:
+                            idm[sid] = _paired_id(paired[sid])
+                        elif uuid:
                             idm[sid] = on_target[uuid]
                         counts["already"] += 1
                         if deferred:
@@ -730,11 +870,15 @@ class Copier:
                 # only a full read: children (parent_rows) and verify take a
                 # parent id missing from this list as another org's row
                 self.state.save("held", model, held)
+                self.state.save("paired_by_key", model, paired)
+                self.state.save("renamed", model, renamed)
                 self.state.save("src_ids", model, src_ids)
         counts["seconds"] = round(time.time() - t0)
         v2_null = {k.split(".", 1)[1]: n for k, n in self.unrepaired.items() if k.startswith(model + ".")}
         if v2_null:
             counts["v2_ids_not_in_map"] = v2_null          # linked as null: the source held a V2 id
+        if self.filled.get(model):
+            counts["filled_with_migration_user"] = dict(self.filled[model])
         if held:
             counts["held_because"] = held_summary(x, held)
         if self.errors.get(model):
@@ -914,7 +1058,11 @@ class _PostPool:
                 new_id, err, systemic = None, f"{type(e).__name__}: {e}", True
             with self.lock:
                 done(row, payload, extra, new_id, err)
-                if err:
+                if err and (_DUP_KEY.search(err) or _NOT_NULL.search(err) or "has no admission" in err):
+                    # one row's problem (record already there, a required link this row
+                    # lacks): says nothing about the target being down or the schema wrong
+                    self._streak = 0
+                elif err:
                     self._bad += 1
                     self._streak = self._streak + 1 if systemic else 0
                 else:
@@ -989,9 +1137,14 @@ def verify_model(copier: Copier, model: str, examples: int = 5, canary: bool = F
     fac_diff: dict[str, int] = {}
     fac_ex: dict[str, dict] = {}
     dst: dict[str, tuple] = {}
+    uuid_of: dict = {}
     n_target = 0
+    t0 = tick = time.time()
     for r in copier.target_rows(model):
         n_target += 1
+        if time.time() - tick > 30:
+            tick = time.time()
+            log.info("%s verify: read %d target rows (%.0f rows/s)", model, n_target, n_target / (tick - t0))
         if not keys:
             keys = sorted(set(r) - L.NOT_COMPARED)
             idx = {k: i for i, k in enumerate(keys)}
@@ -1000,7 +1153,21 @@ def verify_model(copier: Copier, model: str, examples: int = 5, canary: bool = F
         if r.get("uuid"):
             dst[str(r["uuid"]).lower()] = (tuple(_norm(r[k]) if k in r else absent for k in keys),
                                            tuple(_norm(r[k]) if k in r else absent for k in tkeys))
+            if r.get("id") is not None:
+                uuid_of[r["id"]] = str(r["uuid"]).lower()
     held = copier.state.load("held", model, {})
+    # rows the copy paired with the target's own record (same username / email …, another uuid)
+    paired = {sid: (uuid_of.get(_paired_id(pv)), pv[1] if isinstance(pv, list) else None,
+                    pv[2] if isinstance(pv, list) else None)
+              for sid, pv in copier.state.load("paired_by_key", model, {}).items()}
+    n_paired = 0
+    paired_diff: dict[str, int] = {}
+    renamed = copier.state.load("renamed", model, {})       # source id → the value it was created under
+    rename_col = L.RENAME_ON_CLASH.get(model)
+    n_renamed = 0
+    n_filled = 0
+    n_updated_at_only = 0
+    computed_diff: dict[str, int] = {}
     dead = _dead_letter_uuids(copier.state, model)
     excluded = set()
     try:
@@ -1014,7 +1181,15 @@ def verify_model(copier: Copier, model: str, examples: int = 5, canary: bool = F
     miss_ex, mm_ex = [], {}
     patches: dict[str, dict] = {}
     seen = set()
+    t1 = tick = time.time()
+    n_read = 0
     for row in copier.source_rows(model):
+        n_read += 1
+        if time.time() - tick > 30:
+            tick = time.time()
+            log.info("%s verify: compared %d source rows (%.0f rows/s), %d differ so far, %d missing",
+                     model, n_read, n_read / (tick - t1), len(patches) if collect else sum(mismatch.values()),
+                     missing)
         payload, missing_crit, _ = copier.translate(model, row)
         if missing_crit and x["kind"] == "parent_rows" and not copier._parent_in_source(model, row, missing_crit):
             continue                                            # another org's row
@@ -1025,6 +1200,20 @@ def verify_model(copier: Copier, model: str, examples: int = 5, canary: bool = F
             continue
         seen.add(uuid)
         got_pair = dst.get(uuid)
+        by_key = None
+        pk = paired.get(str(row.get("id")))
+        if got_pair is None and pk and pk[0]:
+            got_pair = dst.get(pk[0])                  # the target's own row, under its own uuid
+            if got_pair is not None:
+                by_key = pk
+                n_paired += 1
+                seen.add(pk[0])
+                # the uuid itself differs: to be identical it must become the source's
+                mismatch["uuid"] = mismatch.get("uuid", 0) + 1
+                if collect:
+                    patches[pk[0]] = {"uuid": pk[0], "_source_id": row.get("id"), "_source_uuid": row.get("uuid"),
+                                      "_key": [pk[1], pk[2]],
+                                      **({"updated_at": payload["updated_at"]} if "updated_at" in payload else {})}
         got, got_ts = got_pair if got_pair is not None else (None, None)
         if got is None and canary:
             n_src -= 1
@@ -1040,8 +1229,10 @@ def verify_model(copier: Copier, model: str, examples: int = 5, canary: bool = F
                                 **({"held_for": held[sid]} if sid in held else {})})
             continue
         row_patch = None
+        upd_only_candidate = False
         for col, sent in payload.items():
-            if (col in L.NOT_COMPARED or col in excluded or col not in idx or got[idx[col]] is absent
+            if (col == "uuid" or col in L.NOT_COMPARED or col in excluded or col not in idx
+                    or got[idx[col]] is absent
                     or L.is_instance_derived(col)
                     or (isinstance(sent, dict) and "uuid" in sent)):     # an embedded related record, not a column
                 continue
@@ -1052,23 +1243,59 @@ def verify_model(copier: Copier, model: str, examples: int = 5, canary: bool = F
                     else sent)
             if _norm(want) == got[idx[col]]:
                 continue
+            if col in L.TARGET_COMPUTED.get(model, {}):
+                computed_diff[col] = computed_diff.get(col, 0) + 1       # the target computes it: reported only
+                continue
+            if col == "updated_at":
+                # bookkeeping: some target services stamp their own on every write, and the
+                # source changes it whenever anything touches a row — patched along with a
+                # real difference (row_patch carries it), never on its own
+                upd_only_candidate = True
+                continue
+            if (want in (None, "") and getattr(copier.dst, "user_id", None) is not None
+                    and got[idx[col]] == _norm(copier.dst.user_id)
+                    and (L.is_user_column(col) or x["links"].get(col) == L.USERS)):
+                n_filled += 1                   # required by the target, empty in the source: the migration user
+                continue
+            if col == rename_col and renamed.get(str(row.get("id"))) is not None                     and _norm(renamed[str(row.get("id"))]) == got[idx[col]]:
+                n_renamed += 1                  # created under "<value>.<org>" on purpose (clash with another org)
+                continue
             if col == x.get("facility") or x["links"].get(col) == L.FACILITY:
                 # the gateway ignores facility_id on updates (it keeps what the first insert wrote): reported, not patched
                 fac_diff[col] = fac_diff.get(col, 0) + 1
                 fac_ex.setdefault(col, {"sent": sent, "target": got[idx[col]]})
                 continue
+            injected = not x["links"].get(col) and (col not in row or to_wall_time(row.get(col)) != sent)
+            if by_key and injected:
+                # a value the copier sets for NEW rows (a copied user's forced password reset):
+                # never imposed on a record the target already had
+                continue
+            if by_key:
+                paired_diff[col] = paired_diff.get(col, 0) + 1
             mismatch[col] = mismatch.get(col, 0) + 1
-            if collect:
+            if collect and by_key:
+                patches[by_key[0]][col] = sent
+            elif collect:
                 if row_patch is None:
                     row_patch = patches.setdefault(uuid, {"uuid": row.get("uuid"), "_source_id": row.get("id")})
                     if "updated_at" in payload:     # else the update itself would stamp a new updated_at
                         row_patch["updated_at"] = payload["updated_at"]
+                    # the target validates a row's required parents on every write ("admission_id is
+                    # required"), so a patch carries them even when only a date differs
+                    for c in L.critical_cols(model):
+                        if payload.get(c) not in (None, ""):
+                            row_patch[c] = payload[c]
                 row_patch[col] = sent
             mm_ex.setdefault(col, [])
             if len(mm_ex[col]) < examples:
                 mm_ex[col].append({"uuid": uuid, "expected": want, "target": got[idx[col]]})
+        if upd_only_candidate and row_patch is None and not by_key:
+            n_updated_at_only += 1
     extra = len(set(dst) - seen)
     out = {"source": n_src, "target": n_target, "missing": missing, "extra_on_target": extra,
+           "paired_by_key": n_paired, "paired_fields_differ": paired_diff, "renamed": n_renamed, "filled_with_migration_user": n_filled,
+           "updated_at_only": n_updated_at_only, "target_computed_differ": computed_diff,
+           "renamed_column": rename_col,
            "facility_differs": fac_diff, "facility_example": fac_ex,
            "source_without_uuid": no_uuid, "missing_why": {k: v for k, v in why_missing.items() if v},
            "mismatched_fields": mismatch, "mismatched_rows": len(patches) if collect else None,
@@ -1077,6 +1304,11 @@ def verify_model(copier: Copier, model: str, examples: int = 5, canary: bool = F
     if collect:
         out["_patches"] = patches
     return out
+
+
+def _paired_id(p):
+    """paired_by_key entries: [target id, key column, key value] (older state: just the id)."""
+    return p[0] if isinstance(p, list) else p
 
 
 def _dead_letter_uuids(state: "State", model: str) -> set[str]:
@@ -1098,22 +1330,72 @@ def sync_fields(copier: Copier, model: str, patches: dict[str, dict]) -> dict:
     (match_on uuid updates the row in place) so the target matches."""
     if not patches:
         return {"patched": 0, "failed": 0}
-    counts = {"patched": 0, "failed": 0}
+    counts = {"patched": 0, "failed": 0, "uuid_aligned": 0, "uuid_kept": 0}
+    renamed_now: dict[str, str] = {}
+    x = copier.models[model]
+    key_ok: dict[str, bool] = {}                  # key column → does the gateway take it as match_on
 
-    def done(row, patch, _extra, _id, err):
+    def align_uuid(patch: dict, key: list, source_uuid: str) -> bool:
+        """A record the target already had under another uuid: rewrite it — uuid
+        included — matched on its key (username, patient_no …), when the
+        gateway accepts that key as match_on."""
+        col, val = key
+        if not col or key_ok.get(col) is False:
+            return False
+        data = {**{k: v for k, v in patch.items() if k != "uuid"}, col: val, "uuid": source_uuid}
+        r = copier.dst.insert(x["service"], x["alias"], data, match_on=col)
+        if r.status_code == 422 and "match on is invalid" in r.text:
+            key_ok[col] = False
+            return False
+        key_ok[col] = True
+        return r.ok
+
+    def done(row, patch, extra, _id, err):
+        col = L.RENAME_ON_CLASH.get(model)
+        if err and col and patch.get(col) and _DUP_KEY.search(err):
+            # restoring the source's number clashes with another org's row: the rename rule, as on insert
+            retry = {**patch, col: copier.renamed_value(patch[col])}
+            _, err = copier._insert(model, retry)
+            if not err:
+                counts["patched"] += 1
+                counts["renamed"] = counts.get("renamed", 0) + 1
+                renamed_now[str(row.get("id"))] = retry[col]
+                return
         if err:
             counts["failed"] += 1
             copier.record_error(model, row, patch, err, stage="sync")
         else:
             counts["patched"] += 1
+            if extra:
+                counts["uuid_kept"] += 1          # every field but the uuid: the gateway can't change that
 
     pool = copier._post_pool(model)
+    t0 = tick = time.time()
+    total = len(patches)
+    log.info("%s sync: patching %d row(s)", model, total)
     try:
-        for p in patches.values():
+        for target_uuid, p in patches.items():
+            if time.time() - tick > 30:
+                tick = time.time()
+                n = counts["patched"] + counts["failed"]
+                log.info("%s sync: %d / %d patched (%.0f rows/s), %d failed", model, n, total,
+                         n / (tick - t0), counts["failed"])
             row = {"id": p.pop("_source_id", None), "uuid": p["uuid"]}
+            key, source_uuid = p.pop("_key", None), p.pop("_source_uuid", None)
+            if key and source_uuid:
+                p["uuid"] = target_uuid                 # the target's own row — never a new one
+                if align_uuid(p, key, source_uuid):
+                    counts["patched"] += 1
+                    counts["uuid_aligned"] += 1
+                    continue
+                pool.submit(row, p, "uuid_kept", done)       # matched on the target's own uuid
+                continue
             pool.submit(row, p, None, done)
     finally:
         pool.close()
+    if renamed_now:                          # verify then knows these values are intended
+        prev = copier.state.load("renamed", model, {})
+        copier.state.save("renamed", model, {**prev, **renamed_now})
     log.info("%s sync: %s", model, counts)
     return counts
 

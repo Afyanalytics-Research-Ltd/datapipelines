@@ -535,9 +535,12 @@ MAPPINGS: dict[str, dict] = {
         "v3": r"App\Models\Note", "alias": "note", "service": "inpatient",
         # V2 `type` is 0/1 with no recorded meaning; inp_notes.note_type is a
         # required enum — general_note rather than a guess
-        "renames": {"notes": "note_content", "user_id": "created_by"},
+        # V2 type 0 = nursing note, 1 = doctor's note (confirmed by Muniu 2026-10-16; every note had gone in
+        # as general_note)
+        "renames": {"notes": "note_content", "user_id": "created_by", "type": "v2_type"},
         "keep": ["admission_id", "visit_id", "title", "note_type", "note_date", "note_content", "created_by"],
-        "inject": {"admission_id": ("admission_for_visit",), "note_type": ("const", "general_note"),
+        "inject": {"admission_id": ("admission_for_visit",),
+                   "note_type": ("map", "v2_type", {"0": "nursing_note", "1": "doctors_note"}, "general_note"),
                    "note_date": ("copy", "created_at")},
         "fk": {"admission_id": "admission", "visit_id": "visit", "created_by": "users"},
         "critical": ["admission_id", "created_by"],
@@ -913,7 +916,8 @@ def _injector(spec):
         return number
     if kind == "map":                       # value of one V2 column looked up in a dict
         col, table, default = args
-        return lambda r: table.get(str(r.get(col) or "").strip().lower(), default)
+        # 0 is a value, not "empty" (inpatient_notes type 0 = nursing note went out as the default)
+        return lambda r: table.get("" if r.get(col) is None else str(r.get(col)).strip().lower(), default)
     if kind == "nonneg":                    # a quantity V3 floors at 0 (CHECK >= 0)
         def nonneg(r):
             try:
