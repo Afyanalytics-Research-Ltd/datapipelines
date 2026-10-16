@@ -135,6 +135,20 @@ CONTENT_KEY = {
 }
 
 
+def _when(v) -> str:
+    """A V2 timestamp ('2026-10-16 09:12:03', '2026-10-16T06:12:03.000000Z', '2026-10-16') as sortable
+    'YYYY-MM-DD HH:MM:SS' text ('' when absent)."""
+    s = str(v or "").strip().replace("T", " ")
+    return s[:19] if re.match(r"\d{4}-\d\d-\d\d", s) else ""
+
+
+def changed_since(row: dict, since: str, new_only: bool = False) -> bool:
+    """Created on/after `since` — or (unless new_only) updated on/after it."""
+    s = _when(since) or since
+    created, updated = _when(row.get("created_at")), _when(row.get("updated_at"))
+    return bool(created and created >= s) or (not new_only and bool(updated and updated >= s))
+
+
 def _reason(err) -> str:
     """A dead letter's error body, shortened to what's the same for every row it hits (ids, values and
     uuids stripped) so refusals can be counted by cause."""
@@ -179,6 +193,9 @@ class Loader:
         self._namespaces: dict[str, str] = {}
         self._held_why: Counter = Counter()
         self._live_rows = 0
+        # delta (v2_delta_to_v3.py): only rows created / changed since this moment, with V2's live values
+        self.since: str | None = None
+        self.new_only = False
         # V2 id → V3 id for parents found in V3 by uuid or content this run; the migration's id map
         # is reloaded from disk for every table, so these are re-applied before each one
         self.extra: dict[str, dict[int, int]] = defaultdict(dict)
@@ -317,7 +334,17 @@ class Loader:
         if not ns:
             raise LookupError(f"{table}: no V2 namespace known")
         live_ids: set[int] | None = None
-        if self.live:
+        if self.since is not None:
+            # delta: the rows created (or, unless new_only, changed) since `since`, with their LIVE V2
+            # values — never the snapshot's, which predates the edits. New-only reads just the API's
+            # tail past the snapshot; edits need the whole table (the API ignores updated_since).
+            everything = self.api_tail(ns, self.snapshot_max_id(table) if self.new_only else 0)
+            tail = [r for r in everything if changed_since(r, self.since, self.new_only)]
+            live_ids = set()                       # no snapshot rows at all
+            self._live_rows = len(tail)
+            log.info("%s: %d V2 row(s) %s since %s (of %d read)", table, len(tail),
+                     "created" if self.new_only else "created or changed", self.since, len(everything))
+        elif self.live:
             # every row the live V2 API has: snapshot rows count only if V2 still has their id, and the
             # live rows the snapshot never got go through as API rows (like the tail)
             everything = self.api_tail(ns, 0)
