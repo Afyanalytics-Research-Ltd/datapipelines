@@ -323,6 +323,8 @@ def run(source: str, target: str, since: str, new_only: bool = False, tables: li
     tables = tables or default_tables(source)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     out = out or ROOT / "output" / "v2_delta" / f"{source}-to-{target}-since-{since[:10]}-{stamp}.csv"
+    # the loader saves the JSON report while the first table posts — before write_csv() has made the folder
+    out.parent.mkdir(parents=True, exist_ok=True)
     loader.report_path = out.with_suffix(".json")
     log.info("delta %s → %s since %s (%s), %d table(s)%s", source, target, since,
              "new only" if new_only else "new + edits", len(tables), " — DRY RUN" if dry_run else "")

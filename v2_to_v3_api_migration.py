@@ -999,7 +999,8 @@ _PER_KEY_KEEP_ONLY: dict[str, set[str]] = {
     "inpatient_admission": {"patient_id", "visit_id", "ward_id", "bed_id", "admission_type_id",
                             "admission_request_id", "admitting_doctor_id", "admission_number",
                             "admission_date", "admitted_at", "discharged_at", "reason", "cost",
-                            "days_admitted", "payment_mode", "external_doctor", "created_at", "updated_at"},
+                            "days_admitted", "payment_mode", "external_doctor", "created_at", "updated_at",
+                            "status", "discharge_date"},
     # columns of reception-service's patient_next_of_kin (gateway describe) + the FK
     "reception_patient_nok": {"patient_id", "first_name", "middle_name", "last_name", "relationship",
                               "relationship_id", "id_no", "mobile", "alt_phone", "email", "address",
@@ -1321,10 +1322,17 @@ def reset_v3_user_cache() -> None:
 
 
 def _v3_user_id_for_v2(v2_user_id, email=None) -> int | None:
-    """V3 user for a V2 user: by the V2 id embedded in the migrated email,
-    else by plain email (accounts created some other way)."""
+    """V3 user for a V2 user: by the users id map, else by the V2 id embedded in
+    the migrated email, else by plain email (accounts created some other way).
+    The id map comes first: an org copied V3 → V3 (org 284) has the users but
+    not the placeholder e-mails — every new admission there came out with no
+    admitting doctor and was skipped (2026-10-21)."""
     global _v3_users_by_v2_id
     if v2_user_id not in (None, "") and str(v2_user_id).isdigit():
+        users = _id_map.get(_v3_alias(r"App\Models\User"), {})
+        found = users.get(int(v2_user_id), users.get(str(v2_user_id)))
+        if found is not None:
+            return found
         with _v3_users_lock:
             if _v3_users_by_v2_id is None:
                 users = _fetch_v3_records(_v3_alias(r"App\Models\User"), v3_login_org_cfg(), service_name="core")
@@ -1503,8 +1511,54 @@ def _flag_with_message(flag: str, note_field: str):
     return fix
 
 
+_staff_names: dict[str, dict[int, tuple]] = {}
+_staff_names_lock = threading.Lock()
+
+
+def _staff_name(facility: str, employee_id) -> tuple | None:
+    """(first, middle, last) of a V2 staff member, from their V2 user profile (live V2 API, read once)."""
+    if not str(employee_id or "").strip().isdigit():
+        return None
+    with _staff_names_lock:
+        if facility not in _staff_names:
+            names = {}
+            try:
+                cfg = V2_FACILITIES[facility]
+                rows, _ = extract_v2_records({"facility": facility, "namespace": r"Ignite\Users\Entities\UserProfile",
+                                              "database": cfg["db"], "updated_since": "1970-01-01T00:00:00Z",
+                                              "limit": 100})
+                for p in rows:
+                    if str(p.get("user_id") or "").isdigit():
+                        names[int(p["user_id"])] = (p.get("first_name"), p.get("middle_name"), p.get("last_name"))
+            except Exception as e:                   # noqa: BLE001 — the patient then stays nameless
+                log.warning("staff names for %s: couldn't read V2 user profiles: %s", facility, str(e)[:150])
+            _staff_names[facility] = names
+        return _staff_names[facility].get(int(employee_id))
+
+
+def _patient_names(out: dict) -> None:
+    """V3 patients need first_name and last_name (NOT NULL). 91 kisumu_v3 patients went without
+    (2026-10-16): 79 staff registered as patients with no name typed in — their names are on their V2
+    staff profile (EMPLOYEE_ID = user id); 11 with the surname typed into middle_name."""
+    first, last = _blank_to_none(out.get("first_name")), _blank_to_none(out.get("last_name"))
+    if first and last:
+        return
+    if not first and not last and out.get("employee_id"):
+        facility = str(out.get("source_schema") or _v3_target_facility or "").strip()
+        name = _staff_name(facility, out["employee_id"]) if facility in V2_FACILITIES else None
+        if name and (_blank_to_none(name[0]) or _blank_to_none(name[2])):
+            out["first_name"], out["middle_name"], out["last_name"] = name
+            first, last = _blank_to_none(name[0]), _blank_to_none(name[2])
+    middle = _blank_to_none(out.get("middle_name"))
+    if first and not last and middle:                # surname typed into middle_name
+        out["last_name"], out["middle_name"] = middle, None
+    elif last and not first and middle:
+        out["first_name"], out["middle_name"] = middle, None
+
+
 # run before the per-key coercions, on the renamed record
 _PER_KEY_PRE_COERCE: dict[str, Any] = {
+    "reception_patient": _patient_names,
     "evaluation_prescription": _flag_with_message("moved_from_chargesheet", "notes"),
     # same V2 message-in-a-flag on investigations (all 11,491 kisumu_v3 rows missing from V3 on
     # 2026-10-15 were refused for it: "Incorrect integer value: 'Item removed from chargesheet …'")
@@ -1539,6 +1593,18 @@ def _additional_vitals(r: dict) -> dict | None:
 def _dispensing_notes(r: dict) -> str:
     return (f"Migrated V2 dispensing #{r.get('id')} of {r.get('created_at')}: "
             f"prescription #{r.get('prescription')}, visit #{r.get('visit_id')}")
+
+
+# V2 prescription id → V2 store id (evaluation_prescriptions.store_id), filled by the loader that posts
+# dispensing: V2 dispensing rows carry no store, but V3 inv_sales.store_id is NOT NULL ("Field 'store_id'
+# doesn't have a default value", 2026-10-21)
+_prescription_store: dict[str, str] = {}
+
+
+def _dispensing_store(r: dict) -> int | None:
+    """The V2 store a V2 dispensing was served from (its prescription's) — the FK remap turns it into V3's."""
+    v2_store = _prescription_store.get(str(r.get("prescription")))
+    return int(v2_store) if str(v2_store or "").isdigit() else None
 
 
 def _discharge_request_notes(r: dict) -> str | None:
@@ -1578,6 +1644,11 @@ _PER_KEY_INJECT: dict[str, dict[str, Any]] = {
         "status":         lambda r: "completed",
         "payment_status": lambda r: "pending",   # only if V2 had none (see _PER_KEY_COERCIONS)
         "notes":          _dispensing_notes,
+        "store_id":       _dispensing_store,
+    },
+    "finance_invoice": {
+        # NOT NULL in V3; some V2 invoices leave it empty ("Column 'invoice_date' cannot be null", 2026-10-21)
+        "invoice_date": lambda r: str(r["created_at"])[:10] if r.get("created_at") else None,
     },
     "theatre_schedule": {
         # V3 scheduled_date (date) is empty on V2 rows: the day the schedule starts (reported 2026-10-15)
@@ -1788,6 +1859,11 @@ _PER_KEY_INJECT: dict[str, dict[str, Any]] = {
         "admission_number": lambda r: f"ADM-{r.get('id', 'unknown')}",
         # Fall back to created_at if V2 didn't carry an explicit admission_date.
         "admission_date":   lambda r: r.get("created_at") or r.get("updated_at"),
+        # V3's inpatient list shows an admission while it's 'admitted', with the bed / ward of its open
+        # ward stay: a V2 admission with discharged_at is discharged then (2026-10-17, was loaded
+        # 'admitted' — fix_admission_discharges.py)
+        "status":           lambda r: "discharged" if _blank_to_none(r.get("discharged_at")) else "admitted",
+        "discharge_date":   lambda r: _blank_to_none(r.get("discharged_at")),
     },
     "evaluation_doctor_note": {
         # V2 DoctorNote has no patient_id column — it's visit → patient.
@@ -2614,6 +2690,10 @@ class GatewayModelNotRegistered(Exception):
 _gateway_model_meta: dict[str, dict] = {}
 
 
+# services whose model aliases never displace a core service's (see _fetch_available_models)
+_SIDE_SERVICES = {"dialysis", "theatre"}
+
+
 def _fetch_available_models() -> set[str]:
     """Query every V3 service gateway, union the insertable aliases, and build _alias_to_service.
 
@@ -2636,7 +2716,13 @@ def _fetch_available_models() -> set[str]:
                 if not alias:
                     continue
                 ops = e.get("operations", [])
-                # last-writer wins if alias appears in multiple services (unlikely)
+                # An alias two services both register goes to the core services, never to theatre /
+                # dialysis: since the migration key reached dialysis (2026-10-16), its patient / ward /
+                # ward_type took the reception / inpatient models' place — patients were posted to
+                # dialysis_patients ("Field 'patient_id' doesn't have a default value").
+                owner = _alias_to_service.get(alias)
+                if owner and owner != service_name and service_name in _SIDE_SERVICES:
+                    continue
                 _gateway_model_meta[alias] = {
                     "tenant":     e.get("tenant"),
                     "facility":   e.get("facility"),
