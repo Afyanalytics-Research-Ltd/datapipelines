@@ -1,0 +1,1300 @@
+{
+    "connection": {
+        "id": 59,
+        "name": "wema medical",
+        "exported_at": "2026-10-22T08:50:43+00:00"
+    },
+    "tables": [
+        {
+            "v3 model": "App\\Models\\Core\\Department",
+            "v3 table": "core_departments",
+            "v3 service": "core-service",
+            "v3 table found by": "model",
+            "source table": "departments",
+            "rows": 0,
+            "status": "done"
+        },
+        {
+            "v3 model": "App\\Models\\Oncology\\Diagnosis",
+            "v3 table": "diagnoses",
+            "v3 service": "oncology-service",
+            "v3 table found by": "model",
+            "source table": "diagnoses",
+            "rows": 0,
+            "status": "done"
+        },
+        {
+            "v3 model": "App\\Models\\PatientEvaluation\\Procedure",
+            "v3 table": "procedures",
+            "v3 service": "patient-evaluation-service",
+            "v3 table found by": "laravel default name",
+            "source table": "services",
+            "rows": 0,
+            "status": "done"
+        },
+        {
+            "v3 model": "App\\Models\\Core\\User",
+            "v3 table": "users",
+            "v3 service": "core-service",
+            "v3 table found by": "laravel default name",
+            "source table": "users",
+            "rows": 0,
+            "status": "done"
+        },
+        {
+            "v3 model": "App\\Models\\Inventory\\Product",
+            "v3 table": "inv_products",
+            "v3 service": "inventory-service",
+            "v3 table found by": "model",
+            "source table": "drugs",
+            "rows": 0,
+            "status": "done"
+        },
+        {
+            "v3 model": "App\\Models\\Reception\\Patient",
+            "v3 table": "patients",
+            "v3 service": "reception-service",
+            "v3 table found by": "laravel default name",
+            "source table": "patients",
+            "rows": 0,
+            "status": "done"
+        },
+        {
+            "v3 model": "App\\Models\\PatientEvaluation\\Prescription",
+            "v3 table": "prescriptions",
+            "v3 service": "patient-evaluation-service",
+            "v3 table found by": "laravel default name",
+            "source table": "prescriptions",
+            "rows": 0,
+            "status": "done"
+        },
+        {
+            "v3 model": "App\\Models\\Inpatient\\Ward",
+            "v3 table": "inp_wards",
+            "v3 service": "inpatient-service",
+            "v3 table found by": "model",
+            "source table": "wards",
+            "rows": 0,
+            "status": "done"
+        },
+        {
+            "v3 model": "App\\Models\\Finance\\Invoice",
+            "v3 table": "invoices",
+            "v3 service": "finance-service",
+            "v3 table found by": "model",
+            "source table": "invoices",
+            "rows": 0,
+            "status": "done"
+        },
+        {
+            "v3 model": "App\\Models\\Inpatient\\Bed",
+            "v3 table": "inp_beds",
+            "v3 service": "inpatient-service",
+            "v3 table found by": "model",
+            "source table": "beds",
+            "rows": 0,
+            "status": "done"
+        },
+        {
+            "v3 model": "App\\Models\\PatientEvaluation\\Symptom",
+            "v3 table": "symptoms",
+            "v3 service": "patient-evaluation-service",
+            "v3 table found by": "laravel default name",
+            "source table": "symptoms",
+            "rows": 0,
+            "status": "done"
+        },
+        {
+            "v3 model": "App\\Models\\PatientEvaluation\\Vital",
+            "v3 table": "vitals",
+            "v3 service": "patient-evaluation-service",
+            "v3 table found by": "laravel default name",
+            "source table": "vitals",
+            "rows": 0,
+            "status": "done"
+        },
+        {
+            "v3 model": "App\\Models\\Inpatient\\InpatientHistory",
+            "v3 table": "inp_admissions",
+            "v3 service": "inpatient-service",
+            "v3 table found by": "model",
+            "source table": "inpatients",
+            "rows": 0,
+            "status": "done"
+        },
+        {
+            "v3 model": "App\\Models\\Inpatient\\Note",
+            "v3 table": "inp_notes",
+            "v3 service": "inpatient-service",
+            "v3 table found by": "model",
+            "source table": "notes",
+            "rows": 0,
+            "status": "done"
+        },
+        {
+            "v3 model": "App\\Models\\Finance\\Copay",
+            "v3 table": "copays",
+            "v3 service": "finance-service",
+            "v3 table found by": "laravel default name",
+            "source table": "claims",
+            "rows": 0,
+            "status": "done"
+        },
+        {
+            "v3 model": "App\\Models\\PatientEvaluation\\Investigation",
+            "v3 table": "investigations",
+            "v3 service": "patient-evaluation-service",
+            "v3 table found by": "laravel default name",
+            "source table": "labs",
+            "rows": 0,
+            "status": "done"
+        },
+        {
+            "v3 model": "App\\Models\\Finance\\Payment",
+            "v3 table": "payments",
+            "v3 service": "finance-service",
+            "v3 table found by": "laravel default name",
+            "source table": "payments",
+            "rows": 0,
+            "status": "done"
+        },
+        {
+            "v3 model": "App\\Models\\Reception\\Visit",
+            "v3 table": "visits",
+            "v3 service": "reception-service",
+            "v3 table found by": "laravel default name",
+            "source table": "visits",
+            "rows": 0,
+            "status": "done"
+        },
+        {
+            "v3 model": "App\\Models\\PatientEvaluation\\Vital",
+            "v3 table": "vitals",
+            "v3 service": "patient-evaluation-service",
+            "v3 table found by": "laravel default name",
+            "source table": "cardexes",
+            "rows": 0,
+            "status": "done"
+        },
+        {
+            "v3 model": "App\\Models\\PatientEvaluation\\PrescriptionAdministration",
+            "v3 table": "prescription_administrations",
+            "v3 service": "patient-evaluation-service",
+            "v3 table found by": "laravel default name",
+            "source table": "medications",
+            "rows": 0,
+            "status": "done"
+        }
+    ],
+    "fields": [
+        {
+            "model": "App\\Models\\Core\\Department",
+            "v3_table": "core_departments",
+            "table": "departments",
+            "column": "name",
+            "field": "name",
+            "kind": "copied",
+            "rule": "",
+            "transform": "",
+            "why": ""
+        },
+        {
+            "model": "App\\Models\\Core\\Department",
+            "v3_table": "core_departments",
+            "table": "departments",
+            "column": "description",
+            "field": "description",
+            "kind": "copied",
+            "rule": "",
+            "transform": "",
+            "why": ""
+        },
+        {
+            "model": "App\\Models\\Core\\User",
+            "v3_table": "users",
+            "table": "users",
+            "column": "name",
+            "field": "username",
+            "kind": "copied",
+            "rule": "",
+            "transform": "",
+            "why": ""
+        },
+        {
+            "model": "App\\Models\\Core\\User",
+            "v3_table": "users",
+            "table": "users",
+            "column": "email",
+            "field": "email",
+            "kind": "copied",
+            "rule": "",
+            "transform": "",
+            "why": ""
+        },
+        {
+            "model": "App\\Models\\Core\\User",
+            "v3_table": "users",
+            "table": "users",
+            "column": "password",
+            "field": "password",
+            "kind": "copied",
+            "rule": "",
+            "transform": "",
+            "why": ""
+        },
+        {
+            "model": "App\\Models\\Core\\User",
+            "v3_table": "users",
+            "table": "users",
+            "column": "department",
+            "field": "department_id",
+            "kind": "copied",
+            "rule": "",
+            "transform": "",
+            "why": ""
+        },
+        {
+            "model": "App\\Models\\Core\\User",
+            "v3_table": "users",
+            "table": "users",
+            "column": "payroll_number",
+            "field": "employee_number",
+            "kind": "copied",
+            "rule": "",
+            "transform": "",
+            "why": ""
+        },
+        {
+            "model": "App\\Models\\Core\\User",
+            "v3_table": "users",
+            "table": "users",
+            "column": "remember_token",
+            "field": "remember_token",
+            "kind": "copied",
+            "rule": "",
+            "transform": "",
+            "why": ""
+        },
+        {
+            "model": "App\\Models\\Finance\\Copay",
+            "v3_table": "copays",
+            "table": "claims",
+            "column": "invoice_id",
+            "field": "invoice_id",
+            "kind": "copied",
+            "rule": "",
+            "transform": "",
+            "why": ""
+        },
+        {
+            "model": "App\\Models\\Finance\\Copay",
+            "v3_table": "copays",
+            "table": "claims",
+            "column": "patient_id",
+            "field": "patient_id",
+            "kind": "copied",
+            "rule": "",
+            "transform": "",
+            "why": ""
+        },
+        {
+            "model": "App\\Models\\Finance\\Copay",
+            "v3_table": "copays",
+            "table": "claims",
+            "column": "insurance_company",
+            "field": "company_id",
+            "kind": "copied",
+            "rule": "",
+            "transform": "",
+            "why": ""
+        },
+        {
+            "model": "App\\Models\\Finance\\Invoice",
+            "v3_table": "invoices",
+            "table": "invoices",
+            "column": "patient_id",
+            "field": "patient_id",
+            "kind": "copied",
+            "rule": "",
+            "transform": "",
+            "why": ""
+        },
+        {
+            "model": "App\\Models\\Finance\\Invoice",
+            "v3_table": "invoices",
+            "table": "invoices",
+            "column": "status",
+            "field": "status",
+            "kind": "copied",
+            "rule": "",
+            "transform": "",
+            "why": ""
+        },
+        {
+            "model": "App\\Models\\Finance\\Invoice",
+            "v3_table": "invoices",
+            "table": "invoices",
+            "column": "created_at",
+            "field": "invoice_date",
+            "kind": "copied",
+            "rule": "",
+            "transform": "",
+            "why": ""
+        },
+        {
+            "model": "App\\Models\\Finance\\Payment",
+            "v3_table": "payments",
+            "table": "payments",
+            "column": "paid_by",
+            "field": "payment_type",
+            "kind": "copied",
+            "rule": "",
+            "transform": "lowercase",
+            "why": ""
+        },
+        {
+            "model": "App\\Models\\Finance\\Payment",
+            "v3_table": "payments",
+            "table": "payments",
+            "column": "invoice_no",
+            "field": "invoice_id",
+            "kind": "copied",
+            "rule": "",
+            "transform": "",
+            "why": ""
+        },
+        {
+            "model": "App\\Models\\Finance\\Payment",
+            "v3_table": "payments",
+            "table": "payments",
+            "column": "amount",
+            "field": "amount",
+            "kind": "copied",
+            "rule": "",
+            "transform": "",
+            "why": ""
+        },
+        {
+            "model": "App\\Models\\Finance\\Payment",
+            "v3_table": "payments",
+            "table": "payments",
+            "column": "invoice_no",
+            "field": "patient_id",
+            "kind": "looked up in another table",
+            "rule": "{\"key\":\"id\",\"table\":\"invoices\",\"value\":\"patient_id\",\"column\":\"invoice_no\"}",
+            "transform": "",
+            "why": "taken from invoices (its `patient_id`, which points at patients) through `invoice_no`"
+        },
+        {
+            "model": "App\\Models\\Inpatient\\Bed",
+            "v3_table": "inp_beds",
+            "table": "beds",
+            "column": "ward_id",
+            "field": "ward_id",
+            "kind": "copied",
+            "rule": "",
+            "transform": "",
+            "why": ""
+        },
+        {
+            "model": "App\\Models\\Inpatient\\Bed",
+            "v3_table": "inp_beds",
+            "table": "beds",
+            "column": "status",
+            "field": "is_available",
+            "kind": "codes converted",
+            "rule": "{\"map\":{\"available\":\"1\"},\"column\":\"status\",\"default\":null}",
+            "transform": "",
+            "why": "codes of `status` converted to v3 values (available → 1)"
+        },
+        {
+            "model": "App\\Models\\Inpatient\\InpatientHistory",
+            "v3_table": "inp_admissions",
+            "table": "inpatients",
+            "column": "patient",
+            "field": "patient_id",
+            "kind": "copied",
+            "rule": "",
+            "transform": "",
+            "why": ""
+        },
+        {
+            "model": "App\\Models\\Inpatient\\InpatientHistory",
+            "v3_table": "inp_admissions",
+            "table": "inpatients",
+            "column": "visit",
+            "field": "visit_id",
+            "kind": "copied",
+            "rule": "",
+            "transform": "",
+            "why": ""
+        },
+        {
+            "model": "App\\Models\\Inpatient\\InpatientHistory",
+            "v3_table": "inp_admissions",
+            "table": "inpatients",
+            "column": "admission_date",
+            "field": "admission_date",
+            "kind": "copied",
+            "rule": "",
+            "transform": "",
+            "why": ""
+        },
+        {
+            "model": "App\\Models\\Inpatient\\InpatientHistory",
+            "v3_table": "inp_admissions",
+            "table": "inpatients",
+            "column": "discharged_by",
+            "field": "admitting_doctor_id",
+            "kind": "copied",
+            "rule": "",
+            "transform": "",
+            "why": ""
+        },
+        {
+            "model": "App\\Models\\Inpatient\\InpatientHistory",
+            "v3_table": "inp_admissions",
+            "table": "inpatients",
+            "column": "status",
+            "field": "status",
+            "kind": "copied",
+            "rule": "",
+            "transform": "",
+            "why": ""
+        },
+        {
+            "model": "App\\Models\\Inpatient\\InpatientHistory",
+            "v3_table": "inp_admissions",
+            "table": "inpatients",
+            "column": "discharge_date",
+            "field": "discharge_date",
+            "kind": "copied",
+            "rule": "",
+            "transform": "",
+            "why": ""
+        },
+        {
+            "model": "App\\Models\\Inpatient\\Note",
+            "v3_table": "inp_notes",
+            "table": "notes",
+            "column": "visit",
+            "field": "visit_id",
+            "kind": "copied",
+            "rule": "",
+            "transform": "",
+            "why": ""
+        },
+        {
+            "model": "App\\Models\\Inpatient\\Note",
+            "v3_table": "inp_notes",
+            "table": "notes",
+            "column": "created_at",
+            "field": "note_date",
+            "kind": "copied",
+            "rule": "",
+            "transform": "",
+            "why": ""
+        },
+        {
+            "model": "App\\Models\\Inpatient\\Note",
+            "v3_table": "inp_notes",
+            "table": "notes",
+            "column": "details",
+            "field": "note_content",
+            "kind": "copied",
+            "rule": "",
+            "transform": "",
+            "why": ""
+        },
+        {
+            "model": "App\\Models\\Inpatient\\Ward",
+            "v3_table": "inp_wards",
+            "table": "wards",
+            "column": "name",
+            "field": "name",
+            "kind": "copied",
+            "rule": "",
+            "transform": "",
+            "why": ""
+        },
+        {
+            "model": "App\\Models\\Inpatient\\Ward",
+            "v3_table": "inp_wards",
+            "table": "wards",
+            "column": "description",
+            "field": "description",
+            "kind": "copied",
+            "rule": "",
+            "transform": "",
+            "why": ""
+        },
+        {
+            "model": "App\\Models\\Inventory\\Product",
+            "v3_table": "inv_products",
+            "table": "drugs",
+            "column": "generic_name",
+            "field": "generic_name",
+            "kind": "copied",
+            "rule": "",
+            "transform": "",
+            "why": ""
+        },
+        {
+            "model": "App\\Models\\Inventory\\Product",
+            "v3_table": "inv_products",
+            "table": "drugs",
+            "column": "drug_group",
+            "field": "product_group",
+            "kind": "copied",
+            "rule": "",
+            "transform": "",
+            "why": ""
+        },
+        {
+            "model": "App\\Models\\Inventory\\Product",
+            "v3_table": "inv_products",
+            "table": "drugs",
+            "column": "administration",
+            "field": "formulation",
+            "kind": "copied",
+            "rule": "",
+            "transform": "",
+            "why": ""
+        },
+        {
+            "model": "App\\Models\\Inventory\\Product",
+            "v3_table": "inv_products",
+            "table": "drugs",
+            "column": "use_frequency",
+            "field": "dosage",
+            "kind": "copied",
+            "rule": "",
+            "transform": "",
+            "why": ""
+        },
+        {
+            "model": "App\\Models\\Inventory\\Product",
+            "v3_table": "inv_products",
+            "table": "drugs",
+            "column": "price",
+            "field": "selling_price",
+            "kind": "copied",
+            "rule": "",
+            "transform": "",
+            "why": ""
+        },
+        {
+            "model": "App\\Models\\Oncology\\Diagnosis",
+            "v3_table": "diagnoses",
+            "table": "diagnoses",
+            "column": "patient",
+            "field": "patient_id",
+            "kind": "copied",
+            "rule": "",
+            "transform": "",
+            "why": ""
+        },
+        {
+            "model": "App\\Models\\Oncology\\Diagnosis",
+            "v3_table": "diagnoses",
+            "table": "diagnoses",
+            "column": "code",
+            "field": "topography_code",
+            "kind": "copied",
+            "rule": "",
+            "transform": "",
+            "why": ""
+        },
+        {
+            "model": "App\\Models\\PatientEvaluation\\Investigation",
+            "v3_table": "investigations",
+            "table": "labs",
+            "column": "patient",
+            "field": "patient_id",
+            "kind": "copied",
+            "rule": "",
+            "transform": "",
+            "why": ""
+        },
+        {
+            "model": "App\\Models\\PatientEvaluation\\Investigation",
+            "v3_table": "investigations",
+            "table": "labs",
+            "column": "visit",
+            "field": "visit",
+            "kind": "copied",
+            "rule": "",
+            "transform": "",
+            "why": ""
+        },
+        {
+            "model": "App\\Models\\PatientEvaluation\\Investigation",
+            "v3_table": "investigations",
+            "table": "labs",
+            "column": "ordered_by",
+            "field": "user",
+            "kind": "copied",
+            "rule": "",
+            "transform": "",
+            "why": ""
+        },
+        {
+            "model": "App\\Models\\PatientEvaluation\\Investigation",
+            "v3_table": "investigations",
+            "table": "labs",
+            "column": "bill_id",
+            "field": "invoiced",
+            "kind": "copied",
+            "rule": "",
+            "transform": "",
+            "why": ""
+        },
+        {
+            "model": "App\\Models\\PatientEvaluation\\Investigation",
+            "v3_table": "investigations",
+            "table": "labs",
+            "column": "worked_on_by",
+            "field": "performing_doctor",
+            "kind": "copied",
+            "rule": "",
+            "transform": "",
+            "why": ""
+        },
+        {
+            "model": "App\\Models\\PatientEvaluation\\Investigation",
+            "v3_table": "investigations",
+            "table": "labs",
+            "column": "results",
+            "field": "result",
+            "kind": "copied",
+            "rule": "",
+            "transform": "",
+            "why": ""
+        },
+        {
+            "model": "App\\Models\\PatientEvaluation\\Prescription",
+            "v3_table": "prescriptions",
+            "table": "prescriptions",
+            "column": "visit",
+            "field": "visit",
+            "kind": "copied",
+            "rule": "",
+            "transform": "",
+            "why": ""
+        },
+        {
+            "model": "App\\Models\\PatientEvaluation\\Prescription",
+            "v3_table": "prescriptions",
+            "table": "prescriptions",
+            "column": "user_id",
+            "field": "user",
+            "kind": "copied",
+            "rule": "",
+            "transform": "",
+            "why": ""
+        },
+        {
+            "model": "App\\Models\\PatientEvaluation\\Prescription",
+            "v3_table": "prescriptions",
+            "table": "prescriptions",
+            "column": "filled",
+            "field": "dispensed",
+            "kind": "copied",
+            "rule": "",
+            "transform": "",
+            "why": ""
+        },
+        {
+            "model": "App\\Models\\PatientEvaluation\\PrescriptionAdministration",
+            "v3_table": "prescription_administrations",
+            "table": "medications",
+            "column": "visit",
+            "field": "visit_id",
+            "kind": "copied",
+            "rule": "",
+            "transform": "",
+            "why": ""
+        },
+        {
+            "model": "App\\Models\\PatientEvaluation\\PrescriptionAdministration",
+            "v3_table": "prescription_administrations",
+            "table": "medications",
+            "column": "medication",
+            "field": "drug_name",
+            "kind": "copied",
+            "rule": "",
+            "transform": "",
+            "why": ""
+        },
+        {
+            "model": "App\\Models\\PatientEvaluation\\PrescriptionAdministration",
+            "v3_table": "prescription_administrations",
+            "table": "medications",
+            "column": "user",
+            "field": "user_id",
+            "kind": "copied",
+            "rule": "",
+            "transform": "",
+            "why": ""
+        },
+        {
+            "model": "App\\Models\\PatientEvaluation\\Procedure",
+            "v3_table": "procedures",
+            "table": "services",
+            "column": "name",
+            "field": "name",
+            "kind": "copied",
+            "rule": "",
+            "transform": "",
+            "why": ""
+        },
+        {
+            "model": "App\\Models\\PatientEvaluation\\Procedure",
+            "v3_table": "procedures",
+            "table": "services",
+            "column": "description",
+            "field": "description",
+            "kind": "copied",
+            "rule": "",
+            "transform": "",
+            "why": ""
+        },
+        {
+            "model": "App\\Models\\PatientEvaluation\\Procedure",
+            "v3_table": "procedures",
+            "table": "services",
+            "column": "department",
+            "field": "departmentCode",
+            "kind": "looked up in another table",
+            "rule": "{\"key\":\"id\",\"table\":\"departments\",\"value\":\"name\",\"column\":\"department\"}",
+            "transform": "",
+            "why": "`department` holds codes of the list departments: its word (name) is used, not the code"
+        },
+        {
+            "model": "App\\Models\\PatientEvaluation\\Symptom",
+            "v3_table": "symptoms",
+            "table": "symptoms",
+            "column": "details",
+            "field": "name",
+            "kind": "copied",
+            "rule": "",
+            "transform": "",
+            "why": ""
+        },
+        {
+            "model": "App\\Models\\PatientEvaluation\\Vital",
+            "v3_table": "vitals",
+            "table": "cardexes",
+            "column": "visit",
+            "field": "visit_id",
+            "kind": "copied",
+            "rule": "",
+            "transform": "",
+            "why": ""
+        },
+        {
+            "model": "App\\Models\\PatientEvaluation\\Vital",
+            "v3_table": "vitals",
+            "table": "cardexes",
+            "column": "cardex",
+            "field": "notes",
+            "kind": "copied",
+            "rule": "",
+            "transform": "",
+            "why": ""
+        },
+        {
+            "model": "App\\Models\\PatientEvaluation\\Vital",
+            "v3_table": "vitals",
+            "table": "cardexes",
+            "column": "nurse",
+            "field": "user",
+            "kind": "copied",
+            "rule": "",
+            "transform": "",
+            "why": ""
+        },
+        {
+            "model": "App\\Models\\PatientEvaluation\\Vital",
+            "v3_table": "vitals",
+            "table": "cardexes",
+            "column": "created_at",
+            "field": "recorded_at",
+            "kind": "copied",
+            "rule": "",
+            "transform": "",
+            "why": ""
+        },
+        {
+            "model": "App\\Models\\PatientEvaluation\\Vital",
+            "v3_table": "vitals",
+            "table": "vitals",
+            "column": "visit",
+            "field": "visit_id",
+            "kind": "copied",
+            "rule": "",
+            "transform": "",
+            "why": ""
+        },
+        {
+            "model": "App\\Models\\PatientEvaluation\\Vital",
+            "v3_table": "vitals",
+            "table": "vitals",
+            "column": "patient",
+            "field": "patient_id",
+            "kind": "copied",
+            "rule": "",
+            "transform": "",
+            "why": ""
+        },
+        {
+            "model": "App\\Models\\PatientEvaluation\\Vital",
+            "v3_table": "vitals",
+            "table": "vitals",
+            "column": "temp",
+            "field": "temperature",
+            "kind": "copied",
+            "rule": "",
+            "transform": "",
+            "why": ""
+        },
+        {
+            "model": "App\\Models\\PatientEvaluation\\Vital",
+            "v3_table": "vitals",
+            "table": "vitals",
+            "column": "systolic",
+            "field": "systolic_bp",
+            "kind": "copied",
+            "rule": "",
+            "transform": "",
+            "why": ""
+        },
+        {
+            "model": "App\\Models\\PatientEvaluation\\Vital",
+            "v3_table": "vitals",
+            "table": "vitals",
+            "column": "diastolic",
+            "field": "diastolic_bp",
+            "kind": "copied",
+            "rule": "",
+            "transform": "",
+            "why": ""
+        },
+        {
+            "model": "App\\Models\\PatientEvaluation\\Vital",
+            "v3_table": "vitals",
+            "table": "vitals",
+            "column": "pulse",
+            "field": "pulse",
+            "kind": "copied",
+            "rule": "",
+            "transform": "",
+            "why": ""
+        },
+        {
+            "model": "App\\Models\\PatientEvaluation\\Vital",
+            "v3_table": "vitals",
+            "table": "vitals",
+            "column": "weight",
+            "field": "weight",
+            "kind": "copied",
+            "rule": "",
+            "transform": "",
+            "why": ""
+        },
+        {
+            "model": "App\\Models\\PatientEvaluation\\Vital",
+            "v3_table": "vitals",
+            "table": "vitals",
+            "column": "height",
+            "field": "height",
+            "kind": "copied",
+            "rule": "",
+            "transform": "",
+            "why": ""
+        },
+        {
+            "model": "App\\Models\\PatientEvaluation\\Vital",
+            "v3_table": "vitals",
+            "table": "vitals",
+            "column": "bmi",
+            "field": "bmi",
+            "kind": "copied",
+            "rule": "",
+            "transform": "",
+            "why": ""
+        },
+        {
+            "model": "App\\Models\\PatientEvaluation\\Vital",
+            "v3_table": "vitals",
+            "table": "vitals",
+            "column": "lmp",
+            "field": "lmp",
+            "kind": "copied",
+            "rule": "",
+            "transform": "",
+            "why": ""
+        },
+        {
+            "model": "App\\Models\\PatientEvaluation\\Vital",
+            "v3_table": "vitals",
+            "table": "vitals",
+            "column": "user_id",
+            "field": "user",
+            "kind": "copied",
+            "rule": "",
+            "transform": "",
+            "why": ""
+        },
+        {
+            "model": "App\\Models\\PatientEvaluation\\Vital",
+            "v3_table": "vitals",
+            "table": "vitals",
+            "column": "created_at",
+            "field": "recorded_at",
+            "kind": "copied",
+            "rule": "",
+            "transform": "",
+            "why": ""
+        },
+        {
+            "model": "App\\Models\\Reception\\Patient",
+            "v3_table": "patients",
+            "table": "patients",
+            "column": "surname",
+            "field": "last_name",
+            "kind": "copied",
+            "rule": "",
+            "transform": "",
+            "why": ""
+        },
+        {
+            "model": "App\\Models\\Reception\\Patient",
+            "v3_table": "patients",
+            "table": "patients",
+            "column": "dob",
+            "field": "dob",
+            "kind": "copied",
+            "rule": "",
+            "transform": "",
+            "why": ""
+        },
+        {
+            "model": "App\\Models\\Reception\\Patient",
+            "v3_table": "patients",
+            "table": "patients",
+            "column": "gender",
+            "field": "gender",
+            "kind": "copied",
+            "rule": "",
+            "transform": "",
+            "why": ""
+        },
+        {
+            "model": "App\\Models\\Reception\\Patient",
+            "v3_table": "patients",
+            "table": "patients",
+            "column": "marital_status",
+            "field": "marital_status",
+            "kind": "copied",
+            "rule": "",
+            "transform": "",
+            "why": ""
+        },
+        {
+            "model": "App\\Models\\Reception\\Patient",
+            "v3_table": "patients",
+            "table": "patients",
+            "column": "blood_group",
+            "field": "blood_group",
+            "kind": "copied",
+            "rule": "",
+            "transform": "",
+            "why": ""
+        },
+        {
+            "model": "App\\Models\\Reception\\Patient",
+            "v3_table": "patients",
+            "table": "patients",
+            "column": "occupation",
+            "field": "occupation",
+            "kind": "copied",
+            "rule": "",
+            "transform": "",
+            "why": ""
+        },
+        {
+            "model": "App\\Models\\Reception\\Patient",
+            "v3_table": "patients",
+            "table": "patients",
+            "column": "phone",
+            "field": "mobile",
+            "kind": "copied",
+            "rule": "",
+            "transform": "",
+            "why": ""
+        },
+        {
+            "model": "App\\Models\\Reception\\Patient",
+            "v3_table": "patients",
+            "table": "patients",
+            "column": "address",
+            "field": "address",
+            "kind": "copied",
+            "rule": "",
+            "transform": "",
+            "why": ""
+        },
+        {
+            "model": "App\\Models\\Reception\\Patient",
+            "v3_table": "patients",
+            "table": "patients",
+            "column": "allergies",
+            "field": "allergies",
+            "kind": "copied",
+            "rule": "",
+            "transform": "",
+            "why": ""
+        },
+        {
+            "model": "App\\Models\\Reception\\Patient",
+            "v3_table": "patients",
+            "table": "patients",
+            "column": "next_of_kin",
+            "field": "emergency_contact_name",
+            "kind": "copied",
+            "rule": "",
+            "transform": "",
+            "why": ""
+        },
+        {
+            "model": "App\\Models\\Reception\\Patient",
+            "v3_table": "patients",
+            "table": "patients",
+            "column": "next_of_kin_phone",
+            "field": "emergency_contact_phone",
+            "kind": "copied",
+            "rule": "",
+            "transform": "",
+            "why": ""
+        },
+        {
+            "model": "App\\Models\\Reception\\Patient",
+            "v3_table": "patients",
+            "table": "patients",
+            "column": "created_at",
+            "field": "registration_date",
+            "kind": "copied",
+            "rule": "",
+            "transform": "",
+            "why": ""
+        },
+        {
+            "model": "App\\Models\\Reception\\Patient",
+            "v3_table": "patients",
+            "table": "patients",
+            "column": "othernames",
+            "field": "first_name",
+            "kind": "one column divided",
+            "rule": "{\"part\":1,\"column\":\"othernames\",\"delimiter\":\" \"}",
+            "transform": "",
+            "why": "`othernames` holds the whole name; piece 1 of it is the first_name"
+        },
+        {
+            "model": "App\\Models\\Reception\\Patient",
+            "v3_table": "patients",
+            "table": "patients",
+            "column": "othernames",
+            "field": "middle_name",
+            "kind": "one column divided",
+            "rule": "{\"part\":\"rest\",\"column\":\"othernames\",\"delimiter\":\" \"}",
+            "transform": "",
+            "why": "`othernames` holds the whole name; piece `rest` of it is the middle_name"
+        },
+        {
+            "model": "App\\Models\\Reception\\Visit",
+            "v3_table": "visits",
+            "table": "visits",
+            "column": "patient",
+            "field": "patient_id",
+            "kind": "copied",
+            "rule": "",
+            "transform": "",
+            "why": ""
+        },
+        {
+            "model": "App\\Models\\Reception\\Visit",
+            "v3_table": "visits",
+            "table": "visits",
+            "column": "created_at",
+            "field": "visit_date",
+            "kind": "copied",
+            "rule": "",
+            "transform": "",
+            "why": ""
+        },
+        {
+            "model": "App\\Models\\Reception\\Visit",
+            "v3_table": "visits",
+            "table": "visits",
+            "column": "payment_method",
+            "field": "payment_mode",
+            "kind": "copied",
+            "rule": "",
+            "transform": "",
+            "why": ""
+        },
+        {
+            "model": "App\\Models\\Reception\\Visit",
+            "v3_table": "visits",
+            "table": "visits",
+            "column": "department",
+            "field": "department_id",
+            "kind": "copied",
+            "rule": "",
+            "transform": "",
+            "why": ""
+        },
+        {
+            "model": "App\\Models\\Reception\\Visit",
+            "v3_table": "visits",
+            "table": "visits",
+            "column": "status",
+            "field": "status",
+            "kind": "copied",
+            "rule": "",
+            "transform": "",
+            "why": ""
+        },
+        {
+            "model": "App\\Models\\Reception\\Visit",
+            "v3_table": "visits",
+            "table": "visits",
+            "column": "invoice_id",
+            "field": "clinic",
+            "kind": "looked up in another table",
+            "rule": "{\"key\":\"id\",\"table\":\"invoices\",\"value\":\"patient_id\",\"column\":\"invoice_id\"}",
+            "transform": "",
+            "why": "taken from invoices (its `patient_id`, which points at patients) through `invoice_id`"
+        }
+    ],
+    "special_actions": [
+        {
+            "type": "cross-field",
+            "v3_model": "App\\Models\\Finance\\Payment",
+            "v3_field": "patient_id",
+            "source_table": "payments",
+            "source_columns": [
+                "invoice_no"
+            ],
+            "rule": "{\"key\":\"id\",\"table\":\"invoices\",\"value\":\"patient_id\",\"column\":\"invoice_no\"}",
+            "why": "taken from invoices (its `patient_id`, which points at patients) through `invoice_no`",
+            "made_by": "AI",
+            "examples": []
+        },
+        {
+            "type": "codes converted",
+            "v3_model": "App\\Models\\Inpatient\\Bed",
+            "v3_field": "is_available",
+            "source_table": "beds",
+            "source_columns": [
+                "status"
+            ],
+            "rule": "{\"map\":{\"available\":\"1\"},\"column\":\"status\",\"default\":null}",
+            "why": "codes of `status` converted to v3 values (available → 1)",
+            "made_by": "AI",
+            "examples": [
+                {
+                    "before": "status: available",
+                    "after": "1"
+                },
+                {
+                    "before": "status: available",
+                    "after": "1"
+                },
+                {
+                    "before": "status: available",
+                    "after": "1"
+                }
+            ]
+        },
+        {
+            "type": "cross-field",
+            "v3_model": "App\\Models\\PatientEvaluation\\Procedure",
+            "v3_field": "departmentCode",
+            "source_table": "services",
+            "source_columns": [
+                "department"
+            ],
+            "rule": "{\"key\":\"id\",\"table\":\"departments\",\"value\":\"name\",\"column\":\"department\"}",
+            "why": "`department` holds codes of the list departments: its word (name) is used, not the code",
+            "made_by": "AI",
+            "examples": []
+        },
+        {
+            "type": "divide",
+            "v3_model": "App\\Models\\Reception\\Patient",
+            "v3_field": "first_name",
+            "source_table": "patients",
+            "source_columns": [
+                "othernames"
+            ],
+            "rule": "{\"part\":1,\"column\":\"othernames\",\"delimiter\":\" \"}",
+            "why": "`othernames` holds the whole name; piece 1 of it is the first_name",
+            "made_by": "AI",
+            "examples": [
+                {
+                    "before": "othernames: Rebecca",
+                    "after": "Rebecca"
+                },
+                {
+                    "before": "othernames: Rhoda",
+                    "after": "Rhoda"
+                },
+                {
+                    "before": "othernames: Matoke",
+                    "after": "Matoke"
+                }
+            ]
+        },
+        {
+            "type": "divide",
+            "v3_model": "App\\Models\\Reception\\Patient",
+            "v3_field": "middle_name",
+            "source_table": "patients",
+            "source_columns": [
+                "othernames"
+            ],
+            "rule": "{\"part\":\"rest\",\"column\":\"othernames\",\"delimiter\":\" \"}",
+            "why": "`othernames` holds the whole name; piece `rest` of it is the middle_name",
+            "made_by": "AI",
+            "examples": [
+                {
+                    "before": "othernames: Rebecca",
+                    "after": "(empty)"
+                },
+                {
+                    "before": "othernames: Rhoda",
+                    "after": "(empty)"
+                },
+                {
+                    "before": "othernames: Matoke",
+                    "after": "(empty)"
+                }
+            ]
+        },
+        {
+            "type": "cross-field",
+            "v3_model": "App\\Models\\Reception\\Visit",
+            "v3_field": "clinic",
+            "source_table": "visits",
+            "source_columns": [
+                "invoice_id"
+            ],
+            "rule": "{\"key\":\"id\",\"table\":\"invoices\",\"value\":\"patient_id\",\"column\":\"invoice_id\"}",
+            "why": "taken from invoices (its `patient_id`, which points at patients) through `invoice_id`",
+            "made_by": "AI",
+            "examples": []
+        }
+    ]
+}
