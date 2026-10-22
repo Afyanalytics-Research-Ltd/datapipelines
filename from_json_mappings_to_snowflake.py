@@ -89,12 +89,23 @@ def _rule(f: dict) -> dict:
     """A field's "rule" (JSON text or object) — {} when there is none."""
     rule = f.get("rule")
     if isinstance(rule, dict):
-        return rule
-    try:
-        return json.loads(rule) if rule else {}
-    except (TypeError, ValueError):
-        log.warning("%s.%s → %s: unreadable rule %r — copied as is", f.get("table"), f.get("column"), f.get("field"), rule)
-        return {}
+        rule = dict(rule)
+    else:
+        try:
+            rule = json.loads(rule) if rule else {}
+        except (TypeError, ValueError):
+            log.warning("%s.%s → %s: unreadable rule %r — copied as is", f.get("table"), f.get("column"), f.get("field"), rule)
+            return {}
+    # newer exports write a lookup flat: {"table": "invoices", "key": "id",
+    # "value": "patient_id", "column": "invoice_no"} = invoices.patient_id of
+    # the row whose id equals this row's invoice_no
+    if "lookup" not in rule and {"table", "key", "value"} <= rule.keys():
+        rule["lookup"] = {"table": rule.pop("table"), "match": rule.pop("key"), "value": rule.pop("value")}
+    # the field's "transform" (lowercase …) is one more text step
+    transform = str(f.get("transform") or "").strip().lower()
+    if transform in _STEPS:
+        rule["steps"] = [*rule.get("steps", []), {"op": transform}]
+    return rule
 
 
 _STEPS = {"lowercase": lambda s: s.lower(), "uppercase": lambda s: s.upper(), "trim": lambda s: s.strip(),
@@ -143,9 +154,17 @@ def _lookup(spec: dict, value):
 def _apply_rule(rule: dict, value):
     """Apply a mapping rule to one value:
       {"map": {"0": 1, "1": 0}, "default": …}  code conversion (unknown codes → default, else unchanged)
-      {"steps": [{"op": "lowercase"}, …]}     text steps: lowercase, uppercase, trim, slug"""
+      {"steps": [{"op": "lowercase"}, …]}     text steps: lowercase, uppercase, trim, slug
+      {"part": 1 | "rest", "delimiter": " "}  one column divided: the nth piece (from 1), or all after the first"""
     if not rule or value is None:
         return value
+    if "part" in rule and isinstance(value, str):
+        pieces = value.split(rule.get("delimiter") or None)
+        part = rule["part"]
+        if part == "rest":
+            value = (rule.get("delimiter") or " ").join(pieces[1:]) or None
+        else:
+            value = pieces[int(part) - 1] if 0 < int(part) <= len(pieces) else None
     if "map" in rule:
         table = {str(k).lower(): v for k, v in rule["map"].items()}
         value = table.get(str(value).strip().lower(), rule.get("default", value))
@@ -205,15 +224,21 @@ class V3Model:
                 continue                      # the source id stays the record's id
             rule = _rule(f)
             column = rule.get("column") or column
-            # the source column, else a name the extraction tool already
-            # renamed it to: those listed under "also", then the V3 field
-            # name itself (last — the tool may fill that name from a
-            # different column of its own)
-            value = next((row.get(k) for k in (column, *f.get("also", ()), target)
-                          if row.get(k) is not None), None)
-            if "lookup" in rule:
-                value = _lookup(rule["lookup"], value)
-            value = _apply_rule(rule, value)
+            if (rule.keys() & {"lookup", "map", "part"}) and target != column and row.get(target) is not None:
+                # the extraction tool already worked this field out (lookup,
+                # code conversion, divide) — applying the rule again would
+                # e.g. look a patient id up as an invoice number
+                value = _apply_rule({"steps": rule.get("steps", [])}, row[target])
+            else:
+                # the source column, else a name the extraction tool already
+                # renamed it to: those listed under "also", then the V3 field
+                # name itself (last — the tool may fill that name from a
+                # different column of its own)
+                value = next((row.get(k) for k in (column, *f.get("also", ()), target)
+                              if row.get(k) is not None), None)
+                if "lookup" in rule:
+                    value = _lookup(rule["lookup"], value)
+                value = _apply_rule(rule, value)
             # several columns mapped to one field (e.g. visit_id → visit AND
             # id → visit): the first one, in mapping order, with a value wins
             if out.get(target) is None:

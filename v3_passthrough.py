@@ -80,6 +80,7 @@ LINKS: dict[str, str] = {
     "appointment_category_id": "appointment_categories", "diagnosis_code_id": "icd11_codes",
     "evaluation_procedure_id": "procedures", "procedure_id": "procedures",
     "evaluation_payment_id": "payments",
+    "ward_id": "inp_wards", "admission_id": "inp_admissions",
     # parents this export never loads → always posted empty
     "invoice_id": "invoices", "unit_id": "inv_units", "payment_term_id": "inv_payment_terms",
     "sale_id": "inv_sales", "batch_id": "inv_batches", "receipt_id": "receipts",
