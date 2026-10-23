@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -47,6 +48,13 @@ BASE = ["patients", "visits", "catalogue", "products", "payments", "appointments
 
 
 TARGETS = ["gyno", "gyno159"]   # migrate org 6 / production org 159
+
+
+def step_names(raw) -> list[str]:
+    """The trigger form's array box takes one item per line, but a pasted '["a", "b"]' or 'a, b' arrives as one
+    item — split all of those into plain step names."""
+    items = raw if isinstance(raw, list) else [raw]
+    return [s for item in items for s in re.split(r"[\s,\[\]\"']+", str(item)) if s]
 
 
 def run_steps(steps: list[str], *, target: str, only_missing: bool, dry_run: bool, workers: int, limit: int,
@@ -114,7 +122,7 @@ def gyno_to_v3():
         if not p["steps"]:
             log.info("no steps listed — the groups run")
             return {}
-        return run_steps(list(p["steps"]), **args())
+        return run_steps(step_names(p["steps"]), **args())
 
     @task(execution_timeout=timedelta(hours=8))
     def base() -> dict:
