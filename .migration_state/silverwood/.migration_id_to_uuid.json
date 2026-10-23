@@ -1,0 +1,8 @@
+{
+  "id_to_uuid": {
+    "users": {}
+  },
+  "alias_to_table": {
+    "users": "users"
+  }
+}

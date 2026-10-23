@@ -52,6 +52,7 @@ import mimetypes
 import logging
 import os
 import re
+import secrets
 import sys
 import threading
 import time
@@ -394,8 +395,8 @@ NAMESPACE_MAP: dict[str, dict] = {
     r"Ignite\Settings\Entities\CategoryFilter":              {"v3": r"App\Models\CategoryFilter",              "transform": "generic"},
     r"Ignite\Settings\Entities\ApprovalLevels":              {"v3": r"App\Models\ApprovalLevel",               "transform": "generic"},
     r"Ignite\Settings\Entities\ApprovalLevel":               {"v3": r"App\Models\ApprovalLevel",               "transform": "generic"},
-    r"Ignite\Settings\Entities\TreatmentActions":            {"v3": r"App\Models\TreatmentAction",             "transform": "generic"},
-    r"Ignite\Settings\Entities\TreatmentAction":             {"v3": r"App\Models\TreatmentAction",             "transform": "generic"},
+    r"Ignite\Settings\Entities\TreatmentActions":            {"v3": r"App\Models\TreatmentAction",             "transform": "settings_treatment_action"},
+    r"Ignite\Settings\Entities\TreatmentAction":             {"v3": r"App\Models\TreatmentAction",             "transform": "settings_treatment_action"},
     # Insurance chain: company → scheme → rebate
     r"Ignite\Settings\Entities\Insurances":                  {"v3": r"App\Models\InsuranceCompany",            "transform": "settings_insurance"},
     r"Ignite\Settings\Entities\Insurance":                   {"v3": r"App\Models\InsuranceCompany",            "transform": "settings_insurance"},
@@ -420,14 +421,13 @@ NAMESPACE_MAP: dict[str, dict] = {
     # Evaluation reference / lookup tables
     r"Ignite\Evaluation\Entities\DiagnosisCodes":            {"v3": r"App\Models\DiagnosisCode",               "transform": "generic"},
     r"Ignite\Evaluation\Entities\DiagnosisCode":             {"v3": r"App\Models\DiagnosisCode",               "transform": "generic"},
-    r"Ignite\Evaluation\Entities\CriticalValues":            {"v3": r"App\Models\CriticalValue",               "transform": "generic"},
-    r"Ignite\Evaluation\Entities\CriticalValue":             {"v3": r"App\Models\CriticalValue",               "transform": "generic"},
+    # CriticalValues, TemplateLab: v3_extra_mappings (their procedure links need the id map)
     r"Ignite\Evaluation\Entities\Icd10Types":                {"v3": r"App\Models\Icd10Type",                   "transform": "generic"},
     r"Ignite\Evaluation\Entities\Icd10Type":                 {"v3": r"App\Models\Icd10Type",                   "transform": "generic"},
-    r"Ignite\Evaluation\Entities\Icd10Categories":           {"v3": r"App\Models\Icd10Category",               "transform": "generic"},
-    r"Ignite\Evaluation\Entities\Icd10Category":             {"v3": r"App\Models\Icd10Category",               "transform": "generic"},
-    r"Ignite\Evaluation\Entities\Icd10Subcategories":        {"v3": r"App\Models\Icd10Subcategory",            "transform": "generic"},
-    r"Ignite\Evaluation\Entities\Icd10Subcategory":          {"v3": r"App\Models\Icd10Subcategory",            "transform": "generic"},
+    r"Ignite\Evaluation\Entities\Icd10Categories":           {"v3": r"App\Models\Icd10Category",               "transform": "eval_icd10_range"},
+    r"Ignite\Evaluation\Entities\Icd10Category":             {"v3": r"App\Models\Icd10Category",               "transform": "eval_icd10_range"},
+    r"Ignite\Evaluation\Entities\Icd10Subcategories":        {"v3": r"App\Models\Icd10Subcategory",            "transform": "eval_icd10_range"},
+    r"Ignite\Evaluation\Entities\Icd10Subcategory":          {"v3": r"App\Models\Icd10Subcategory",            "transform": "eval_icd10_range"},
     r"Ignite\Evaluation\Entities\BioReferenceRanges":        {"v3": r"App\Models\BioReferenceRange",           "transform": "generic"},
     r"Ignite\Evaluation\Entities\BioReferenceRange":         {"v3": r"App\Models\BioReferenceRange",           "transform": "generic"},
     r"Ignite\Evaluation\Entities\LabTestCategories":         {"v3": r"App\Models\LabTestCategory",             "transform": "generic"},
@@ -452,8 +452,6 @@ NAMESPACE_MAP: dict[str, dict] = {
     r"Ignite\Evaluation\Entities\ProcedureCategoryTemplate": {"v3": r"App\Models\ProcedureCategoryTemplate",   "transform": "generic"},
     r"Ignite\Evaluation\Entities\ProcedureTemplates":        {"v3": r"App\Models\ProcedureTemplate",           "transform": "generic"},
     r"Ignite\Evaluation\Entities\ProcedureTemplate":         {"v3": r"App\Models\ProcedureTemplate",           "transform": "generic"},
-    r"Ignite\Evaluation\Entities\TemplateLabs":              {"v3": r"App\Models\TemplateLab",                 "transform": "generic"},
-    r"Ignite\Evaluation\Entities\TemplateLab":               {"v3": r"App\Models\TemplateLab",                 "transform": "generic"},
 
     # Finance config (must precede transactional finance)
     r"Ignite\Finance\Entities\Banks":                        {"v3": r"App\Models\Bank",                        "transform": "generic"},
@@ -466,14 +464,14 @@ NAMESPACE_MAP: dict[str, dict] = {
     r"Ignite\Finance\Entities\TaxCategory":                  {"v3": r"App\Models\TaxCategory",                 "transform": "generic"},
     r"Ignite\Finance\Entities\GlAccountTypes":               {"v3": r"App\Models\GlAccountType",               "transform": "generic"},
     r"Ignite\Finance\Entities\GlAccountType":                {"v3": r"App\Models\GlAccountType",               "transform": "generic"},
-    r"Ignite\Finance\Entities\GlAccountGroups":              {"v3": r"App\Models\GlAccountGroup",              "transform": "generic"},
-    r"Ignite\Finance\Entities\GlAccountGroup":               {"v3": r"App\Models\GlAccountGroup",              "transform": "generic"},
+    r"Ignite\Finance\Entities\GlAccountGroups":              {"v3": r"App\Models\GlAccountGroup",              "transform": "finance_gl_account_group"},
+    r"Ignite\Finance\Entities\GlAccountGroup":               {"v3": r"App\Models\GlAccountGroup",              "transform": "finance_gl_account_group"},
     r"Ignite\Finance\Entities\Charges":                      {"v3": r"App\Models\Charge",                      "transform": "generic"},
     r"Ignite\Finance\Entities\Charge":                       {"v3": r"App\Models\Charge",                      "transform": "generic"},
 
     # Inventory config: units → categories (self-ref) → suppliers → stores
-    r"Ignite\Inventory\Entities\Units":                      {"v3": r"App\Models\Unit",                        "transform": "generic"},
-    r"Ignite\Inventory\Entities\Unit":                       {"v3": r"App\Models\Unit",                        "transform": "generic"},
+    r"Ignite\Inventory\Entities\Units":                      {"v3": r"App\Models\Unit",                        "transform": "inventory_unit"},
+    r"Ignite\Inventory\Entities\Unit":                       {"v3": r"App\Models\Unit",                        "transform": "inventory_unit"},
     r"Ignite\Inventory\Entities\Categories":                 {"v3": r"App\Models\ProductCategory",             "transform": "inventory_category"},
     r"Ignite\Inventory\Entities\Category":                   {"v3": r"App\Models\ProductCategory",             "transform": "inventory_category"},
     r"Ignite\Inventory\Entities\Suppliers":                  {"v3": r"App\Models\Supplier",                    "transform": "generic"},
@@ -521,8 +519,8 @@ NAMESPACE_MAP: dict[str, dict] = {
     r"Ignite\Reception\Entities\PatientNextOfKin":           {"v3": r"App\Models\PatientNextOfKin",            "transform": "generic"},
     r"Ignite\Reception\Entities\PatientDocuments":           {"v3": r"App\Models\PatientDocument",             "transform": "reception_patient_document"},
     r"Ignite\Reception\Entities\PatientDocument":            {"v3": r"App\Models\PatientDocument",             "transform": "reception_patient_document"},
-    r"Ignite\Reception\Entities\PatientDependants":          {"v3": r"App\Models\PatientDependant",            "transform": "generic"},
-    r"Ignite\Reception\Entities\PatientDependant":           {"v3": r"App\Models\PatientDependant",            "transform": "generic"},
+    r"Ignite\Reception\Entities\PatientDependants":          {"v3": r"App\Models\PatientDependant",            "transform": "reception_patient_dependant"},
+    r"Ignite\Reception\Entities\PatientDependant":           {"v3": r"App\Models\PatientDependant",            "transform": "reception_patient_dependant"},
     r"Ignite\Reception\Entities\PatientGuarantors":          {"v3": r"App\Models\PatientGuarantor",            "transform": "generic"},
     r"Ignite\Reception\Entities\PatientGuarantor":           {"v3": r"App\Models\PatientGuarantor",            "transform": "generic"},
     r"Ignite\Reception\Entities\PatientFollowups":           {"v3": r"App\Models\PatientFollowup",             "transform": "generic"},
@@ -550,6 +548,9 @@ NAMESPACE_MAP: dict[str, dict] = {
     r"Ignite\Reception\Entities\Referral":                   {"v3": r"App\Models\Referral",                    "transform": "generic"},
 
     # Inventory transactional (after config)
+    # V2 stock ledger (one row per stock change) → V3 inventory stock movements
+    r"Ignite\Inventory\Entities\StockMovement":              {"v3": r"App\Models\StockMovement",               "transform": "inventory_stock_movement"},
+    r"Ignite\Inventory\Entities\StockMovements":             {"v3": r"App\Models\StockMovement",               "transform": "inventory_stock_movement"},
     r"Ignite\Inventory\Entities\Products":                   {"v3": r"App\Models\Product",                     "transform": "inventory_product"},
     r"Ignite\Inventory\Entities\Product":                    {"v3": r"App\Models\Product",                     "transform": "inventory_product"},
     r"Ignite\Inventory\Entities\BatchPurchases":             {"v3": r"App\Models\Batch",                       "transform": "inventory_batch"},
@@ -565,10 +566,10 @@ NAMESPACE_MAP: dict[str, dict] = {
     r"Ignite\Theatre\Entities\Theatre":                      {"v3": r"App\Models\Theatre",                     "transform": "theatre_theatre"},
     r"Ignite\Theatre\Entities\TheatreBookings":              {"v3": r"App\Models\TheatreBooking",              "transform": "theatre_booking"},
     r"Ignite\Theatre\Entities\TheatreBooking":               {"v3": r"App\Models\TheatreBooking",              "transform": "theatre_booking"},
-    r"Ignite\Theatre\Entities\TheatreSchedules":             {"v3": r"App\Models\TheatreSchedule",             "transform": "generic"},
-    r"Ignite\Theatre\Entities\TheatreSchedule":              {"v3": r"App\Models\TheatreSchedule",             "transform": "generic"},
-    r"Ignite\Theatre\Entities\TheatreOperations":            {"v3": r"App\Models\TheatreOperation",            "transform": "generic"},
-    r"Ignite\Theatre\Entities\TheatreOperation":             {"v3": r"App\Models\TheatreOperation",            "transform": "generic"},
+    r"Ignite\Theatre\Entities\TheatreSchedules":             {"v3": r"App\Models\TheatreSchedule",             "transform": "theatre_schedule"},
+    r"Ignite\Theatre\Entities\TheatreSchedule":              {"v3": r"App\Models\TheatreSchedule",             "transform": "theatre_schedule"},
+    r"Ignite\Theatre\Entities\TheatreOperations":            {"v3": r"App\Models\TheatreOperation",            "transform": "theatre_operation"},
+    r"Ignite\Theatre\Entities\TheatreOperation":             {"v3": r"App\Models\TheatreOperation",            "transform": "theatre_operation"},
 
     # ── TIER 3: Inpatient transactional ──────────────────────────────────────
     # Order: wards → beds → admission_requests → admissions
@@ -589,8 +590,8 @@ NAMESPACE_MAP: dict[str, dict] = {
     r"Ignite\Evaluation\Entities\DoctorNote":                {"v3": r"App\Models\DoctorNote",                  "transform": "evaluation_doctor_note"},
     r"Ignite\Evaluation\Entities\Prescriptions":             {"v3": r"App\Models\Prescription",                "transform": "evaluation_prescription"},
     r"Ignite\Evaluation\Entities\Prescription":              {"v3": r"App\Models\Prescription",                "transform": "evaluation_prescription"},
-    r"Ignite\Evaluation\Entities\ExaminationReviews":        {"v3": r"App\Models\ExaminationReview",           "transform": "generic"},
-    r"Ignite\Evaluation\Entities\ExaminationReview":         {"v3": r"App\Models\ExaminationReview",           "transform": "generic"},
+    r"Ignite\Evaluation\Entities\ExaminationReviews":        {"v3": r"App\Models\ExaminationReview",           "transform": "evaluation_examination_review"},
+    r"Ignite\Evaluation\Entities\ExaminationReview":         {"v3": r"App\Models\ExaminationReview",           "transform": "evaluation_examination_review"},
     r"Ignite\Evaluation\Entities\EyeExams":                  {"v3": r"App\Models\EyeExam",                     "transform": "evaluation_eye_exam"},
     r"Ignite\Evaluation\Entities\EyeExam":                   {"v3": r"App\Models\EyeExam",                     "transform": "evaluation_eye_exam"},
     # Investigations before results (result.investigation_id → investigations.id)
@@ -628,8 +629,10 @@ NAMESPACE_MAP: dict[str, dict] = {
     r"Ignite\Finance\Entities\Waiver":                       {"v3": r"App\Models\Waiver",                      "transform": "generic"},
     r"Ignite\Finance\Entities\Copays":                       {"v3": r"App\Models\Copay",                       "transform": "finance_copay"},
     r"Ignite\Finance\Entities\Copay":                        {"v3": r"App\Models\Copay",                       "transform": "finance_copay"},
-    r"Ignite\Finance\Entities\EvaluationPayments":           {"v3": r"App\Models\EvaluationPayment",           "transform": "finance_eval_payment"},
-    r"Ignite\Finance\Entities\EvaluationPayment":            {"v3": r"App\Models\EvaluationPayment",           "transform": "finance_eval_payment"},
+    # V2 evaluation payments are the receipts (receipt no, amount, date, cashier);
+    # V3 has no EvaluationPayment model — they go to finance-service receipts
+    r"Ignite\Finance\Entities\EvaluationPayments":           {"v3": r"App\Models\Receipt",                     "transform": "finance_receipt"},
+    r"Ignite\Finance\Entities\EvaluationPayment":            {"v3": r"App\Models\Receipt",                     "transform": "finance_receipt"},
     r"Ignite\Finance\Entities\InvoicePayments":              {"v3": r"App\Models\InvoicePayment",              "transform": "generic"},
     r"Ignite\Finance\Entities\InvoicePayment":               {"v3": r"App\Models\InvoicePayment",              "transform": "generic"},
     r"Ignite\Finance\Entities\Vouchers":                     {"v3": r"App\Models\Voucher",                     "transform": "finance_voucher"},
@@ -675,6 +678,15 @@ def _namespace_tier(ns: str) -> int:
 
 # ─── FIELD TRANSFORMS ────────────────────────────────────────────────────────
 
+# Layer 0: values inside an embedded relation blob worth keeping — lifted to a
+# flat field (only if that field is empty) before step 0 strips the blob.
+_PER_KEY_LIFT_NESTED: dict[str, dict[str, tuple[str, str]]] = {
+    # the CLEAN view carries the destination as an object ({"id": 9, "name":
+    # "Pharmacy", …}) rather than a flattened destination_name
+    "evaluation_visit_destination": {"destination_name": ("destination", "name"),
+                                     "destination_slug": ("destination", "slug")},
+}
+
 # Layer 1: global boolean renames (apply to every record)
 _GLOBAL_BOOL_RENAMES: dict[str, str] = {
     "active":     "is_active",
@@ -709,6 +721,20 @@ _PER_KEY_RENAMES: dict[str, dict[str, str]] = {
         "finish_at":        "completed_at",
     },
     "reception_patient_nok": {},
+    # V2 ICD-10 categories/subcategories are ranges (code_from..code_to);
+    # V3 needs a code (see _PER_KEY_INJECT)
+    "eval_icd10_range": {},
+    # the dependant's details are joined in as dependant_* (v3_extra_mappings.FETCH_SQL)
+    "reception_patient_dependant": {},
+    # V2's group → type link is a bare `type` (1 Profit & Loss, 2 Balance Sheet …)
+    "finance_gl_account_group": {"type": "account_type_id"},
+    "inventory_unit": {},
+    "evaluation_examination_review": {},
+    # V2's signed quantity / store / action / type are re-derived (see _movement_*)
+    "inventory_stock_movement": {
+        "quantity": "v2_quantity", "store_id": "v2_store_id", "action": "v2_action", "type": "v2_type",
+        "opening": "opening_balance", "closing": "closing_balance",
+    },
     "reception_patient_document": {
         "filename": "file_name",
         "document": "file_path",
@@ -728,6 +754,12 @@ _PER_KEY_RENAMES: dict[str, dict[str, str]] = {
         "visit":   "visit_id",
         "sale":    "sale_id",
         "user":    "user_id",
+    },
+    # V2 evaluation payments → finance receipts (after the global user → user_id …)
+    "finance_receipt": {
+        "receipt": "receipt_no",       # V2's full receipt number, e.g. COLCOL220425132629 (unique)
+        "user_id": "issued_by",        # the cashier
+        "status":  "v2_status",        # credit-note states, kept in notes
     },
     "finance_copay": {},
     "finance_voucher": {
@@ -790,11 +822,13 @@ _PER_KEY_RENAMES: dict[str, dict[str, str]] = {
     },
     "inventory_purchase_order": {
         "delivery_date": "expected_delivery_date",
+        "user_id":       "created_by",      # after the global user → user_id rename
     },
     "inventory_requisition": {
         "requestor_id":     "requested_by",
         "approver_id":      "approved_by",
         "approval_weight":  "approval_level",
+        "store_id":         "requesting_store_id",    # NOT NULL + FK in V3
     },
     "inventory_category": {
         "parent_id": "parent_category_id",
@@ -808,8 +842,13 @@ _PER_KEY_RENAMES: dict[str, dict[str, str]] = {
         "company": "company_id",
     },
     "theatre_booking": {
-        "emergency": "is_emergency",
+        "emergency":           "is_emergency",
+        "operation_procedure": "operation_procedure_id",    # a V2 procedure id
+        "proc_cash_price":     "procedure_cash_price",
+        "proc_ins_price":      "procedure_insurance_price",
     },
+    "theatre_schedule":  {},
+    "theatre_operation": {},
     "theatre_theatre": {
         "associated_procedure": "associated_procedures",
     },
@@ -848,10 +887,15 @@ _PER_KEY_RENAMES: dict[str, dict[str, str]] = {
     "inpatient_bed": {},                 # ward_id / bed_type_id FK remapped via _FK_REMAP
     "inpatient_admission": {},           # admission_type_id FK remapped via _FK_REMAP
     "inpatient_admission_type": {},
-    "inpatient_admission_request": {},   # preferred_ward_id / preferred_bed_type_id via _FK_REMAP
+    # preferred_ward_id / preferred_bed_type_id via _FK_REMAP
+    "inpatient_admission_request": {
+        "user_id": "requested_by",              # after the global user → user_id rename
+        "reason":  "reason_for_admission",      # NOT NULL text in V3
+    },
     "evaluation_prescription": {},       # prescribed_by dropped+reinjected as V3 user id below
     "evaluation_sample": {},             # V2 Sample columns match V3 samples' fillable 1:1
     "inpatient_discharge_type": {},
+    "settings_treatment_action": {},
     # V2 discharge requests are the clinical discharge summary; the sections
     # with a V3 column of their own are renamed here, the rest are folded
     # into discharge_notes (_PER_KEY_INJECT) so nothing is lost.
@@ -870,11 +914,9 @@ _PER_KEY_RENAMES: dict[str, dict[str, str]] = {
     "inventory_dispensing": {
         "user_id": "served_by",   # after the global user → user_id rename
     },
-    "settings_user": {
-        "username":   "email",
-        "first_name": "first_name",
-        "last_name":  "last_name",
-    },
+    # username stays username (NOT NULL, unique per org in V3). It used to be
+    # renamed to email — which, with email already set, dropped it.
+    "settings_user": {},
 }
 
 # Fields to drop entirely per transform key (cannot be mapped in API-to-API)
@@ -922,15 +964,43 @@ _PER_KEY_KEEP_ONLY: dict[str, set[str]] = {
     "settings_clinic": {"name", "code", "type", "address", "city", "phone", "email",
                         "status", "region_id", "created_at", "updated_at"},
     # columns of reception-service's patient documents (gateway describe) + the FK
+    # finance-service Receipt::$fillable that V2 can fill
+    "finance_receipt": {"receipt_no", "receipt_type", "invoice_id", "patient_id", "amount", "receipt_date",
+                        "payment_method", "status", "notes", "issued_by"},
+    # theatre-service Theatre::$fillable that V2 can fill. The theatre gateway
+    # hides SQL errors ("the database refused the row"), so the poster can't
+    # strip an unknown column (source_schema) — send only real columns.
+    # associated_procedures is left out: V3 wants procedure ids, V2 holds text.
+    "theatre_theatre": {"name", "number", "theatre_type_id", "facility_id", "description", "fee",
+                        "charging_cycle", "is_active"},
+    # theatre_bookings: the agreed insert payload (Muniu, 2026-10-12: uuid,
+    # patient_id, preferred_date, status_id, requested_by, is_emergency,
+    # reason, timestamps) + the columns whose V2 ids are remapped to V3.
+    # Left out: package_id / requested_facility_id — V2 ids with no V3 mapping.
+    "theatre_booking": {"visit_id", "patient_id", "preferred_date", "status_id", "requested_by", "is_emergency",
+                        "reason", "theatre_deposit_id", "operation_procedure_id", "procedure_cash_price",
+                        "procedure_insurance_price", "authorized_amount", "approved_by", "cancelled_by",
+                        "rejected_by", "authorized_by", "cancellation_reason", "rejection_reason",
+                        "created_at", "updated_at"},
+    # inventory-service StockMovement::$fillable that V2 can fill
+    # created_at / updated_at: when the movement happened (a ledger needs the V2 date)
+    "inventory_stock_movement": {"product_id", "type", "direction", "from_store_id", "to_store_id", "quantity",
+                                 "opening_balance", "closing_balance", "reason", "notes", "user_id",
+                                 "idempotency_key", "created_at", "updated_at"},
+    # reception-service PatientDependant::$fillable that V2 can fill
+    "reception_patient_dependant": {"patient_id", "full_name", "relationship", "dob", "gender", "id_no",
+                                    "mobile", "email"},
     "reception_patient_document": {"patient_id", "title", "document_type", "description", "file_name",
-                                   "file_path", "file_type", "file_extension", "document_date", "notes"},
+                                   "file_path", "file_type", "file_extension", "file_size", "document_date",
+                                   "notes"},
     # V2 admissions arrive with the embedded doctor/ward/bed/bed_type records
     # flattened into ~90 extra columns (doctor_profile_mpdb, ward_cash_cost …)
     # that inp_admissions doesn't have. Keep the admission's own fields only.
     "inpatient_admission": {"patient_id", "visit_id", "ward_id", "bed_id", "admission_type_id",
                             "admission_request_id", "admitting_doctor_id", "admission_number",
                             "admission_date", "admitted_at", "discharged_at", "reason", "cost",
-                            "days_admitted", "payment_mode", "external_doctor", "created_at", "updated_at"},
+                            "days_admitted", "payment_mode", "external_doctor", "created_at", "updated_at",
+                            "status", "discharge_date"},
     # columns of reception-service's patient_next_of_kin (gateway describe) + the FK
     "reception_patient_nok": {"patient_id", "first_name", "middle_name", "last_name", "relationship",
                               "relationship_id", "id_no", "mobile", "alt_phone", "email", "address",
@@ -939,8 +1009,10 @@ _PER_KEY_KEEP_ONLY: dict[str, set[str]] = {
     # out: destination_id/department_id (V2 ids, their lookups aren't
     # migrated), status (V3's allowed values unknown), created_by (V2 users
     # don't exist in V3).
+    # destination_id: V2's settings destination, remapped to V3's service destination (_FK_REMAP) —
+    # it was left out, so every migrated row had none (reported 2026-10-15)
     "evaluation_visit_destination": {"visit_id", "department_id", "department_name", "arrived_at",
-                                     "completed_at", "notes"},
+                                     "completed_at", "notes", "destination_id", "destination_slug"},
     # columns of inpatient-service's inp_admission_types (gateway describe)
     "inpatient_admission_type": {"code", "name", "description", "deposit", "associated_procedure"},
     # columns of evaluation-service's `procedures` table (gateway describe)
@@ -1022,6 +1094,10 @@ _PER_KEY_REQUIRED_FIELDS: dict[str, list] = {
     "evaluation_visit_destination": ["department_id"],
     "settings_insurance":      ["name"],
     "eval_procedure_category": ["name"],
+    # V2 has blank unit rows (no name, symbol or description) — nothing to migrate
+    "inventory_unit":          ["name"],
+    # the dependant's patient record wasn't extracted — no name to give V3
+    "reception_patient_dependant": ["full_name"],
     "settings_user":           ["email"],
     "evaluation_inv_result":   ["investigation_id", "patient_id"],
     "outpatient_vital":        ["patient_id"],
@@ -1048,8 +1124,17 @@ _V3_NULL_DEFAULTS: dict[str, Any] = {
     "admitting_doctor_id":  1,
     "admission_diagnosis":  "Not specified",
     "is_a_split":           0,            # V2 had no split-prescription concept
+    "appear_bold":          0,            # template_labs flag, null on some V2 rows
+    "use_bio_ref_flagging": 0,            # procedures flag, null on some V2 rows
+    "has_quick_results":    0,            # procedures flag
+    "queued":               0,            # samples flags
+    "tobe_contacted":       0,
+    "exemption_amount":     0,            # invoices
+    "is_walkin":            0,            # investigations flags, null on most V2 rows
+    "preauth_approved":     0,
+    "requires_preauth":     0,
+    "requested_by":         1,            # requisitions with no V2 requestor (2026-10-15)
 }
-
 # Layer 2: coercions — value-level transforms applied after renaming.
 # Each entry: (source_field_after_rename, transform_fn)
 def _inactive_to_status(v) -> str:
@@ -1057,6 +1142,76 @@ def _inactive_to_status(v) -> str:
 
 def _active_flag_to_status(v) -> str:
     return "active" if v else "inactive"
+
+def _null_to(default):
+    """Coercion: a null / blank value becomes the V3 column's default."""
+    return lambda v: default if v is None or (isinstance(v, str) and not v.strip()) else v
+
+
+def _as_float(v) -> float:
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+# V2 evaluation payment amount column → V3 receipts.payment_method (first non-zero wins)
+_RECEIPT_METHODS = (("cash_amount", "cash"), ("mpesa_amount", "mpesa"), ("card_amount", "card"),
+                    ("cheque_amount", "cheque"), ("pesa_pal_mpesa_amount", "mpesa"),
+                    ("pesa_pal_card_amount", "card"), ("jambopay_amount", "jambopay"),
+                    ("patientaccount_amount", "patient_account"), ("giftcard_amount", "gift_card"),
+                    ("voucher_amount", "voucher"), ("loyalty_amount", "loyalty"), ("points_amount", "points"))
+
+
+# V2 stock-movement action (free text, 20 values in kisumu_v3) → V3 (type, direction).
+# None as direction = by the sign of V2's quantity (+ in, − out).
+_MOVEMENT_ACTIONS: dict[str, tuple[str, str | None]] = {
+    "dispensed": ("dispense", "out"), "consumable": ("issue", "out"),
+    "return": ("return", "in"), "consumable return": ("return", "in"),
+    "sys-purchase": ("receipt", "in"), "product added to store": ("receipt", "in"),
+    "internal order (receive)": ("receipt", "in"), "in": ("receipt", "in"),
+    "pharmacy pos sale": ("sale", "out"), "walkin_sale": ("sale", "out"),
+    "knocked_off": ("disposal", "out"), "dispatched": ("transfer", "out"),
+    "positive adjmt.": ("adjustment", "in"), "negative adjmt.": ("adjustment", "out"),
+    "sys-transer": ("transfer", None), "sys-transfer": ("transfer", None),
+    "sys-adjustment": ("adjustment", None), "adjustment": ("adjustment", None),
+    "stock_take_adjustment": ("adjustment", None),
+}
+
+
+def _movement(r: dict) -> tuple[str, str]:
+    """(V3 type, direction). V2's own type column says in / out on most rows
+    and wins; elsewhere (transfer, adjust, adjustment, purchase order) the
+    action, else the quantity's sign. An "in" with a negative quantity (310
+    stock-take adjustments) is stock going down: out."""
+    kind, direction = _MOVEMENT_ACTIONS.get(str(r.get("v2_action") or "").strip().lower(), ("adjustment", None))
+    negative = _as_float(r.get("v2_quantity")) < 0
+    v2_dir = str(r.get("v2_type") or "").strip().lower()
+    if v2_dir in ("in", "out"):
+        direction = "out" if v2_dir == "in" and negative else v2_dir
+    elif direction is None:
+        direction = "out" if negative else "in"
+    return kind, direction
+
+
+def _int_or_zero(v) -> int:
+    try:
+        return int(round(float(v)))
+    except (TypeError, ValueError):
+        return 0
+
+
+_INV_RESULT_STATUSES = {"preliminary", "final", "corrected", "amended", "approved", "rejected", "retracted", "publish"}
+
+_REQUISITION_STATUS = {s: s for s in ("draft", "submitted", "pending_approval", "approved", "partially_fulfilled",
+                                       "fulfilled", "rejected", "cancelled")} | {"pending": "pending_approval"}
+
+
+def _user_id_or_none(v) -> Any:
+    """A V2 *_by column that should be a user id but often holds the person's
+    name ('Ms. Kerubo  Venah') — a name can't become a V3 user id."""
+    return int(v) if str(v).strip().isdigit() else None
+
 
 def _wrap_in_list(v) -> list:
     if v is None:
@@ -1167,10 +1322,17 @@ def reset_v3_user_cache() -> None:
 
 
 def _v3_user_id_for_v2(v2_user_id, email=None) -> int | None:
-    """V3 user for a V2 user: by the V2 id embedded in the migrated email,
-    else by plain email (accounts created some other way)."""
+    """V3 user for a V2 user: by the users id map, else by the V2 id embedded in
+    the migrated email, else by plain email (accounts created some other way).
+    The id map comes first: an org copied V3 → V3 (org 284) has the users but
+    not the placeholder e-mails — every new admission there came out with no
+    admitting doctor and was skipped (2026-10-21)."""
     global _v3_users_by_v2_id
     if v2_user_id not in (None, "") and str(v2_user_id).isdigit():
+        users = _id_map.get(_v3_alias(r"App\Models\User"), {})
+        found = users.get(int(v2_user_id), users.get(str(v2_user_id)))
+        if found is not None:
+            return found
         with _v3_users_lock:
             if _v3_users_by_v2_id is None:
                 users = _fetch_v3_records(_v3_alias(r"App\Models\User"), v3_login_org_cfg(), service_name="core")
@@ -1258,6 +1420,154 @@ def _blank_to_none(v):
     return None if v is None or (isinstance(v, str) and not v.strip()) else v
 
 
+_NUMBER = re.compile(r"-?\d+(?:\.\d+)?")
+
+
+def _first_reading(v):
+    """A numeric vital. Nurses sometimes typed several readings into one V2
+    field ('204            231    161', '120/80', '36.7C') — V3's numeric
+    columns reject that ("Data truncated"). The first reading is kept (all of
+    them go into the notes, see _note_multiple_readings); text with no number
+    at all becomes null."""
+    v = _blank_to_none(v)
+    if not isinstance(v, str):
+        return v
+    nums = _NUMBER.findall(v)
+    if not nums:
+        return None
+    n = float(nums[0])
+    return int(n) if n.is_integer() else n
+
+
+# vitals with decimals: V2 sometimes holds a decimal comma ('36,6' — refused by V3 as "Incorrect decimal
+# value" on kisumu_v3 inpatient temperatures, 2026-10-15)
+_DECIMAL_VITALS = {"temperature", "weight", "height", "bmi", "head_circumference", "muac", "random_blood_sugar",
+                   "fasting_blood_sugar", "blood_sugar", "waist", "hip", "body_fat", "muscle_mass", "bone_mass",
+                   "body_water", "visceral_fat", "intracular_pressure"}
+_DECIMAL_COMMA = re.compile(r"\s*-?\d+,\d{1,2}\s*")
+
+
+def _vital_reading(field: str):
+    """The coercion for one vital: a decimal comma becomes a point (decimal fields only — '120,80' in a
+    blood pressure is two readings), then _first_reading. Height / weight 0 means not measured: V3
+    computes BMI from them and a 0 failed the insert with "Division by zero"."""
+    def read(v):
+        if field in _DECIMAL_VITALS and isinstance(v, str) and _DECIMAL_COMMA.fullmatch(v):
+            v = v.replace(",", ".")
+        n = _first_reading(v)
+        if isinstance(n, (int, float)) and abs(n) >= 1e7:      # a typo no vital can be (an outpatient value
+            return None                                        # overflowed 64 bits: "Integer exceeds N-bit range")
+        return None if field in ("height", "weight") and n == 0 else n
+    return read
+
+
+def _v3_user_or_system(v):
+    """A V2 user id → V3 user; a V2 user V3 doesn't have → the system user (1, as _V3_NULL_DEFAULTS).
+    For NOT NULL *_by columns only — agreed 2026-10-15 (as for admissions by an external doctor)."""
+    if _blank_to_none(v) is None:
+        return None
+    return _v3_user_for_v2_id(v) or 1
+
+
+def _note_multiple_readings(note_field: str, fields: tuple[str, ...]):
+    """Pre-coercion hook: record every field holding more than one reading in
+    the vital's notes before _first_reading keeps only the first."""
+    def note(out: dict) -> None:
+        extra = [f"{f}: {' '.join(out[f].split())}" for f in fields
+                 if isinstance(out.get(f), str) and len(_NUMBER.findall(out[f])) > 1]
+        if extra:
+            line = "Multiple readings in V2 — " + "; ".join(extra)
+            out[note_field] = f"{out[note_field]}\n{line}" if _blank_to_none(out.get(note_field)) else line
+    return note
+
+
+_INPATIENT_VITAL_NUMBERS = ("temperature", "pulse_rate", "respiratory_rate", "systolic_bp", "diastolic_bp",
+                            "oxygen_saturation", "weight", "height", "bmi")
+_OUTPATIENT_VITAL_NUMBERS = ("temperature", "pulse", "weight", "height", "bmi", "head_circumference", "muac",
+                             "random_blood_sugar", "fasting_blood_sugar", "bp_systolic", "bp_diastolic",
+                             "respiration", "oxygen", "waist", "hip", "blood_sugar", "body_fat", "muscle_mass",
+                             "bone_mass", "metabolic_age", "body_water", "visceral_fat", "length_percentile",
+                             "weight_percentile", "bmi_percentile", "intracular_pressure")
+
+# Optional V3 columns sent as null when V3 rejects the V2 value as too long or
+# out of range ("Data too long for column 'x'", "Out of range value for column
+# 'x'"), instead of dead-lettering the record: insurance companies' postal_code
+# holds whole addresses; a few vitals hold typos (height 15736.6, 7691761 in
+# kisumu_v3 — V3 vitals are decimal(6,2)).
+_V3_NULL_WHEN_UNFIT: set[str] = {"postal_code", *_INPATIENT_VITAL_NUMBERS, *_OUTPATIENT_VITAL_NUMBERS}
+
+def _flag_with_message(flag: str, note_field: str):
+    """Pre-coercion hook for a V2 flag column that sometimes holds a message
+    instead of 0/1 — prescriptions' moved_from_chargesheet is 'Item removed
+    from chargesheet by Mr. X on Sep 23, 2024 12:11:15 pm' on 2,718
+    kisumu_v3 rows. The message means the flag is set: 1, and the message is
+    kept in the notes."""
+    def fix(out: dict) -> None:
+        v = out.get(flag)
+        if isinstance(v, str) and v.strip() and v.strip().lower() not in ("0", "1", "true", "false"):
+            msg = " ".join(v.split())
+            out[note_field] = f"{out[note_field]}\n{msg}" if _blank_to_none(out.get(note_field)) else msg
+            out[flag] = 1
+    return fix
+
+
+_staff_names: dict[str, dict[int, tuple]] = {}
+_staff_names_lock = threading.Lock()
+
+
+def _staff_name(facility: str, employee_id) -> tuple | None:
+    """(first, middle, last) of a V2 staff member, from their V2 user profile (live V2 API, read once)."""
+    if not str(employee_id or "").strip().isdigit():
+        return None
+    with _staff_names_lock:
+        if facility not in _staff_names:
+            names = {}
+            try:
+                cfg = V2_FACILITIES[facility]
+                rows, _ = extract_v2_records({"facility": facility, "namespace": r"Ignite\Users\Entities\UserProfile",
+                                              "database": cfg["db"], "updated_since": "1970-01-01T00:00:00Z",
+                                              "limit": 100})
+                for p in rows:
+                    if str(p.get("user_id") or "").isdigit():
+                        names[int(p["user_id"])] = (p.get("first_name"), p.get("middle_name"), p.get("last_name"))
+            except Exception as e:                   # noqa: BLE001 — the patient then stays nameless
+                log.warning("staff names for %s: couldn't read V2 user profiles: %s", facility, str(e)[:150])
+            _staff_names[facility] = names
+        return _staff_names[facility].get(int(employee_id))
+
+
+def _patient_names(out: dict) -> None:
+    """V3 patients need first_name and last_name (NOT NULL). 91 kisumu_v3 patients went without
+    (2026-10-16): 79 staff registered as patients with no name typed in — their names are on their V2
+    staff profile (EMPLOYEE_ID = user id); 11 with the surname typed into middle_name."""
+    first, last = _blank_to_none(out.get("first_name")), _blank_to_none(out.get("last_name"))
+    if first and last:
+        return
+    if not first and not last and out.get("employee_id"):
+        facility = str(out.get("source_schema") or _v3_target_facility or "").strip()
+        name = _staff_name(facility, out["employee_id"]) if facility in V2_FACILITIES else None
+        if name and (_blank_to_none(name[0]) or _blank_to_none(name[2])):
+            out["first_name"], out["middle_name"], out["last_name"] = name
+            first, last = _blank_to_none(name[0]), _blank_to_none(name[2])
+    middle = _blank_to_none(out.get("middle_name"))
+    if first and not last and middle:                # surname typed into middle_name
+        out["last_name"], out["middle_name"] = middle, None
+    elif last and not first and middle:
+        out["first_name"], out["middle_name"] = middle, None
+
+
+# run before the per-key coercions, on the renamed record
+_PER_KEY_PRE_COERCE: dict[str, Any] = {
+    "reception_patient": _patient_names,
+    "evaluation_prescription": _flag_with_message("moved_from_chargesheet", "notes"),
+    # same V2 message-in-a-flag on investigations (all 11,491 kisumu_v3 rows missing from V3 on
+    # 2026-10-15 were refused for it: "Incorrect integer value: 'Item removed from chargesheet …'")
+    "evaluation_investigation": _flag_with_message("moved_from_chargesheet", "comments"),
+    "inpatient_vital":  _note_multiple_readings("notes", _INPATIENT_VITAL_NUMBERS),
+    "outpatient_vital": _note_multiple_readings("nurse_notes", _OUTPATIENT_VITAL_NUMBERS),
+}
+
+
 def _blood_pressure(r: dict) -> str | None:
     s = _blank_to_none(r.get("systolic_bp") or r.get("bp_systolic"))
     d = _blank_to_none(r.get("diastolic_bp") or r.get("bp_diastolic"))
@@ -1283,6 +1593,18 @@ def _additional_vitals(r: dict) -> dict | None:
 def _dispensing_notes(r: dict) -> str:
     return (f"Migrated V2 dispensing #{r.get('id')} of {r.get('created_at')}: "
             f"prescription #{r.get('prescription')}, visit #{r.get('visit_id')}")
+
+
+# V2 prescription id → V2 store id (evaluation_prescriptions.store_id), filled by the loader that posts
+# dispensing: V2 dispensing rows carry no store, but V3 inv_sales.store_id is NOT NULL ("Field 'store_id'
+# doesn't have a default value", 2026-10-21)
+_prescription_store: dict[str, str] = {}
+
+
+def _dispensing_store(r: dict) -> int | None:
+    """The V2 store a V2 dispensing was served from (its prescription's) — the FK remap turns it into V3's."""
+    v2_store = _prescription_store.get(str(r.get("prescription")))
+    return int(v2_store) if str(v2_store or "").isdigit() else None
 
 
 def _discharge_request_notes(r: dict) -> str | None:
@@ -1322,10 +1644,35 @@ _PER_KEY_INJECT: dict[str, dict[str, Any]] = {
         "status":         lambda r: "completed",
         "payment_status": lambda r: "pending",   # only if V2 had none (see _PER_KEY_COERCIONS)
         "notes":          _dispensing_notes,
+        "store_id":       _dispensing_store,
+    },
+    "finance_invoice": {
+        # NOT NULL in V3; some V2 invoices leave it empty ("Column 'invoice_date' cannot be null", 2026-10-21)
+        "invoice_date": lambda r: str(r["created_at"])[:10] if r.get("created_at") else None,
+    },
+    "theatre_schedule": {
+        # V3 scheduled_date (date) is empty on V2 rows: the day the schedule starts (reported 2026-10-15)
+        "scheduled_date": lambda r: (str(r["schedule_start_time"])[:10]
+                                     if re.match(r"\d{4}-\d{2}-\d{2}", str(r.get("schedule_start_time") or ""))
+                                     else None),
     },
     "inpatient_discharge_type": {
         # inp_discharge_types needs a code (unique per org); V2 types only have a name
         "code": lambda r: "_".join(str(r.get("name") or f"TYPE {r.get('id')}").upper().split()),
+    },
+    "inventory_product": {
+        # inv_products.generic_name (V2's name) is NOT NULL; a few V2 products
+        # have no name at all, only an item number (4 in kisumu_v3)
+        "generic_name": lambda r: f"Unnamed product {r.get('item_no') or r.get('id')}",
+    },
+    "settings_treatment_action": {
+        # core_treatment_actions.display_name is NOT NULL with no default and
+        # V2 has no such column: the label is V2's name/slug ("vitals",
+        # "doctor_notes") made readable — "Vitals", "Doctor Notes"
+        "display_name": lambda r: " ".join(
+            w[:1].upper() + w[1:]
+            for w in str(r.get("name") or f"Action {r.get('id')}").replace("_", " ").replace("-", " ").split()
+        ),
     },
     "inpatient_discharge_request": {
         # V2 admission id here; remapped to the V3 admission at post time
@@ -1355,9 +1702,39 @@ _PER_KEY_INJECT: dict[str, dict[str, Any]] = {
     },
     "evaluation_visit_destination": {
         "arrived_at": lambda r: r.get("begin_at") or r.get("created_at"),
+        # the destination's name (lifted from the destination object); on
+        # rows without one, the name of its destination_id in V2's
+        # settings_destinations (joined in — 137k rows have only that), then
+        # V2's free-text department ("Pharmacy", "Nursing")
+        "department_name": lambda r: (" ".join(str(r.get("destination_setting_name") or "").split())
+                                      or str(r.get("department") or "").strip() or None),
         # V2 has no departments; one V3 department per V2 destination is
         # created before this job runs (ensure_departments_from_destinations)
         "department_id": lambda r: _v3_department_id_by_name(r.get("department_name")),
+        # the destination's slug (requested 2026-10-15): from the embedded destination, else its
+        # settings_destinations row (joined in). NOTE: VisitDestination's $fillable lacks
+        # destination_slug, so the gateway drops it until the backend adds it
+        "destination_slug": lambda r: (str(r.get("destination_setting_slug") or "").strip() or None),
+    },
+    "reception_patient_nok": {
+        # NOT NULL in V3; V2 next of kin carry neither relationship nor relationship_id
+        "relationship": lambda r: _NOT_RECORDED,
+    },
+    "eval_icd10_range": {
+        # V3 code is NOT NULL + unique; V2 has the range: A00..B99 → "A00-B99"
+        "code": lambda r: "-".join(dict.fromkeys(
+            c for c in (str(r.get("code_from") or "").strip(), str(r.get("code_to") or "").strip()) if c)) or None,
+        # NOT NULL in V3; V2 has only the name
+        "description": lambda r: r.get("name"),
+    },
+    "finance_gl_account_group": {
+        # gl_account_groups.code is NOT NULL, varchar(20), unique per org; V2 groups only have a name
+        "code": lambda r: "_".join(str(r.get("name") or f"GROUP {r.get('id')}").upper().split())[:20],
+    },
+    "settings_scheme": {
+        # V3 code is NOT NULL, unique per org; every V2 scheme's code is empty.
+        # source_schema keeps two facilities' scheme #12 apart.
+        "code": lambda r: f"SCH-{r.get('source_schema') or 'v2'}-{r.get('id')}",
     },
     "reception_patient_document": {
         # V2 stores the literal string "null" (or "2") as document_type and
@@ -1367,6 +1744,87 @@ _PER_KEY_INJECT: dict[str, dict[str, Any]] = {
         "file_extension": lambda r: (Path(str(r.get("file_name") or "")).suffix.lstrip(".").lower() or None),
         "file_type":      lambda r: mimetypes.guess_type(str(r.get("file_name") or ""))[0],
         "document_date":  lambda r: r.get("created_at"),
+        # NOT NULL in V3 (bytes); V2 never recorded the size
+        "file_size":      lambda r: 0,
+    },
+    # patient_dependants: full_name + relationship NOT NULL; V2 rows only link
+    # the dependant's own patient record (joined in as dependant_*)
+    "reception_patient_dependant": {
+        "full_name": lambda r: " ".join(" ".join(str(r.get(f"dependant_{c}") or "").split())
+                                        for c in ("first_name", "middle_name", "last_name")
+                                        if str(r.get(f"dependant_{c}") or "").strip()) or None,
+        "relationship": lambda r: _NOT_RECORDED,    # V2 relationship ids have no lookup table in the extract
+        "dob":          lambda r: _blank_to_none(r.get("dependant_dob")),
+        "gender":       lambda r: (str(r.get("dependant_sex") or "").strip().lower()
+                                   if str(r.get("dependant_sex") or "").strip().lower() in ("male", "female", "other")
+                                   else None),
+        "mobile":       lambda r: _blank_to_none(r.get("dependant_mobile")),
+        "id_no":        lambda r: _blank_to_none(r.get("dependant_id_no")),
+        "email":        lambda r: _blank_to_none(r.get("dependant_email")),
+    },
+    # theatre_bookings / theatre_operations: patient_id NOT NULL; V2 rows only
+    # link the visit (V2 patient id here, remapped to V3 at post time)
+    "theatre_booking": {
+        "patient_id": lambda r: _v2_patient_for_visit(r.get("visit_id")),
+    },
+    "theatre_operation": {
+        "patient_id": lambda r: _v2_patient_for_visit(r.get("visit_id")),
+    },
+    "finance_receipt": {
+        "receipt_type":   lambda r: "payment",
+        "status":         lambda r: "valid",
+        # V2 splits a payment across per-method amount columns
+        "payment_method": lambda r: next((m for col, m in _RECEIPT_METHODS
+                                          if _as_float(r.get(col)) > 0), None),
+        "receipt_date":   lambda r: str(r.get("created_at") or "")[:10] or None,     # only if V2 has none
+        "notes":          lambda r: (f"V2 status: {r['v2_status']}" if _blank_to_none(r.get("v2_status")) else None),
+    },
+    "settings_insurance": {
+        # finance insurance_companies.code is NOT NULL + unique; V2 companies
+        # have none. Same pattern as schemes' SCH-<facility>-<id>.
+        "code": lambda r: f"INS-{r.get('source_schema') or 'v2'}-{r.get('id')}",
+    },
+    "inventory_stock_movement": {
+        "type":            lambda r: _movement(r)[0],
+        "direction":       lambda r: _movement(r)[1],
+        "quantity":        lambda r: abs(_int_or_zero(r.get("v2_quantity"))),        # V3 keeps it positive
+        "from_store_id":   lambda r: r.get("v2_store_id") if _movement(r)[1] == "out" else None,
+        "to_store_id":     lambda r: r.get("v2_store_id") if _movement(r)[1] == "in" else None,
+        "reason":          lambda r: _blank_to_none(r.get("v2_action")),
+        "notes":           lambda r: f"V2 type: {r['v2_type']}" if _blank_to_none(r.get("v2_type")) else None,
+        "idempotency_key": lambda r: f"v2:{r.get('source_schema') or 'v2'}:stock_movement:{r.get('id')}",
+    },
+    "inventory_requisition": {
+        # inv_requisitions: requisition_number (unique per org) and request_date are NOT NULL
+        "requisition_number": lambda r: f"REQ-{r.get('source_schema') or 'v2'}-{r.get('id')}",
+        "request_date":       lambda r: str(r.get("created_at") or "")[:10] or None,
+    },
+    "inventory_grn": {
+        # inv_goods_received_notes: grn_number (unique) and received_date are
+        # NOT NULL; store / supplier come from the purchase order (FETCH_SQL)
+        "grn_number":    lambda r: f"GRN-{r.get('source_schema') or 'v2'}-{r.get('id')}",
+        "received_date": lambda r: str(r.get("created_at") or "")[:10] or None,
+        "status":        lambda r: "received",
+    },
+    "inventory_purchase_order": {
+        # inv_purchase_orders: po_number (unique per org) and order_date are
+        # NOT NULL; V2 orders have neither
+        "po_number":  lambda r: f"PO-{r.get('source_schema') or 'v2'}-{r.get('id')}",
+        "order_date": lambda r: str(r.get("created_at") or "")[:10] or None,
+    },
+    "inpatient_bed": {
+        # inp_beds has both: `number` (2026-06 simplified column) and the
+        # original `bed_number`, still NOT NULL — same value
+        "bed_number": lambda r: r.get("number"),
+    },
+    "settings_user": {
+        # email is required; a V2 user without one falls back to its username
+        "email": lambda r: r.get("username"),
+        # NOT NULL in V3, and the V2 extract carries no password (hash). A
+        # random one nobody ever sees (V3 hashes it; redacted from the
+        # dead-letter file) + a forced reset: staff set theirs on first login.
+        "password":               lambda r: secrets.token_urlsafe(32),
+        "enforce_password_reset": lambda r: 1,
     },
     "inpatient_admission_type": {
         # inp_admission_types needs a code; V2 types only have a name
@@ -1381,16 +1839,31 @@ _PER_KEY_INJECT: dict[str, dict[str, Any]] = {
     "inpatient_admission_request": {
         # V3 inp_admission_requests requires a unique request_number; V2 had none.
         "request_number": lambda r: f"REQ-{r.get('id', 'unknown')}",
+        # NOT NULL (2025_12_03_000007): when the request was made, and why
+        "requested_at":   lambda r: r.get("created_at") or r.get("updated_at"),
+        "reason_for_admission": lambda r: _blank_to_none(r.get("diagnosis")) or _NOT_RECORDED,
     },
     "inpatient_admission": {
         # V2 doctor (embedded, flattened as doctor_email) -> V3 user by email.
         # None until the backend has created the doctor as a V3 user; the
         # required-field check then holds the admission back for a later run.
-        "admitting_doctor_id": lambda r: _v3_user_id_for_v2(r.get("doctor_id"), r.get("doctor_email")),
+        # An admission by an external doctor only (doctor_id empty, external_doctor "DR BITTA" — 15
+        # kisumu_v3 rows) has no V3 user to name: agreed 2026-10-15 — the system user (1, as
+        # _V3_NULL_DEFAULTS) admits it and the doctor's name is kept in `reason`.
+        "admitting_doctor_id": lambda r: (_v3_user_id_for_v2(r.get("doctor_id"), r.get("doctor_email"))
+                                          or (1 if not r.get("doctor_id") and _blank_to_none(r.get("external_doctor"))
+                                              else None)),
+        "reason": lambda r: (f"External doctor: {' '.join(str(r['external_doctor']).split())}"
+                             if not r.get("doctor_id") and _blank_to_none(r.get("external_doctor")) else None),
         # V3 inp_admissions requires a unique admission_number; V2 had none.
         "admission_number": lambda r: f"ADM-{r.get('id', 'unknown')}",
         # Fall back to created_at if V2 didn't carry an explicit admission_date.
         "admission_date":   lambda r: r.get("created_at") or r.get("updated_at"),
+        # V3's inpatient list shows an admission while it's 'admitted', with the bed / ward of its open
+        # ward stay: a V2 admission with discharged_at is discharged then (2026-10-17, was loaded
+        # 'admitted' — fix_admission_discharges.py)
+        "status":           lambda r: "discharged" if _blank_to_none(r.get("discharged_at")) else "admitted",
+        "discharge_date":   lambda r: _blank_to_none(r.get("discharged_at")),
     },
     "evaluation_doctor_note": {
         # V2 DoctorNote has no patient_id column — it's visit → patient.
@@ -1449,26 +1922,27 @@ _PER_KEY_COERCIONS: dict[str, dict[str, Any]] = {
     # V2 user ids → V3 user ids (None when V3 doesn't have that user yet:
     # required *_by fields then hold the record back, optional ones go null)
     "inpatient_discharge_request": {
-        "requested_by": _v3_user_for_v2_id,
+        "requested_by": _v3_user_or_system,         # NOT NULL in V3 (2026-10-15: user missing → system user)
         "reviewed_by":  _v3_user_for_v2_id,
     },
     "inpatient_discharge": {
-        "discharged_by": _v3_user_for_v2_id,
+        "discharged_by": _v3_user_or_system,        # NOT NULL in V3
         "approved_by":   _v3_user_for_v2_id,
+    },
+    # V3 applies_to is a module id (ProcedureCategory::DEPARTMENTS: lab 3, radiology 4); a few V2 rows hold
+    # text ('Ward', the literal 'NULL') — refused as "Incorrect integer value" (2026-10-15)
+    "eval_procedure_category": {
+        "applies_to": lambda v: (int(v) if str(v).strip().isdigit() else
+                                 {"lab": 3, "laboratory": 3, "radiology": 4}.get(str(v or "").strip().lower())),
     },
     "inpatient_vital": {
         "recorded_by": _v3_user_for_v2_id,
-        **{f: _blank_to_none for f in ("temperature", "pulse_rate", "respiratory_rate", "systolic_bp",
-                                       "diastolic_bp", "oxygen_saturation", "weight", "height", "bmi")},
+        **{f: _vital_reading(f) for f in _INPATIENT_VITAL_NUMBERS},
     },
     "outpatient_vital": {
         "recorded_by": _v3_user_for_v2_id,
-        **{f: _blank_to_none for f in ("temperature", "pulse", "weight", "height", "bmi", "head_circumference",
-                                       "muac", "random_blood_sugar", "fasting_blood_sugar", "bp_systolic",
-                                       "bp_diastolic", "respiration", "oxygen", "waist", "hip", "blood_sugar",
-                                       "body_fat", "muscle_mass", "bone_mass", "metabolic_age", "body_water",
-                                       "visceral_fat", "length_percentile", "weight_percentile",
-                                       "bmi_percentile", "intracular_pressure", "lmp")},
+        **{f: _vital_reading(f) for f in _OUTPATIENT_VITAL_NUMBERS},
+        "lmp": _blank_to_none,                       # a date, not a reading
     },
     "inventory_dispensing": {
         "served_by":      _v3_user_for_v2_id,
@@ -1490,6 +1964,74 @@ _PER_KEY_COERCIONS: dict[str, dict[str, Any]] = {
     },
     "settings_scheme": {
         "__active_to_status__": True,
+    },
+    "finance_receipt": {
+        # a DATE column. V2's zero date (0000-00-00) arrives as "-0001-11-30"
+        # and MySQL refuses it — null, so the inject falls back to created_at
+        "receipt_date": lambda v: (str(v)[:10] if _blank_to_none(v) and re.match(r"(19|20)\d\d-\d\d-\d\d", str(v))
+                                   else None),
+    },
+    # investigation_results.status is an enum of words; V2 holds 0 / 1. MySQL
+    # read 1 as the enum's first value (preliminary — 47,326 kisumu_v3 rows
+    # already in V3) and refused 0 ("Data truncated", 430 results + their
+    # details). Both → preliminary, consistently; a valid word passes through.
+    "evaluation_inv_result": {
+        "status": lambda v: (str(v).strip().lower() if str(v or "").strip().lower() in _INV_RESULT_STATUSES
+                             else "preliminary"),
+    },
+    # inv_requisitions.status is an enum without V2's "pending" ("Data truncated
+    # for column 'status'"): pending → pending_approval, unknown → submitted
+    "inventory_stock_movement": {
+        "opening_balance": _int_or_zero, "closing_balance": _int_or_zero,     # NOT NULL integers
+    },
+    "inventory_requisition": {
+        "status": lambda v: _REQUISITION_STATUS.get(str(v or "").strip().lower(), "submitted"),
+        # NOT NULL with defaults (2025_11_25_000010)
+        "approval_level":          _null_to(0),
+        "required_approval_level": _null_to(1),
+        "priority":                _null_to("normal"),
+    },
+    "evaluation_sample": {
+        # V3 status (pending / collected / processing / completed) is NOT NULL;
+        # every kisumu_v3 V2 sample has an empty status — a V2 sample row exists
+        # once the sample is taken, so "collected", not V3's default "pending"
+        "status": lambda v: v if str(v or "").strip() else "collected",
+        # NOT NULL flags with a default (2026_02_03_000004 evaluation_samples)
+        "queued":         _null_to(0),
+        "tobe_contacted": _null_to(0),
+    },
+    "evaluation_prescription": {
+        # V3 user ids; V2 holds the approver's / rejecter's name (all 9,401
+        # filled kisumu_v3 rows) — sent as null, the *_at dates are kept
+        "return_approved_by": _user_id_or_none,
+        "return_rejected_by": _user_id_or_none,
+    },
+    # procedures (2026_03_10_000005): NOT NULL flags with defaults
+    "eval_procedure": {
+        "use_bio_ref_flagging": _null_to(0), "has_quick_results": _null_to(0), "active": _null_to(1),
+    },
+    # finance invoices (2025_11_20_140007 + 2026_03_15 + 2026_08_15): every
+    # NOT NULL column with a default — a V2 null overrides it ("Column
+    # 'exemption_amount' cannot be null"), so send the default instead
+    "finance_invoice": {
+        **{c: _null_to(0) for c in (
+            "subtotal", "discount_amount", "tax_amount", "total_amount", "paid_amount", "balance_amount",
+            "waiver_amount", "copay_amount", "credit_note_amount", "amount", "paid", "exemption_amount",
+            "is_interim", "is_manual", "auto_cancelled", "for_cash", "is_exempted")},
+        "invoice_type":       _null_to("cash"),
+        "status":             _null_to("pending"),
+        "payment_status":     _null_to("unpaid"),
+        "credit_note_status": _null_to("none"),
+    },
+    # investigations' boolean flags are NOT NULL with a default in V3
+    # (2026_03_10_000002_recreate_investigations_table…); V2 leaves them null
+    # (is_walkin on ~89% of rows) and an explicit null overrides the column
+    # default — so a null / blank flag is sent as that default
+    "evaluation_investigation": {
+        **{flag: _null_to(0) for flag in (
+            "ordered", "on_credit", "is_walkin", "cancelled", "moved", "moved_from_chargesheet",
+            "is_interim", "requires_preauth", "preauth_approved", "remove_from_report")},
+        "can_be_offered": _null_to(1),
     },
     "theatre_theatre": {
         "associated_procedures": _wrap_in_list,
@@ -1542,6 +2084,9 @@ def transform_record(record: dict, transform_key: str, org_cfg: dict, facility: 
     # FIRST, before any per-key coercion constructs its own intentional
     # nested value (e.g. eye_exam's right_eye_data/left_eye_data), so those
     # survive untouched.
+    for field, (parent, key) in _PER_KEY_LIFT_NESTED.get(tk, {}).items():
+        if not out.get(field) and isinstance(out.get(parent), dict):
+            out[field] = out[parent].get(key)
     for field in list(out.keys()):
         v = out[field]
         if isinstance(v, dict) or (isinstance(v, list) and v and isinstance(v[0], dict)):
@@ -1571,6 +2116,13 @@ def transform_record(record: dict, transform_key: str, org_cfg: dict, facility: 
     for field, v in out.items():
         if field.endswith("_id") and field not in _ZERO_IS_NOT_NULL and v in (0, "0"):
             out[field] = None
+
+    # 3c. A V2 flag column holding both 0/1 and true/false is flattened as
+    # text, so it arrives as 'true'/'false' — V3's tinyint columns reject
+    # that ("Incorrect integer value: 'false' for column 'for_discharge'").
+    for field, v in out.items():
+        if isinstance(v, str) and v.lower() in ("true", "false"):
+            out[field] = int(v.lower() == "true")
 
     # 4. Per-key drops (fields that cannot be mapped in API-to-API)
     for field in _PER_KEY_DROP_FIELDS.get(tk, []):
@@ -1636,7 +2188,9 @@ def transform_record(record: dict, transform_key: str, org_cfg: dict, facility: 
                 out.setdefault(GARBLED_KEY, {})[field] = _encode_corrupted_value(v)
                 out[field] = None
 
-    # 5. Per-key coercions
+    # 5. Per-key coercions (after any pre-coercion hook, which still sees the raw values)
+    if tk in _PER_KEY_PRE_COERCE:
+        _PER_KEY_PRE_COERCE[tk](out)
     coercions = _PER_KEY_COERCIONS.get(tk, {})
     if coercions.get("__inactive_to_status__"):
         if "inactive" in out:
@@ -1665,6 +2219,11 @@ def transform_record(record: dict, transform_key: str, org_cfg: dict, facility: 
     for field, fn in _PER_KEY_INJECT.get(tk, {}).items():
         if not out.get(field):
             out[field] = fn(out)
+
+    # 5d. facility_id is the DESTINATION facility for models whose gateway
+    # entry doesn't declare a facility column (V2 holds the old facility id)
+    if tk in _PER_KEY_DEST_FACILITY and org_cfg.get("facility_id") is not None:
+        out["facility_id"] = org_cfg["facility_id"]
 
     keep = _PER_KEY_KEEP_ONLY.get(tk)
     if keep is not None:
@@ -1780,8 +2339,11 @@ def _v3_session() -> requests.Session:
     with _v3_session_lock:
         if _v3_session_singleton is None:
             s = requests.Session()
+            # one keep-alive connection per parallel POST, or the extra
+            # workers queue for a connection instead of posting
+            pool = max(32, RECORD_WORKERS)
             adapter = requests.adapters.HTTPAdapter(
-                pool_connections=32, pool_maxsize=32, max_retries=0,
+                pool_connections=pool, pool_maxsize=pool, max_retries=0,
             )
             s.mount("https://", adapter)
             s.mount("http://", adapter)
@@ -2128,6 +2690,10 @@ class GatewayModelNotRegistered(Exception):
 _gateway_model_meta: dict[str, dict] = {}
 
 
+# services whose model aliases never displace a core service's (see _fetch_available_models)
+_SIDE_SERVICES = {"dialysis", "theatre"}
+
+
 def _fetch_available_models() -> set[str]:
     """Query every V3 service gateway, union the insertable aliases, and build _alias_to_service.
 
@@ -2150,7 +2716,13 @@ def _fetch_available_models() -> set[str]:
                 if not alias:
                     continue
                 ops = e.get("operations", [])
-                # last-writer wins if alias appears in multiple services (unlikely)
+                # An alias two services both register goes to the core services, never to theatre /
+                # dialysis: since the migration key reached dialysis (2026-10-16), its patient / ward /
+                # ward_type took the reception / inpatient models' place — patients were posted to
+                # dialysis_patients ("Field 'patient_id' doesn't have a default value").
+                owner = _alias_to_service.get(alias)
+                if owner and owner != service_name and service_name in _SIDE_SERVICES:
+                    continue
                 _gateway_model_meta[alias] = {
                     "tenant":     e.get("tenant"),
                     "facility":   e.get("facility"),
@@ -2279,12 +2851,16 @@ class RecordDeadLettered(Exception):
     """
 
 
+_REDACT_FIELDS = {"password", "remember_token", "api_token"}
+
+
 def _write_dead_letter(v3_namespace: str, record: dict, error_body: dict) -> None:
     """Append one failed record to the JSONL dead-letter file for later replay."""
     entry = {
         "ts":        datetime.now(timezone.utc).isoformat(),
         "namespace": v3_namespace,
-        "record":    record,
+        # never write a credential to disk (users get a generated password)
+        "record":    {k: ("<redacted>" if k in _REDACT_FIELDS and v else v) for k, v in record.items()},
         "error":     error_body,
     }
     with _dead_letter_lock:
@@ -2403,7 +2979,10 @@ def _post_to_v3_batch(
                 time.sleep(retry_after)
                 continue
 
-            if r.status_code == 500:
+            # The gateway now answers a rejected insert with 422 "insert
+            # rejected: <SQL error>" where it used to 500 — same errors, same
+            # recovery (NULL default, unknown column, duplicate).
+            if r.status_code == 500 or (r.status_code == 422 and "insert rejected" in r.text):
                 try:
                     err_body = r.json()
                 except Exception:
@@ -2437,25 +3016,32 @@ def _post_to_v3_batch(
                     default = _V3_NULL_DEFAULTS.get(col)
                     if default is not None and body["data"].get(col) is None:
                         log.warning(
-                            "  V3 500 id=%-6s NULL constraint on '%s' — injecting default %r and retrying",
-                            rec_id, col, default,
+                            "  V3 %s id=%-6s NULL constraint on '%s' — injecting default %r and retrying",
+                            r.status_code, rec_id, col, default,
                         )
                         body["data"] = {**body["data"], col: default}
                         _patched = True
                         continue  # one retry with the patched record
                     log.error(
-                        "  V3 500 id=%-6s NULL constraint on '%s' — no default in _V3_NULL_DEFAULTS "
+                        "  V3 %s id=%-6s NULL constraint on '%s' — no default in _V3_NULL_DEFAULTS "
                         "→ dead-letter  |  reason: %s",
-                        rec_id, col, reason,
+                        r.status_code, rec_id, col, reason,
                     )
                     _write_dead_letter(v3_namespace, record, err_body)
                     raise RecordDeadLettered()
 
+                # NOTE: a duplicate unique value is NOT retried with the V2 id
+                # appended. That retry (2026-10-12) re-created 1,763 procedures
+                # that were already in V3 (ADMIN-00001 → ADMIN-00001-29552): the
+                # taken code was the SAME record. Codes V2 itself duplicates are
+                # made unique before posting instead (snowflake_to_v3_migration
+                # ._dedupe_v2_codes), so a duplicate here means "already exists".
+
                 # Category 2 — Duplicate entry: record already exists in V3, skip silently
                 if "Duplicate entry" in debug_msg:
                     log.info(
-                        "  V3 500 id=%-6s duplicate — already exists in V3, skipping  |  reason: %s",
-                        rec_id, reason,
+                        "  V3 %s id=%-6s duplicate — already exists in V3, skipping  |  reason: %s",
+                        r.status_code, rec_id, reason,
                     )
                     return
 
@@ -2466,24 +3052,41 @@ def _post_to_v3_batch(
                     col = unknown_col.group(1)
                     if col in body["data"]:
                         log.warning(
-                            "  V3 500 id=%-6s Unknown column '%s' — dropping and retrying",
-                            rec_id, col,
+                            "  V3 %s id=%-6s Unknown column '%s' — dropping and retrying",
+                            r.status_code, rec_id, col,
                         )
                         body["data"] = {k: v for k, v in body["data"].items() if k != col}
+                        if body.get("match_on") == col:
+                            # never match on a value we no longer send — the
+                            # gateway would overwrite an existing row instead
+                            body.pop("match_on")
                         continue
                     # Column isn't in our payload (computed by SQL) — nothing to strip
                     log.error(
-                        "  V3 500 id=%-6s Unknown column '%s' not in payload → dead-letter",
-                        rec_id, col,
+                        "  V3 %s id=%-6s Unknown column '%s' not in payload → dead-letter",
+                        r.status_code, rec_id, col,
                     )
                     _write_dead_letter(v3_namespace, record, err_body)
                     raise RecordDeadLettered()
 
+                # Category 2.6 — Value too long / out of range for an optional V3
+                # column (_V3_NULL_WHEN_UNFIT): send it as null and retry
+                unfit = re.search(r"(Data too long|Out of range value) for column '(\w+)'", debug_msg)
+                if unfit and unfit.group(2) in _V3_NULL_WHEN_UNFIT:
+                    col = unfit.group(2)
+                    if body["data"].get(col) is not None:
+                        log.warning(
+                            "  V3 %s id=%-6s '%s' %s (%r) — sending null and retrying",
+                            r.status_code, rec_id, col, unfit.group(1).lower(), str(body["data"][col])[:80],
+                        )
+                        body["data"] = {**body["data"], col: None}
+                        continue
+
                 # Category 3 — Generic server fault: dead-letter immediately, no retry.
                 # 500s on insert are almost always data issues, not transient faults.
                 log.error(
-                    "  V3 500 id=%-6s server fault → dead-letter  |  reason: %s",
-                    rec_id, reason,
+                    "  V3 %s id=%-6s server fault → dead-letter  |  reason: %s",
+                    r.status_code, rec_id, reason,
                 )
                 # import pdb;pdb.set_trace()
                 _write_dead_letter(v3_namespace, record, err_body)
@@ -2993,9 +3596,11 @@ def _write_int_map(path: Path, mapping: dict) -> None:
 
 # Which FK fields to remap, and which model alias holds their ID map.
 _FK_REMAP: dict[str, dict[str, str]] = {
-    # insurance_schemes.company_id → insurance_companies V3 id
+    # insurance_schemes.company_id → the insurance company's V3 id. Companies
+    # post as finance `insurance_company` (the class's own alias); naming that
+    # alias here lets an empty / partial company map be rebuilt by name.
     "settings_scheme": {
-        "company_id": "insurance_companies",
+        "company_id": "insurance_company",
     },
     # rebates.scheme_id → insurance_schemes V3 id
     "settings_rebate": {
@@ -3025,6 +3630,11 @@ _FK_REMAP: dict[str, dict[str, str]] = {
     "inpatient_admission_request": {
         "preferred_ward_id":     "ward",
         "preferred_bed_type_id": "bed_type",
+        # sent as raw V2 ids before
+        "patient_id":            "patient",
+        "visit_id":              "visit",
+        "requested_by":          "users",
+        "admission_type_id":     "admission_type",
     },
     # admissions.admission_type_id → admission_types.id
     # admissions.admission_request_id → admission_requests.id
@@ -3040,6 +3650,7 @@ _FK_REMAP: dict[str, dict[str, str]] = {
     },
     "evaluation_visit_destination": {
         "visit_id": "visit",
+        "destination_id": "service_destinations",
     },
     # Here (not only in _NS_FK_REMAP) so _ensure_id_maps rebuilds the map by
     # name from V2 + V3 when it's empty — 6 rows, one page — e.g. after the
@@ -3064,6 +3675,79 @@ _FK_REMAP: dict[str, dict[str, str]] = {
     "evaluation_doctor_note": {
         "visit_id": "visit",
     },
+    # receipts: issued_by NOT NULL (the cashier, a V3 user); patient / invoice optional
+    "finance_receipt": {
+        "issued_by":  "users",
+        "patient_id": "patient",
+        "invoice_id": "invoice",
+    },
+    # patient_dependants.patient_id → patients (the account holder, FK-constrained)
+    "reception_patient_dependant": {
+        "patient_id": "patient",
+    },
+    # theatres.theatre_type_id → theatre_types (FK-constrained; V2 type ids differ)
+    "theatre_theatre": {
+        "theatre_type_id": "theatre_type",
+    },
+    # theatre chain: booking → schedule → operation (each FK-constrained to
+    # its parent in theatre-service); visit / patient / users are other services
+    "theatre_booking": {
+        "visit_id":               "visit",
+        "patient_id":             "patient",
+        "status_id":              "theatre_scheduling_status",
+        "theatre_deposit_id":     "theatre_deposit",
+        "operation_procedure_id": "procedures",
+        "requested_by":           "users",
+        "approved_by":            "users",
+        "cancelled_by":           "users",
+        "rejected_by":            "users",
+        "authorized_by":          "users",
+    },
+    "theatre_schedule": {
+        "booking_id":   "theatre_booking",
+        "theatre_id":   "theatre",
+        "scheduled_by": "users",
+    },
+    "theatre_operation": {
+        "schedule_id": "theatre_schedule",
+        "visit_id":    "visit",
+        "patient_id":  "patient",
+    },
+    "inventory_requisition": {
+        "requesting_store_id": "store",
+        "requested_by":        "users",
+        "approved_by":         "users",
+    },
+    # inv_stock_movements: product + store FK-constrained, user NOT NULL
+    "inventory_stock_movement": {
+        "product_id":    "product",
+        "from_store_id": "store",
+        "to_store_id":   "store",
+        "user_id":       "users",
+    },
+    # inv_goods_received_notes: PO / store / supplier FK-constrained
+    "inventory_grn": {
+        "purchase_order_id": "purchase_order",
+        "store_id":          "store",
+        "supplier_id":       "supplier",
+        "received_by":       "users",
+    },
+    # inv_purchase_orders: supplier / store FK-constrained, created_by NOT NULL
+    "inventory_purchase_order": {
+        "supplier_id": "supplier",
+        "store_id":    "store",
+        "created_by":  "users",
+        "approved_by": "users",
+    },
+    # evaluation_examination_reviews.visit_id → visits.id (FK-constrained)
+    "evaluation_examination_review": {
+        "visit_id": "visit",
+    },
+    # gl_account_groups.account_type_id → gl_account_types (here, not only in
+    # _NS_FK_REMAP, so _ensure_id_maps matches the types by name when the map is empty)
+    "finance_gl_account_group": {
+        "account_type_id": "gl_account_type",
+    },
     # patient-evaluation vitals.visit_id → visits.id  (patient_id is injected via _PER_KEY_INJECT)
     "outpatient_vital": {
         "visit_id":   "visit",
@@ -3078,7 +3762,9 @@ _FK_REMAP: dict[str, dict[str, str]] = {
     # every prescription went out with its raw V2 visit id. The post step
     # (snowflake_to_v3_migration._V3_COLUMN_RENAMES) moves it back to `visit`.
     "evaluation_prescription": {
-        "visit_id": "visit",
+        "visit_id":           "visit",
+        "return_approved_by": "users",
+        "return_rejected_by": "users",
     },
     # invoices.patient_id → patients.id  |  invoices.visit → visits.id — this
     # transform key had NO FK-remap entry at all before (confirmed against
@@ -3333,6 +4019,21 @@ def _fetch_v3_records(alias: str, org_cfg: dict, service_name: str | None = None
 # alias (singular/plural varies by service) so lookups can't get out of sync.
 _SYNC_MATCH_FIELD_BY_NS: dict[str, str] = {
     r"App\Models\User": "email",
+    # products: code is per-org unique in V3 (V3 renamed name → generic_name)
+    r"App\Models\Product": "code",
+    # ICD-10 types: V3 keeps the description empty — the code is the key
+    # (all 1,910 kisumu_v3 types match by code)
+    r"App\Models\Icd10Type": "code",
+    # procedures: never by name — V2 has several procedures per name (5×
+    # "Colonoscopy", each its own code and price) and V3 a row per code; by
+    # name, 233 kisumu_v3 procedures were linked to a same-named sibling.
+    # Codes V2 itself repeats are "<code>-<V2 id>" in V3 (tried first).
+    r"App\Models\Procedure": "code",
+}
+# further fields tried (in order) when the match field finds nothing, per alias.
+# Usernames are unique per org in V3; 18 kisumu_v3 staff had placeholder emails.
+_SYNC_FALLBACK_FIELDS: dict[str, tuple[str, ...]] = {
+    "users": ("username",),
 }
 
 # Extra id-map dependencies (by v3 namespace) a transform's _PER_KEY_INJECT
@@ -3342,6 +4043,16 @@ _SYNC_MATCH_FIELD_BY_NS: dict[str, str] = {
 _PER_KEY_EXTRA_ID_DEPS: dict[str, list[str]] = {
     "evaluation_prescription": [r"App\Models\User"],
 }
+
+
+# Filled by snowflake_to_v3_migration from its _ALIAS_OVERRIDE / _SERVICE_OVERRIDE:
+# a model posted under an overridden alias (eval_procedure → `procedures` in
+# evaluation-service, not the core / inpatient model the class name resolves
+# to) must also be found — and read from the right service — when its empty id
+# map is rebuilt, or every child FK to it stays unmapped ("Cannot find V2
+# namespace for alias procedures").
+_ALIAS_FOR_TRANSFORM: dict[str, str] = {}
+_SERVICE_FOR_ALIAS: dict[str, str] = {}
 
 
 def sync_id_map(alias: str, v2_namespace: str, facility: str, match_field: str = "name") -> int:
@@ -3355,7 +4066,7 @@ def sync_id_map(alias: str, v2_namespace: str, facility: str, match_field: str =
     """
     org_cfg = facility_v3_config(facility)
 
-    v3_records = _fetch_v3_records(alias, org_cfg)
+    v3_records = _fetch_v3_records(alias, org_cfg, service_name=_SERVICE_FOR_ALIAS.get(alias))
     if not v3_records:
         log.warning("sync_id_map: no V3 records found for %s — cannot build map", alias)
         return 0
@@ -3365,7 +4076,13 @@ def sync_id_map(alias: str, v2_namespace: str, facility: str, match_field: str =
     # migrated before uuids were carried across.
     v3_by_uuid: dict[str, int] = {}
     v3_by_key: dict[str, int] = {}
-    for rec in v3_records:
+    v3_by_fallback: dict[tuple[str, str], int] = {}
+    v3_by_v2_id: dict[int, int] = {}
+    v3_name_by_key: dict[str, str] = {}
+    # Oldest row first, and the first row per name wins: when V3 holds copies of
+    # a record (1,763 procedures re-created on 2026-10-12), children must link
+    # to the original, never to the copy.
+    for rec in sorted(v3_records, key=lambda x: int(x["id"]) if str(x.get("id") or "").isdigit() else 0):
         v3_id = rec.get("id")
         if not v3_id:
             continue
@@ -3373,7 +4090,16 @@ def sync_id_map(alias: str, v2_namespace: str, facility: str, match_field: str =
             v3_by_uuid[str(rec["uuid"]).strip().lower()] = v3_id
         key = rec.get(match_field)
         if key:
-            v3_by_key[str(key).strip().lower()] = v3_id
+            v3_by_key.setdefault(str(key).strip().lower(), v3_id)
+            v3_name_by_key.setdefault(str(key).strip().lower(), str(rec.get("name") or "").strip().lower())
+        for fb in _SYNC_FALLBACK_FIELDS.get(alias, ()):
+            if rec.get(fb):
+                v3_by_fallback.setdefault((fb, str(rec[fb]).strip().lower()), v3_id)
+        # users the V3 backend created from V2 carry the V2 id in a placeholder
+        # email (miteigyn@gmail.com.v2-1533.invalid) — the surest match there is
+        m = _V2_PLACEHOLDER_EMAIL.match(str(rec.get("email") or "").strip())
+        if m:
+            v3_by_v2_id.setdefault(int(m["v2_id"]), v3_id)
 
     # Extract V2 records
     cfg = v2_facility_config(facility)
@@ -3393,6 +4119,13 @@ def sync_id_map(alias: str, v2_namespace: str, facility: str, match_field: str =
         log.warning("sync_id_map: %s — %d page(s) failed to extract and were skipped: %s",
                     v2_namespace, len(failed_pages), failed_pages)
 
+    v2_code_count: dict[str, int] = {}
+    if match_field == "code":
+        for rec in v2_records:
+            k = str(rec.get("code") or "").strip().lower()
+            if k:
+                v2_code_count[k] = v2_code_count.get(k, 0) + 1
+
     by_uuid = by_field = 0
     for rec in v2_records:
         v2_id = rec.get("id")
@@ -3403,17 +4136,67 @@ def sync_id_map(alias: str, v2_namespace: str, facility: str, match_field: str =
         if v3_id:
             by_uuid += 1
         else:
-            key = str(rec.get(match_field) or "").strip().lower()
-            v3_id = v3_by_key.get(key) if key else None
+            v3_id = v3_by_v2_id.get(int(v2_id)) if str(v2_id).isdigit() else None
+            if not v3_id:
+                key = str(rec.get(match_field) or "").strip().lower()
+                # The plain-code row is the original (oldest first). Every
+                # "<code>-<V2 id>" row is a 2026-10-12 copy — used ONLY when V2
+                # repeats the code for a DIFFERENT procedure (CON-0003: Doctor's
+                # Fee / Consultant Review / REVIEW …), where the original holds
+                # the code and that copy is the procedure's only V3 row.
+                if key and match_field == "code" and v2_code_count.get(key, 0) > 1:
+                    orig_name = v3_name_by_key.get(key, "")
+                    if str(rec.get("name") or "").strip().lower() != orig_name:
+                        v3_id = v3_by_key.get(f"{key}-{v2_id}")
+                if not v3_id:
+                    v3_id = v3_by_key.get(key) if key else None
+            for fb in _SYNC_FALLBACK_FIELDS.get(alias, ()):
+                if v3_id:
+                    break
+                val = str(rec.get(fb) or "").strip().lower()
+                v3_id = v3_by_fallback.get((fb, val)) if val else None
             if v3_id:
                 by_field += 1
         if v3_id:
             _store_id_mapping(alias, v2_id, v3_id)
+            # uuid-era maps are keyed by the V2 uuid and looked up by it first —
+            # repoint that key too, or a stale entry (e.g. to a duplicate) wins
+            if u:
+                _store_id_mapping(alias, u, v3_id)
 
     matched = by_uuid + by_field
     log.info("sync_id_map %s [%s]: matched %d / %d V2 records to V3 ids (%d on uuid, %d on %s)",
              alias, facility, matched, len(v2_records), by_uuid, by_field, match_field)
     return matched
+
+
+# only reference-sized tables are re-synced when partial (products: 6,440 V3 rows
+# in org 4 — 94 V2 products had no mapping, holding 686 stock rows and movements)
+_RESYNC_MAX_ROWS = 10000
+
+# transform keys whose payload carries facility_id that must be the destination facility
+_PER_KEY_DEST_FACILITY: set[str] = {"theatre_theatre", "gen_settings_destinations", "gen_settings_scheme_exclusions"}
+# transform keys whose rows link to the row V3 already has with the same value
+# of this field (V3 seeds org 4 with Laboratory / Triage … destinations; the
+# shared ICD-10 codes) instead of adding a twin
+_LINK_BY_FIELD: dict[str, str] = {"gen_settings_destinations": "name",
+                                  "gen_evaluation_icd10_variations": "code"}
+_v3_total_cache: dict[str, int | None] = {}
+_resynced: set[str] = set()       # aliases whose id map was rebuilt in this process
+
+
+def _v3_total(alias: str, facility: str) -> int | None:
+    """Rows this org has for a gateway model (one 1-row read, cached per process)."""
+    if alias not in _v3_total_cache:
+        org_cfg = facility_v3_config(facility)
+        try:
+            r = _gateway_post(_SERVICE_FOR_ALIAS.get(alias) or _alias_to_service.get(alias, "core"),
+                              {"action": "read", "model": alias, "source_tenant_id": org_cfg.get("organization_id"),
+                               "per_page": 1, "page": 1}, timeout=60)
+            _v3_total_cache[alias] = ((r.json().get("meta") or {}).get("total") if r.ok else None)
+        except Exception:
+            _v3_total_cache[alias] = None
+    return _v3_total_cache[alias]
 
 
 def _ensure_id_maps(transform_key: str, facility: str) -> None:
@@ -3429,15 +4212,29 @@ def _ensure_id_maps(transform_key: str, facility: str) -> None:
         aliases.append((_v3_alias(v3_ns), v3_ns))
 
     for alias, known_v3_ns in aliases:
-        if _id_map.get(alias):
-            continue
-        log.info("ID map for %s is empty — auto-syncing from V3 before %s job",
-                 alias, transform_key)
+        have = len(_id_map.get(alias) or {})
+        if have and alias in _resynced:
+            continue                       # once per process — not again on every page
+        if have:
+            # a partial map never rebuilt itself (e.g. 3 procedures mapped by a
+            # canary, 1,674 in V3 → every procedure FK stayed unmapped). For
+            # small reference tables, re-sync when V3 holds more than we know.
+            total = _v3_total(alias, facility)
+            if total is None or total <= have or total > _RESYNC_MAX_ROWS:
+                continue
+            log.info("ID map for %s knows %d of %d V3 rows — re-syncing before %s job",
+                     alias, have, total, transform_key)
+        else:
+            log.info("ID map for %s is empty — auto-syncing from V3 before %s job",
+                     alias, transform_key)
+        variants = {alias, alias[:-1] if alias.endswith("s") else alias + "s"}
         v2_ns = next(
             (ns for ns, m in NAMESPACE_MAP.items()
-             if (known_v3_ns and m["v3"] == known_v3_ns) or _v3_alias(m["v3"]) == alias),
+             if (known_v3_ns and m["v3"] == known_v3_ns) or _v3_alias(m["v3"]) == alias
+             or _ALIAS_FOR_TRANSFORM.get(m["transform"]) in variants),
             None,
         )
+        _resynced.add(alias)
         if v2_ns:
             match_field = _SYNC_MATCH_FIELD_BY_NS.get(NAMESPACE_MAP[v2_ns]["v3"], "name")
             sync_id_map(alias, v2_ns, facility, match_field=match_field)

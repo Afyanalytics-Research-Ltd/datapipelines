@@ -98,7 +98,7 @@ import sys
 import threading
 import time
 import uuid as uuid_lib
-from collections import defaultdict
+from collections import Counter, defaultdict
 from contextlib import contextmanager
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -108,6 +108,7 @@ from dotenv import load_dotenv
 
 import v2_to_v3_api_migration as v2v3
 import v3_passthrough as v3pt
+import v3_extra_mappings as xm
 from facility_to_snowflake_fast_resume import (
     OLD_SYSTEM_HISTORY_TABLES, build_namespace, snake_to_pascal,
 )
@@ -297,6 +298,22 @@ def discover_tables(cur, facility: str) -> list[dict]:
             "v3":        mapping["v3"] if mapping else None,
             "transform": mapping["transform"] if mapping else None,
         })
+    return mark_skipped(entries, set(clean_tables(cur, facility)))
+
+
+def mark_skipped(entries: list[dict], clean_set: set | None = None) -> list[dict]:
+    """Copies of a table migrated under another name are never posted (they'd
+    put the same records in twice) — when that other copy is in this
+    facility's CLEAN; unmapped tables carry their recorded reason."""
+    for e in entries:
+        t = e["table"].lower()
+        canonical = xm.duplicate_of(t, clean_set)
+        if canonical:
+            e.update(v3=None, transform=None, skipped=f"duplicate of {canonical}")
+        elif t in xm.NOT_MIGRATED_DESPITE_MAPPING:
+            e.update(v3=None, transform=None, skipped=xm.NOT_MIGRATED[t])
+        elif not e["v3"]:
+            e["skipped"] = xm.NOT_MIGRATED.get(t)
     return entries
 
 
@@ -356,10 +373,12 @@ def _load_id_to_uuid() -> None:
     persisting only one of them would still leave the other empty on a fresh
     process and silently break FK resolution exactly like the bug this was
     written to fix."""
-    global _id_to_uuid, _alias_to_table
+    global _id_to_uuid, _alias_to_table, _uuid_to_id
+    _uuids_loaded.clear()
     if not ID_TO_UUID_FILE.exists():
         _id_to_uuid = {}
         _alias_to_table = {}
+        _uuid_to_id = {}
         return
     try:
         raw = json.loads(ID_TO_UUID_FILE.read_text())
@@ -368,6 +387,8 @@ def _load_id_to_uuid() -> None:
             for table, mapping in raw.get("id_to_uuid", {}).items()
         }
         _alias_to_table = dict(raw.get("alias_to_table", {}))
+        _uuid_to_id = {_norm_uuid(u): i for mapping in _id_to_uuid.values() for i, u in mapping.items()}
+        _uuid_to_id.update(raw.get("person_uuid_to_id", {}))
         total = sum(len(v) for v in _id_to_uuid.values())
         if total:
             log.info("id->uuid map loaded — %d entries across %d tables (%d aliases)",
@@ -376,6 +397,7 @@ def _load_id_to_uuid() -> None:
         log.warning("Could not load %s: %s — starting fresh", ID_TO_UUID_FILE.name, e)
         _id_to_uuid = {}
         _alias_to_table = {}
+        _uuid_to_id = {}
 
 
 def _register_table(alias: str, table: str, records: list[dict]) -> None:
@@ -392,18 +414,148 @@ def _register_table(alias: str, table: str, records: list[dict]) -> None:
     other, which is exactly what happened before this fix existed.
     """
     id_uuid = {r["id"]: r["uuid"] for r in records if r.get("id") is not None and r.get("uuid")}
-    with _alias_to_table_lock, _id_to_uuid_lock, v2v3._file_lock(ID_TO_UUID_FILE):
+    person = ({r["patient_uuid"]: r["id"] for r in records if r.get("id") is not None and r.get("patient_uuid")}
+              if alias in _PERSON_UUID_ALIASES else None)
+    with _alias_to_table_lock:
         _alias_to_table.setdefault(alias, table)
-        _id_to_uuid.setdefault(table, {}).update(id_uuid)   # page by page
+    _add_uuids(table, id_uuid, person)   # page by page, merged with what's on disk
+
+
+# ─── UUID-LINKED EXTRACTS (V2 uuid layer, 2026-10) ──────────────────────────
+# Since V2's uuid install, the extraction gateway returns every link as the
+# parent's uuid in `<column>_uuid` (trailing _id dropped: visit → visit_uuid,
+# store_id → store_uuid) and NULLS the integer column. Everything downstream
+# — FK remap via _id_to_uuid, the visit→patient / visit→admission side
+# channels, the vitals split, injected patient_ids, the parent-in-facility
+# check — keys on those integers, so restore_int_links() puts the parent's V2
+# id back from its uuid when the rows are read. Rows from older extracts (no
+# `_uuid` columns) pass through untouched.
+#
+# A row's `patient_uuid` is the PERSON (reception_patients.patient_uuid), not
+# the patient row's own uuid, so the patient table also registers
+# patient_uuid → V2 id (_PERSON_UUID_ALIASES).
+_uuid_to_id: dict[str, object] = {}          # any registered row uuid / person uuid → V2 id
+_PERSON_UUID_ALIASES = {"patient", "patients"}
+_uuids_loaded: set[str] = set()              # CLEAN tables whose id/uuid pairs this process has read
+# The only *_uuid columns V3 has; every other `<x>_uuid` is a V2 link, never posted.
+_V3_UUID_COLUMNS = {"batch_uuid"}
+# V2 0/1 flags its uuid layer mistakes for links: `invoiced` = 1 comes back
+# null with an invoiced_uuid (live, evaluation_investigations, 2026-10-10).
+_LINK_FLAG_COLUMNS = {"invoiced"}
+
+
+def _norm_uuid(u) -> str | None:
+    return str(u).strip().lower() if u not in (None, "") else None
+
+
+def _add_uuids(table: str, id_uuid: dict, person: dict | None = None) -> None:
+    """Record V2 id ↔ uuid pairs for a table (and person uuid → V2 id), in
+    memory and merged into ID_TO_UUID_FILE."""
+    with _id_to_uuid_lock, v2v3._file_lock(ID_TO_UUID_FILE):
+        _id_to_uuid.setdefault(table, {}).update(id_uuid)
+        for i, u in id_uuid.items():
+            _uuid_to_id[_norm_uuid(u)] = i
+        for u, i in (person or {}).items():
+            _uuid_to_id[_norm_uuid(u)] = i
         try:
             on_disk = json.loads(ID_TO_UUID_FILE.read_text()) if ID_TO_UUID_FILE.exists() else {}
         except Exception:
             on_disk = {}
-        merged_id_to_uuid = {**on_disk.get("id_to_uuid", {}), **_id_to_uuid}
-        merged_alias_to_table = {**on_disk.get("alias_to_table", {}), **_alias_to_table}
-        v2v3._atomic_write(ID_TO_UUID_FILE, json.dumps(
-            {"id_to_uuid": merged_id_to_uuid, "alias_to_table": merged_alias_to_table}, indent=2,
-        ))
+        persons = {**on_disk.get("person_uuid_to_id", {}), **{_norm_uuid(u): i for u, i in (person or {}).items()}}
+        v2v3._atomic_write(ID_TO_UUID_FILE, json.dumps({
+            **on_disk,
+            "id_to_uuid": {**on_disk.get("id_to_uuid", {}), **_id_to_uuid},
+            "alias_to_table": {**on_disk.get("alias_to_table", {}), **_alias_to_table},
+            "person_uuid_to_id": persons,
+        }, indent=2))
+
+
+def _parent_tables(transform_key: str, v3_namespace: str | None) -> set[str]:
+    """CLEAN tables whose uuids this table's links can point at: its FK
+    parents, plus patients / visits / admissions (side channels, injections,
+    the vitals split) and the parent-in-facility tables."""
+    fk = {**v2v3._NS_FK_REMAP.get(v3_namespace or "", {}), **v2v3._FK_REMAP.get(transform_key, {})}
+    tables = {_table_for_alias(a) for a in set(fk.values()) | {"patient", "visit", "admission"}}
+    tables |= {t for _, t, _ in _SKIP_IF_PARENT_NOT_IN_FACILITY.get(transform_key, [])}
+    # the same V2 table loaded under another name (xm.TWINS) holds the same
+    # ids — and a re-extract under the new name is where the uuids are
+    tables |= {k for k, v in xm.TWINS.items() if v in tables} | {xm.TWINS[t] for t in tables if t in xm.TWINS}
+    return {t for t in tables if t}
+
+
+def ensure_uuids_loaded(facility: str, tables) -> None:
+    """Read id/uuid (and the patient table's person uuid) of each CLEAN table
+    not yet seen by this process. A parent whose job is already done never
+    re-registers its rows, so without this its children's `_uuid` links
+    could never be turned back into V2 ids."""
+    person_tables = {_alias_to_table.get(a) for a in _PERSON_UUID_ALIASES} | {"reception_patients", "patients"}
+    person_tables |= {k for k, v in xm.TWINS.items() if v in person_tables}
+    for table in sorted(set(tables) - _uuids_loaded):
+        _uuids_loaded.add(table)
+        src = f"{sf_schema(facility, 'CLEAN')}.{table.upper()}"
+        try:
+            with _snowflake_connect() as conn:
+                cur = conn.cursor()
+                cur.execute(f"SELECT * FROM {src} LIMIT 0")
+                cols = {d[0].lower() for d in cur.description}
+                if "uuid" not in cols:
+                    continue
+                person = "patient_uuid" in cols and table in person_tables
+                cur.execute(f"SELECT id, uuid{', patient_uuid' if person else ''} FROM {src} WHERE uuid IS NOT NULL")
+                rows = cur.fetchall()
+        except Exception as e:
+            log.warning("  couldn't read %s's uuids (%s) — its children's uuid links may stay unresolved", src, e)
+            continue
+        ids = {(int(r[0]) if str(r[0]).isdigit() else r[0]): r[1] for r in rows if r[0] is not None}
+        persons = {r[2]: ids_key for r in rows if person and r[2]
+                   for ids_key in [int(r[0]) if str(r[0]).isdigit() else r[0]]}
+        _add_uuids(table, ids, persons)
+        log.info("  %s: %d uuid(s) registered for link restore%s", table, len(ids),
+                 f" (+{len(persons)} person uuids)" if person else "")
+
+
+def _fk_name(transform_key: str, column: str) -> str:
+    """The transform's name for a V2 column (visit → visit_id …), to compare
+    with _CRITICAL_FK_FIELDS."""
+    renamed = v2v3._PER_KEY_RENAMES.get(transform_key, {}).get(column)
+    return renamed or (column if column.endswith("_id") else v2v3._GLOBAL_FK_RENAMES.get(column, column))
+
+
+def restore_int_links(rows: list[dict], transform_key: str, critical=None) -> tuple[list[dict], int, Counter]:
+    """Put each nulled V2 integer link back from its `<column>_uuid`.
+
+    Returns (rows to migrate, rows held back, unresolved count per column).
+    A row is held back — not posted without its link — when a critical FK
+    (_CRITICAL_FK_FIELDS, or `critical`) has a uuid that maps to no
+    registered V2 row; the job stays open and a later run retries it. Other
+    unresolved links stay null. An integer that is still set is left alone
+    (the gateway keeps the integer when it couldn't resolve the link)."""
+    critical = set(_CRITICAL_FK_FIELDS.get(transform_key, []) if critical is None else critical)
+    keep, held, unresolved = [], 0, Counter()
+    for r in rows:
+        missing_critical = False
+        for k, u in list(r.items()):
+            if not k.endswith("_uuid") or k == "uuid" or not u:
+                continue
+            base = k[:-5]
+            for col in (base, base + "_id"):
+                if col not in r or r[col] not in (None, ""):
+                    continue
+                if col in _LINK_FLAG_COLUMNS:
+                    r[col] = 1
+                    continue
+                v2 = _uuid_to_id.get(_norm_uuid(u))
+                if v2 is not None:
+                    r[col] = v2
+                else:
+                    unresolved[col] += 1
+                    if _fk_name(transform_key, col) in critical or col in critical:
+                        missing_critical = True
+        if missing_critical:
+            held += 1
+        else:
+            keep.append(r)
+    return keep, held, unresolved
 
 
 def _store_uuid_mapping(alias: str, uuid_or_id, v3_id) -> None:
@@ -433,6 +585,31 @@ _CRITICAL_FK_FIELDS: dict[str, list] = {
     # going out with the V2 investigation id
     "evaluation_inv_result":  ["investigation_id", "visit_id"],
     "evaluation_investigation": ["visit_id"],
+    # schemes wait for their insurance company (settings_insurance) rather
+    # than going out with the V2 company id
+    "settings_scheme":        ["company_id"],
+    # V3 FK-constrains both: wait for the visit / account type instead of
+    # posting the V2 id
+    "evaluation_examination_review": ["visit_id"],
+    "finance_gl_account_group":      ["account_type_id"],
+    # wait for the supplier, store and creating user rather than post V2 ids
+    "inventory_purchase_order":      ["supplier_id", "store_id", "created_by"],
+    "inventory_grn":                 ["purchase_order_id", "store_id", "supplier_id"],
+    "inventory_requisition":         ["requesting_store_id"],
+    "inventory_stock_movement":      ["product_id", "user_id", "from_store_id", "to_store_id"],
+    # inp_admission_requests: patient + requesting doctor NOT NULL
+    "inpatient_admission_request":   ["patient_id", "requested_by"],
+    # inv_products.category_id is FK-constrained: wait for the category
+    "inventory_product":             ["category_id"],
+    "reception_patient_dependant": ["patient_id"],
+    "finance_receipt":               ["issued_by"],
+    # inp_beds: ward + bed type are FK-constrained — wait for them, never post V2 ids
+    "inpatient_bed":                 ["ward_id", "bed_type_id"],
+    "theatre_theatre":   ["theatre_type_id"],
+    # theatre chain — NOT NULL / FK-constrained, so a row waits for its parent
+    "theatre_booking":   ["visit_id", "patient_id", "status_id", "requested_by"],
+    "theatre_schedule":  ["booking_id", "theatre_id", "scheduled_by"],
+    "theatre_operation": ["schedule_id", "patient_id"],
     "evaluation_prescription":  ["visit_id"],
     # an unresolved patient went out as the raw V2 id → FK 500 on every record
     "reception_patient_nok":      ["patient_id"],
@@ -450,9 +627,19 @@ _CRITICAL_FK_FIELDS: dict[str, list] = {
 # V2 id (which would point at an unrelated V3 row, or fail the FK).
 _NULL_IF_UNRESOLVED: dict[str, set[str]] = {
     "evaluation_sample":           {"investigation_id"},
+    # a V2 destination with no V3 service destination: none, never the raw V2 id
+    "evaluation_visit_destination": {"destination_id"},
     "inpatient_discharge_request": {"visit_id"},
     # stores are posted in parallel, so a parent may not be in V3 yet
     "inventory_store":             {"parent_store_id"},
+    "inventory_purchase_order":    {"approved_by"},     # nullable in V3
+    "inventory_grn":               {"received_by"},
+    "inventory_requisition":       {"requested_by", "approved_by"},
+    "evaluation_prescription":     {"return_approved_by", "return_rejected_by"},
+    "finance_receipt":             {"patient_id", "invoice_id"},     # both nullable on receipts
+    "theatre_booking":             {"theatre_deposit_id", "operation_procedure_id", "approved_by",
+                                    "cancelled_by", "rejected_by", "authorized_by"},
+    "theatre_operation":           {"visit_id"},
 }
 
 # Rows whose parent isn't part of this facility's migrated data at all are
@@ -470,6 +657,27 @@ _SKIP_IF_PARENT_NOT_IN_FACILITY: dict[str, list[tuple[str, str, str]]] = {
     # 56 dispensings have no store (their prescription is missing / store 0)
     "inventory_dispensing":         [("store_id", "inventory_stores", "id"),
                                      ("visit_id", "visits", "id")],
+    # orders whose store isn't in V2's stores (kisumu_v3: stores 1 and 2) can never link
+    "inventory_purchase_order":     [("store_id", "inventory_stores", "id")],
+    "inventory_grn":                [("store_id", "inventory_stores", "id")],
+    # 281,220 kisumu_v3 result details point at 40,524 lab results V2 itself
+    # doesn't have (old-system lines; not in the API, nor in the older KISUMU
+    # extract, nor an investigation id; 58 have a known visit) — never linkable
+    "gen_evaluation_investigation_result_details": [("investigation_result_id",
+                                                     "evaluation_investigation_results", "id")],
+    # early (2023) movements point at products / stores / users deleted from V2
+    # itself (product 29, stores 1 and 2, users 723 / 726) — never linkable
+    "inventory_stock_movement":     [("product_id", "inventory_products", "id"),
+                                     ("store_id", "inventory_stores", "id"),
+                                     ("user_id", "users", "id")],
+    # all 4 kisumu_v3 requisitions have store_id 0 (no store) — V3 requires one
+    "inventory_requisition":        [("requesting_store_id", "inventory_stores", "id")],
+    "gen_inventory_internal_order": [("requesting_store_id", "inventory_stores", "id"),
+                                     ("supplying_store_id", "inventory_stores", "id")],
+    # 96 of 160 kisumu_v3 bed rows hang off wards / bed types deleted in V2
+    # (e.g. bed 53 → ward 33, bed type 1) — inp_beds FK-constrains both
+    "inpatient_bed":                [("ward_id", "inpatient_wards", "id"),
+                                     ("bed_type_id", "inpatient_bed_types", "id")],
 }
 
 # Source tables read with their own query instead of SELECT *. V2 discharges
@@ -509,8 +717,14 @@ _FETCH_SQL: dict[str, str] = {
 # leave the job open (not marked done), so the next run carries on. 0 = no limit.
 RECORD_LIMIT = int(os.getenv("RECORD_LIMIT", "0"))
 
-# records sent so far in this table under a RECORD_LIMIT canary (reset per table)
-_canary_sent = 0
+# records sent so far per table under a RECORD_LIMIT canary, keyed by the
+# table's job key — tables run in parallel threads, so one shared counter let
+# the first table use up every other table's allowance (they posted 0)
+_canary_sent: dict[str, int] = {}
+
+
+def _canary_key(job_key: str) -> str:
+    return job_key.split("::")[0]          # vitals' ::inpatient / ::outpatient share their table's limit
 
 # job_key -> records held back (parent not in V3 yet) by the last post of that job
 _held_back: dict[str, int] = {}
@@ -538,10 +752,10 @@ _held_back: dict[str, int] = {}
 # evaluation-service's `vitals`.
 _ALIAS_OVERRIDE: dict[str, str] = {"reception_visit": "visits", "settings_clinic": "facilities",
                                    "eval_procedure": "procedures", "outpatient_vital": "vitals",
-                                   "inpatient_vital": "vital"}
+                                   "inpatient_vital": "vital", "finance_receipt": "receipt"}
 _SERVICE_OVERRIDE: dict[str, str] = {"reception_visit": "evaluation", "settings_clinic": "core",
                                      "eval_procedure": "evaluation", "outpatient_vital": "evaluation",
-                                     "inpatient_vital": "inpatient"}
+                                     "inpatient_vital": "inpatient", "finance_receipt": "finance"}
 # Upsert column per transform when it isn't uuid. kisumu patients have no
 # uuid; patient_no ("kisumu_v3-org4-<no>-<v2 id>") is unique per patient and
 # enabled as a match_on column for `patient`, so a re-post updates in place.
@@ -621,6 +835,14 @@ def _model_has_uuid(alias: str, service: str | None) -> bool:
         r = v2v3._gateway_post(svc, {"action": "read", "model": alias, "source_tenant_id": org, "per_page": 1},
                                timeout=60)
         rows = r.json().get("data") or [] if r.ok else []
+        if r.ok and not rows:
+            # An empty table shows no columns. Concluding "no uuid" posted the
+            # first record of every fresh table with a random uuid, so a re-run
+            # duplicated it. Assume a uuid (the poster strips it — and match_on
+            # with it — if V3 says the column is unknown) and don't cache the
+            # guess: the next record re-checks once a row exists.
+            log.info("  %s: table empty — assuming a uuid column until a row shows otherwise", alias)
+            return True
         has = bool(rows) and "uuid" in rows[0]
     except Exception as e:
         log.warning("  couldn't check %s for a uuid column (%s) — posting without one", alias, e)
@@ -631,8 +853,19 @@ def _model_has_uuid(alias: str, service: str | None) -> bool:
     return has
 
 
-def _with_stable_uuid(payload: dict, *, facility: str, alias: str, rec_key, transform_key: str) -> dict:
-    if payload.get("uuid") or rec_key is None or transform_key in _MATCH_ON_OVERRIDE:
+def _with_stable_uuid(payload: dict, *, facility: str, alias: str, rec_key, transform_key: str,
+                      v2_id=None) -> dict:
+    if transform_key in _MATCH_ON_OVERRIDE:
+        return payload
+    # A V3 row already matched to this V2 record (repair_v3_links /
+    # pair_v3_uuids.py) wins over the record's own uuid: rows migrated before
+    # V2 had uuids carry V3's uuid, and posting the new V2 uuid with
+    # match_on=uuid would insert a second copy instead of updating.
+    known = (_v3_uuid_for(alias, v2_id) if v2_id is not None else None) or \
+        (_v3_uuid_for(alias, rec_key) if rec_key is not None else None)
+    if known:
+        return {**payload, "uuid": known}
+    if payload.get("uuid") or rec_key is None:
         return payload
     if not _model_has_uuid(alias, _SERVICE_OVERRIDE.get(transform_key)):
         return payload
@@ -787,6 +1020,74 @@ def _remap_fks_via_uuid(record: dict, transform_key: str, v3_namespace: str) -> 
 
 # ─── PER-TABLE JOB ───────────────────────────────────────────────────────────
 
+def _already_inserted(job_key: str, r: dict, alias: str | None = None) -> bool:
+    """Inserted under its uuid — or, for a record migrated before V2 had
+    uuids (progress keyed by V2 id), under its id — or its V2 id already
+    maps to a V3 row of this model (migrated by another job, e.g. the same
+    V2 table loaded earlier under another source-table name)."""
+    if v2v3._record_inserted(job_key, r.get("uuid") or r.get("id")):
+        return True
+    i = r.get("id")
+    if i is None:
+        return False
+    keys = {i, str(i), int(i) if str(i).isdigit() else i}
+    if r.get("uuid") and any(v2v3._record_inserted(job_key, k) for k in keys):
+        return True
+    if alias and _single_source(alias):
+        mp = _id_map_for(alias)
+        return any(k in mp for k in keys)
+    return False
+
+
+_single_source_cache: dict[str, bool] = {}
+
+
+def _single_source(alias: str) -> bool:
+    """True when every V2 class mapped to this V3 model is the same V2 entity
+    (spellings aside), so a V2 id in its id map can only be this record.
+    `vital` gets evaluation AND inpatient vitals, whose ids overlap — False."""
+    if alias not in _single_source_cache:
+        variants = set(_alias_variants(alias))
+        sources = set()
+        for ns, mp in v2v3.NAMESPACE_MAP.items():
+            if not mp.get("v3"):
+                continue
+            a = _ALIAS_OVERRIDE.get(mp.get("transform")) or v2v3._v3_alias(mp["v3"])
+            if a in variants:
+                parts = ns.split("\\")
+                cls = parts[-1].lower()
+                sources.add((parts[1].lower(), cls[:-1] if cls.endswith("s") else cls))
+        _single_source_cache[alias] = len(sources) <= 1
+    return _single_source_cache[alias]
+
+
+def _link_existing_by_field(pending: list[dict], *, transform_key: str, alias: str, org_cfg: dict,
+                            job_key: str) -> list[dict]:
+    """Rows V3 already has under the same value of a natural key
+    (v2v3._LINK_BY_FIELD: destination name, ICD code …) are linked to that
+    row — id map + marked inserted — instead of posted as a twin. Returns
+    the rows still to post."""
+    field = v2v3._LINK_BY_FIELD.get(transform_key)
+    if not field or not pending:
+        return pending
+    key = lambda rec: str(rec.get(field) or "").strip().lower()
+    existing: dict[str, int] = {}
+    for rec in sorted(v2v3._fetch_v3_records(alias, org_cfg, service_name=_SERVICE_OVERRIDE.get(transform_key)),
+                      key=lambda x: x.get("id") or 0):                       # oldest row wins
+        if key(rec) and rec.get("id") is not None:
+            existing.setdefault(key(rec), rec["id"])
+    same = [r for r in pending if key(r) in existing]
+    for r in same:
+        for k in {r.get("id"), r.get("uuid")} - {None}:
+            _store_uuid_mapping(alias, k, existing[key(r)])
+        rk = r.get("uuid") or r.get("id")
+        if rk is not None:
+            v2v3._mark_record_inserted(job_key, rk)
+    if same:
+        log.info("  Linked %d record(s) to the row V3 already has with the same %s — not posted", len(same), field)
+    return [r for r in pending if key(r) not in existing]
+
+
 def post_table_to_v3(v3_namespace: str, org_cfg: dict, records: list[dict],
                      *, transform_key: str, alias: str, job_key: str, dry_run: bool) -> int:
     """Mirrors v2v3.post_to_v3()'s threading/resume/dead-letter behaviour,
@@ -807,19 +1108,20 @@ def post_table_to_v3(v3_namespace: str, org_cfg: dict, records: list[dict],
         return 0
 
     pending = [r for r in records
-               if job_key in REPROCESS_JOB_KEYS
-               or not v2v3._record_inserted(job_key, r.get("uuid") or r.get("id"))]
+               if job_key in REPROCESS_JOB_KEYS or not _already_inserted(job_key, r, alias)]
     skipped = len(records) - len(pending)
     if skipped:
         log.info("  Skipping %d already-migrated records, posting %d", skipped, len(pending))
-    global _canary_sent
+    pending = _link_existing_by_field(pending, transform_key=transform_key, alias=alias, org_cfg=org_cfg,
+                                      job_key=job_key)
     if RECORD_LIMIT:
-        room = max(RECORD_LIMIT - _canary_sent, 0)
+        ck = _canary_key(job_key)
+        room = max(RECORD_LIMIT - _canary_sent.get(ck, 0), 0)
         if len(pending) > room:
             log.info("  Canary — posting %d of %d pending records (limit %d per table)",
                      room, len(pending), RECORD_LIMIT)
             pending = pending[:room]
-        _canary_sent += len(pending)
+        _canary_sent[ck] = _canary_sent.get(ck, 0) + len(pending)
 
     done_count = 0
     dead_letter_count = 0
@@ -854,7 +1156,9 @@ def post_table_to_v3(v3_namespace: str, org_cfg: dict, records: list[dict],
                    if alias in _NO_V2_ID_ON_POST else remapped)
         payload = _apply_v3_column_names(payload, transform_key)
         payload = _with_stable_uuid(payload, facility=job_key.split("|")[0], alias=alias,
-                                    rec_key=rec_key, transform_key=transform_key)
+                                    rec_key=rec_key, transform_key=transform_key, v2_id=record.get("id"))
+        # V2 link uuids (`<x>_uuid`) only serve restore_int_links — V3 has no such columns
+        payload = {k: v for k, v in payload.items() if not k.endswith("_uuid") or k in _V3_UUID_COLUMNS}
         garbled = payload.get(v2v3.GARBLED_KEY) or {}
         post_kwargs = dict(alias_override=_ALIAS_OVERRIDE.get(transform_key),
                            service_override=_SERVICE_OVERRIDE.get(transform_key),
@@ -989,6 +1293,43 @@ def _run_vitals_split(entry: dict, facility: str, rows: list[dict], org_cfg: dic
     return failed, held   # held = waiting on a parent / user that isn't in V3 yet
 
 
+def _v2_duplicate_codes(facility: str, table: str) -> dict[str, int]:
+    """Codes V2 itself gives to more than one row of this table (e.g. two
+    products coded ITM000321) → the lowest V2 id holding each. V3 codes are
+    unique, so only these get the V2 id appended (_dedupe_v2_codes). A code
+    V3 already holds for the SAME record is never re-coded — that re-created
+    1,763 procedures on 2026-10-12."""
+    src = f"{sf_schema(facility, 'CLEAN')}.{table.upper()}"
+    try:
+        with _snowflake_connect() as conn:
+            cur = conn.cursor()
+            cur.execute(f"SELECT * FROM {src} LIMIT 0")
+            if "CODE" not in {d[0].upper() for d in cur.description}:
+                return {}
+            rows = cur.execute(
+                f'SELECT LOWER(TRIM(TO_VARCHAR("CODE"))), MIN("ID") FROM {src} '
+                f"WHERE NULLIF(TRIM(TO_VARCHAR(\"CODE\")), '') IS NOT NULL GROUP BY 1 HAVING COUNT(*) > 1"
+            ).fetchall()
+    except Exception as e:
+        log.warning("  couldn't check %s for duplicate codes (%s)", src, e)
+        return {}
+    if rows:
+        log.info("  %s: %d code(s) shared by several V2 rows — later rows get '-<V2 id>'", table, len(rows))
+    return {k: (int(v) if str(v).isdigit() else v) for k, v in rows}
+
+
+def _dedupe_v2_codes(records: list[dict], dup_codes: dict) -> list[dict]:
+    if not dup_codes:
+        return records
+    out = []
+    for r in records:
+        code = str(r.get("code") or "").strip()
+        first = dup_codes.get(code.lower()) if code else None
+        rid = int(r["id"]) if str(r.get("id") or "").isdigit() else r.get("id")
+        out.append({**r, "code": f"{code}-{rid}"} if first is not None and rid != first else r)
+    return out
+
+
 def _department_code(name: str) -> str:
     return re.sub(r"[^a-z0-9]+", "_", name.lower()).strip("_")[:50] or "department"
 
@@ -1000,9 +1341,28 @@ def ensure_departments_from_destinations(facility: str) -> None:
     if it doesn't exist yet (matched by name, so re-runs create nothing)."""
     view = f"{sf_schema(facility, 'CLEAN')}.EVALUATION_VISIT_DESTINATIONS"
     with _snowflake_connect() as conn:
-        names = sorted({" ".join(str(r[0]).split()) for r in conn.cursor().execute(
-            f"SELECT DISTINCT destination_name FROM {view} WHERE NULLIF(TRIM(destination_name), '') IS NOT NULL"
-        ).fetchall()})
+        cur = conn.cursor()
+        cur.execute(f"SELECT * FROM {view} LIMIT 0")
+        cols = {d[0].lower() for d in cur.description}
+        # the same names transform_record gives department_name: a flattened
+        # destination_name, the destination object's name, else V2's department
+        exprs = [e for c, e in (("destination_name", "destination_name::STRING"),
+                                ("destination", "TRY_PARSE_JSON(destination::STRING):name::STRING"),
+                                ("department", "department::STRING")) if c in cols]
+        if not exprs:
+            raise RuntimeError(f"{view} has none of destination_name / destination / department")
+        names = {" ".join(str(r[0]).split()) for e in exprs for r in cur.execute(
+            f"SELECT DISTINCT {e} FROM {view} WHERE NULLIF(TRIM({e}), '') IS NOT NULL"
+        ).fetchall()}
+        # rows with only a destination_id take its name from settings_destinations
+        # (v3_extra_mappings._visit_destinations_sql) — those need departments too
+        settings = f"{sf_schema(facility, 'CLEAN')}.SETTINGS_DESTINATIONS"
+        if "destination_id" in cols and "settings_destinations" in set(clean_tables(cur, facility)):
+            names |= {" ".join(str(r[0]).split()) for r in cur.execute(
+                f"SELECT DISTINCT s.name FROM {settings} s WHERE NULLIF(TRIM(s.name), '') IS NOT NULL "
+                f"AND TO_VARCHAR(s.id) IN (SELECT DISTINCT TO_VARCHAR(destination_id) FROM {view})"
+            ).fetchall()}
+        names = sorted(names)
     v2v3.reset_v3_department_cache()
     missing = [n for n in names if v2v3._v3_department_id_by_name(n) is None]
     log.info("Departments: %d destination names, %d already in V3, %d to create",
@@ -1030,6 +1390,20 @@ def ensure_departments_from_destinations(facility: str) -> None:
 CHUNK_ROWS = int(os.getenv("CHUNK_ROWS", "5000"))
 
 
+def _without_twin_rows(cur, facility: str, table: str, base: str) -> str:
+    """For a table in xm.TWINS: only the rows whose id its twin doesn't have
+    (the twin migrates the shared ones). Ids compared as text — the two
+    copies' views don't always type them alike. A facility without the twin
+    gets every row."""
+    twin = xm.TWINS.get(table.lower())
+    if not twin or twin not in clean_tables(cur, facility):
+        return base
+    log.info("  %s: skipping ids already in %s (migrated there)", table, twin)
+    twin_src = f"{sf_schema(facility, 'CLEAN')}.{twin.upper()}"
+    return (f'SELECT * FROM ({base}) WHERE TO_VARCHAR("ID") NOT IN '
+            f'(SELECT TO_VARCHAR("ID") FROM {twin_src} WHERE "ID" IS NOT NULL)')
+
+
 def iter_clean_chunks(facility: str, table: str, chunk_rows: int = CHUNK_ROWS):
     """Yield a table's CLEAN rows in pages of `chunk_rows`, so a task's memory
     stays flat however big the table is (loading evaluation_visit_destinations
@@ -1043,6 +1417,11 @@ def iter_clean_chunks(facility: str, table: str, chunk_rows: int = CHUNK_ROWS):
     base = sql.format(clean=clean_schema) if sql else f"SELECT * FROM {clean_schema}.{table}"
     with _snowflake_connect() as conn:
         cur = conn.cursor()
+        if table.lower() in xm.FETCH_SQL:
+            built = xm.FETCH_SQL[table.lower()](clean_schema, lambda t: clean_columns(cur, facility, t),
+                                                set(clean_tables(cur, facility)))
+            base = built or base
+        base = _without_twin_rows(cur, facility, table, base)
         cur.execute(f"SELECT * FROM ({base}) LIMIT 0")
         cols = {d[0].upper() for d in cur.description}
         key = ("COALESCE(TO_VARCHAR(\"UUID\"), 'id:' || TO_VARCHAR(\"ID\"))" if "UUID" in cols
@@ -1093,12 +1472,16 @@ def _run_table_job(entry: dict, facility: str, org_cfg: dict, dry_run: bool) -> 
     if job_key in v2v3._permanently_done:
         log.info("⊘ %s — already migrated in a previous run", label)
         return True
+    try:
+        ensure_clean_view(facility, table)
+    except Exception as e:                           # the read below reports the real problem
+        log.warning("  %s: couldn't build its missing CLEAN view: %s", label, str(e)[:200])
 
-    global _canary_sent
-    _canary_sent = 0
+    _canary_sent[_canary_key(job_key)] = 0
     vitals = transform_key == "inpatient_vital"
     # once per table, not per page
     parent_sets = []
+    dup_codes = _v2_duplicate_codes(facility, table)
     try:
         for field, parent_table, parent_col in _SKIP_IF_PARENT_NOT_IN_FACILITY.get(transform_key, []):
             with _snowflake_connect() as conn:
@@ -1119,11 +1502,19 @@ def _run_table_job(entry: dict, facility: str, org_cfg: dict, dry_run: bool) -> 
 
     total = skipped = n_dropped = posted = failed = held = 0
     pages = 0
+    unresolved_links: Counter = Counter()
     try:
+        ensure_uuids_loaded(facility, _parent_tables(transform_key, v3_namespace))
         for rows in iter_clean_chunks(facility, table):
             pages += 1
             total += len(rows)
             _register_table(alias, table, rows)
+            # uuid-era extracts: nulled V2 integer links back from <x>_uuid;
+            # rows whose critical parent isn't known yet wait for a later run
+            rows, link_held, miss = restore_int_links(rows, transform_key,
+                                                      critical={"visit_id"} if vitals else None)
+            held += link_held
+            unresolved_links.update(miss)
 
             if vitals:
                 f, h = _run_vitals_split(entry, facility, rows, org_cfg, job_key, label, dry_run)
@@ -1145,6 +1536,7 @@ def _run_table_job(entry: dict, facility: str, org_cfg: dict, dry_run: bool) -> 
                     skipped += before - len(pairs)
                 transformed = [t for _, t in pairs if t is not None]
                 n_dropped += len(pairs) - len(transformed)
+                transformed = _dedupe_v2_codes(transformed, dup_codes)
                 if transformed:
                     problems = post_table_to_v3(v3_namespace, org_cfg, transformed,
                                                 transform_key=transform_key, alias=alias,
@@ -1155,7 +1547,7 @@ def _run_table_job(entry: dict, facility: str, org_cfg: dict, dry_run: bool) -> 
                     posted += len(transformed) - problems
             log.info("  %s — page %d: %d rows read so far (%d posted, %d skipped, %d held, %d failed)",
                      label, pages, total, posted, skipped, held + n_dropped, failed)
-            if RECORD_LIMIT and _canary_sent >= RECORD_LIMIT:
+            if RECORD_LIMIT and _canary_sent.get(_canary_key(job_key), 0) >= RECORD_LIMIT:
                 break
     except v2v3.GatewayModelNotRegistered as e:
         log.warning("⊘ %s — model not registered in gateway: %s", label, e)
@@ -1165,6 +1557,9 @@ def _run_table_job(entry: dict, facility: str, org_cfg: dict, dry_run: bool) -> 
         return False
 
     elapsed = time.perf_counter() - t0
+    if unresolved_links:
+        log.warning("  %s — uuid links with no known V2 parent (left null, or held back if required): %s",
+                    label, dict(unresolved_links.most_common(10)))
     if skipped:
         log.info("  %s — skipped %d record(s) whose parent was never extracted for this facility",
                  label, skipped)
@@ -1251,13 +1646,18 @@ def _start(facility: str) -> tuple[dict, set]:
 
 
 def _select_entries(facility: str, only_tables: list[str] | None, exclude_tables: list[str] | None,
-                    available_models: set) -> tuple[list[dict], list[dict], list[dict]]:
+                    available_models: set, *, include_history: bool = False) -> tuple[list[dict], list[dict], list[dict]]:
     """Discover this facility's Snowflake tables and pick the ones to run.
     Returns (runnable, unmapped, not insertable in the gateway)."""
     with _snowflake_connect() as conn:
         cur = conn.cursor()
         entries = discover_tables(cur, facility)
+        in_clean = set(clean_tables(cur, facility))
         cur.close()
+    # RAW tables that never got a CLEAN view (mostly empty extracts): nothing to read
+    for e in entries:
+        if e["table"].lower() not in in_clean:
+            e.update(v3=None, transform=None, skipped="no CLEAN view — nothing to migrate")
 
     if exclude_tables:
         log.info("Excluding %d table(s): %s", len(exclude_tables), ", ".join(sorted(exclude_tables)))
@@ -1269,12 +1669,20 @@ def _select_entries(facility: str, only_tables: list[str] | None, exclude_tables
             log.warning("Not in %s RAW, ignored: %s — check the spelling, or load them with "
                         "v2_facility_to_snowflake first", facility, ", ".join(unknown))
         entries = [e for e in entries if e["table"] in only_tables]
+    elif include_history:
+        # whole-schema migration: the history copies too. Where the same V2
+        # table is also loaded under another name, the copy in xm.TWINS posts
+        # only the ids its twin lacks (_without_twin_rows) — nothing twice.
+        history = sorted(e["table"] for e in entries if e["table"] in OLD_SYSTEM_HISTORY_TABLES)
+        if history:
+            log.info("Including %d old-system-history tables (include_history): %s",
+                     len(history), ", ".join(history))
     else:
         # The old-system-history tables are archive copies meant for
         # old_system_history, not per-table V3 inserts — several of them
         # (reception_patients, evaluation_prescriptions, ...) resolve to real
         # V3 models and would otherwise be loaded a second time. Only an
-        # explicit --table sends one of them through this path.
+        # explicit --table (or include_history) sends one of them through this path.
         history = [e for e in entries if e["table"] in OLD_SYSTEM_HISTORY_TABLES]
         if history:
             log.info("Skipping %d old-system-history tables (name one with --table to force): %s",
@@ -1296,9 +1704,15 @@ def _select_entries(facility: str, only_tables: list[str] | None, exclude_tables
         "%d mapped but not insertable in gateway, %d with no NAMESPACE_MAP entry",
         facility, len(entries), len(runnable), len(no_insert), len(unmapped),
     )
-    if unmapped:
-        log.warning("SKIPPED — no NAMESPACE_MAP entry (%d): %s",
-                    len(unmapped), ", ".join(sorted(e["table"] for e in unmapped)))
+    explained = [e for e in unmapped if e.get("skipped")]
+    unaccounted = [e for e in unmapped if not e.get("skipped")]
+    if explained:
+        log.info("SKIPPED — not migrated, reason recorded in v3_extra_mappings (%d): %s",
+                 len(explained), ", ".join(sorted(e["table"] for e in explained)))
+    if unaccounted:
+        log.warning("SKIPPED — UNACCOUNTED: no mapping and no recorded reason (%d): %s — add a mapping "
+                    "or a NOT_MIGRATED / DUPLICATES entry in v3_extra_mappings.py",
+                    len(unaccounted), ", ".join(sorted(e["table"] for e in unaccounted)))
     if no_insert:
         log.warning("SKIPPED — mapped but not insertable per gateway (%d): %s",
                     len(no_insert), ", ".join(sorted(e["table"] for e in no_insert)))
@@ -1306,16 +1720,19 @@ def _select_entries(facility: str, only_tables: list[str] | None, exclude_tables
 
 
 def plan_table_jobs(facility: str, only_tables: list[str] | None = None,
-                    exclude_tables: list[str] | None = None) -> dict:
+                    exclude_tables: list[str] | None = None, *, include_history: bool = False) -> dict:
     """What a run would migrate, one entry per table with its dependency
     tier — for drivers (the Airflow DAG) that run each table in its own
     process. Nothing is posted."""
     _, available_models = _start(facility)
-    runnable, unmapped, no_insert = _select_entries(facility, only_tables, exclude_tables, available_models)
+    runnable, unmapped, no_insert = _select_entries(facility, only_tables, exclude_tables, available_models,
+                                                    include_history=include_history)
     return {
         "jobs": [{"facility": facility, "table": e["table"], "tier": _tier(e)}
                  for e in sorted(runnable, key=lambda e: (_tier(e), e["table"]))],
         "unmapped": sorted(e["table"] for e in unmapped),
+        # why each unmapped table is not migrated (None = UNACCOUNTED)
+        "skip_reasons": {e["table"]: e.get("skipped") for e in unmapped},
         "not_insertable": sorted(e["table"] for e in no_insert),
     }
 
@@ -1330,7 +1747,7 @@ def run_one_table(facility: str, table: str, *, dry_run: bool) -> dict:
     org_cfg, available_models = _start(facility)
     runnable, unmapped, no_insert = _select_entries(facility, [table], None, available_models)
     if not runnable:
-        why = ("no NAMESPACE_MAP entry" if unmapped else
+        why = ((unmapped[0].get("skipped") or "no NAMESPACE_MAP entry") if unmapped else
                "not insertable in the gateway" if no_insert else f"not in {facility} RAW")
         return {"table": table, "status": "skipped", "detail": why}
     try:
@@ -1353,13 +1770,14 @@ def run_one_table(facility: str, table: str, *, dry_run: bool) -> dict:
 
 def run_migration(facility: str, only_tables: list[str] | None,
                   *, workers: int, dry_run: bool,
-                  exclude_tables: list[str] | None = None) -> list[str]:
+                  exclude_tables: list[str] | None = None, include_history: bool = False) -> list[str]:
     """All selected tables in one process, tier by tier (`workers` tables in
     parallel per tier). Returns the tables that FAILED (dead-lettered
     records, fetch/post errors); tables only waiting on parents are in
     _waiting."""
     org_cfg, available_models = _start(facility)
-    runnable, unmapped, no_insert = _select_entries(facility, only_tables, exclude_tables, available_models)
+    runnable, unmapped, no_insert = _select_entries(facility, only_tables, exclude_tables, available_models,
+                                                    include_history=include_history)
 
     tier_groups: dict[int, list] = defaultdict(list)
     for e in runnable:
@@ -1407,10 +1825,62 @@ def run_migration(facility: str, only_tables: list[str] | None,
     return failures
 
 
+def ensure_clean_view(facility: str, table: str) -> bool:
+    """Build a table's CLEAN view from RAW when it's missing. v2_facility_to_snowflake asks
+    snowflake_flatten_clean to flatten only the tables loaded in that run, so a table whose flatten once
+    failed stayed in RAW with no CLEAN view, and its migration failed on "Object … does not exist"
+    (kisumu_v3 evaluation_reference_range / evaluation_refraction, 2026-10-15). Returns True when the
+    view exists (or was built), False when RAW has no rows for the table either."""
+    with _snowflake_connect() as conn:
+        cur = conn.cursor()
+        if table.lower() in clean_tables(cur, facility):
+            return True
+        raw, clean = f"{facility.upper()}_RAW", f"{facility.upper()}_CLEAN"
+        cur.execute(f"SELECT COUNT(*) FROM {sf_schema(facility, 'RAW')}.EVENTS_RAW WHERE source_table = %s",
+                    (table,))
+        if not cur.fetchone()[0]:
+            return False
+        import flatten_jsons_schemas as fl
+        fields = fl.discover_fields(cur, raw, table)
+        if not fields:
+            return False
+        expanded = fl.expand_objects(cur, raw, table, fields)
+        fl.flatten_table(cur, raw, clean, table, expanded, materialize="view")
+        log.info("  built the missing CLEAN view %s.%s from RAW (%d columns)", clean, table, len(expanded))
+        return True
+
+
+def clean_tables(cur, facility: str) -> list[str]:
+    """Every table and view in the facility's CLEAN schema."""
+    db, schema = sf_schema(facility, "CLEAN").split(".")
+    cur.execute(f"SELECT LOWER(table_name) FROM {db}.INFORMATION_SCHEMA.TABLES WHERE table_schema = %s",
+                (schema,))
+    return [r[0] for r in cur.fetchall()]
+
+
+def clean_columns(cur, facility: str, table: str) -> set[str]:
+    """A CLEAN table/view's column names, lower case."""
+    db, schema = sf_schema(facility, "CLEAN").split(".")
+    cur.execute(f"SELECT LOWER(column_name) FROM {db}.INFORMATION_SCHEMA.COLUMNS "
+                f"WHERE table_schema = %s AND LOWER(table_name) = %s", (schema, table.lower()))
+    return {r[0] for r in cur.fetchall()}
+
+
+def mapping_coverage(facility: str) -> dict:
+    """Every CLEAN table/view → migrated | duplicate | not migrated (why) | UNACCOUNTED."""
+    with _snowflake_connect() as conn:
+        cur = conn.cursor()
+        entries = discover_tables(cur, facility)
+        tables = clean_tables(cur, facility)
+        cur.close()
+    return xm.coverage(entries, tables)
+
+
 def list_tables(facility: str) -> None:
     with _snowflake_connect() as conn:
         cur = conn.cursor()
         entries = discover_tables(cur, facility)
+        tables = clean_tables(cur, facility)
         cur.close()
     entries.sort(key=lambda e: (e["v3"] is None, _tier(e), e["table"]))
     print(f"{'table':<38} {'tier':<5} {'v3 target':<40} transform")
@@ -1420,7 +1890,25 @@ def list_tables(facility: str) -> None:
             tier = _tier(e)
             print(f"{e['table']:<38} {tier:<5} {e['v3']:<40} {e['transform']}")
         else:
-            print(f"{e['table']:<38} {'—':<5} {'(no NAMESPACE_MAP entry)':<40} —")
+            why = e.get("skipped") or ("no CLEAN view — nothing to migrate" if e["table"].lower() not in tables
+                                       else "UNACCOUNTED — no mapping")
+            print(f"{e['table']:<38} {'—':<5} {why[:60]}")
+    cov = xm.coverage(entries, tables)
+    gaps = sorted(t for t, s in cov.items() if s == "UNACCOUNTED")
+    counts = Counter(s.split(":")[0].split(" of ")[0] for s in cov.values())
+    print(f"\nCLEAN coverage ({len(cov)} tables/views): {dict(counts)}")
+    if gaps:
+        print(f"UNACCOUNTED ({len(gaps)}): {', '.join(gaps)}")
+
+
+# Mappings added for whole-schema migrations (v3_extra_mappings.py) — on top
+# of the hand-written ones above, never replacing them.
+xm.apply(v2v3, sys.modules[__name__])
+# let v2v3's empty-id-map rebuild find (and read from the right service) models
+# posted under an overridden alias — procedures, receipts, the gen_* mappings
+v2v3._ALIAS_FOR_TRANSFORM.update(_ALIAS_OVERRIDE)
+v2v3._SERVICE_FOR_ALIAS.update({_ALIAS_OVERRIDE[tk]: svc for tk, svc in _SERVICE_OVERRIDE.items()
+                                if tk in _ALIAS_OVERRIDE})
 
 
 # ─── CLI ─────────────────────────────────────────────────────────────────────
@@ -1444,6 +1932,9 @@ def main() -> None:
                         help=f"Parallel tables per tier (default: {PIPELINE_WORKERS})")
     parser.add_argument("--dry-run", action="store_true",
                         help="Fetch + transform without posting to V3")
+    parser.add_argument("--include-history", action="store_true",
+                        help="Also migrate the old-system-history tables (whole-schema migration); a copy "
+                             "that duplicates another table posts only the ids that table lacks")
     parser.add_argument("--list-tables", action="store_true",
                         help="Print discovered tables, their tier and V3 mapping, and exit")
     parser.add_argument("--record-limit", type=int, default=RECORD_LIMIT, metavar="N",
@@ -1477,7 +1968,7 @@ def main() -> None:
         return
 
     run_migration(args.facility, args.table, workers=args.workers, dry_run=args.dry_run,
-                  exclude_tables=args.exclude)
+                  exclude_tables=args.exclude, include_history=args.include_history)
 
 
 if __name__ == "__main__":

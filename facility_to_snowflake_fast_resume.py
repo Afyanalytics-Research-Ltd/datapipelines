@@ -53,6 +53,7 @@ ENV VARS  (put them in a `.env` file next to this script — auto-loaded)
 from __future__ import annotations
 
 import argparse
+import csv
 import gzip
 import hashlib
 import json
@@ -499,11 +500,45 @@ def facility_config(facility: str) -> dict:
     return cfg
 
 
+# ─── V2 EXTRACTION QUEUE TABLE SET ────────────────────────────────────────
+# Every V2 table the uuid layer tracks, with its exact namespace, tier and
+# wave (V2_EXTRACTION_QUEUE.csv, generated from the V2 journey registry —
+# regenerate it there rather than editing it). table_set=queue extracts from
+# it, so any V2 table can be pulled by name, not only the sheet's. Tables
+# with no Eloquent model (no namespace) can't come through the gateway.
+EXTRACTION_QUEUE_FILE = Path(__file__).resolve().parent / "mapping" / "v2_extraction_queue.csv"
+
+
+def read_extraction_queue() -> list[dict]:
+    """The queue's rows in load order (tier, wave): step, tier, wave, module,
+    table, namespace, kind, join_column, join_table, rows_ref_dump."""
+    with EXTRACTION_QUEUE_FILE.open(newline="", encoding="utf-8") as f:
+        rows = [{k: (v or "").strip() for k, v in r.items()} for r in csv.DictReader(f)]
+    return sorted(rows, key=lambda r: (int(r["step"] or 9), int(r["wave"] or 0), r["table"]))
+
+
 def build_jobs_for_facility(facility: str, since: str | None = None,
                              only_tables: set[str] | None = None,
                              table_set: str = "sheet") -> list[dict]:
     cfg = facility_config(facility)
     last_run = since or get_watermark(state_key(facility, table_set))
+
+    if table_set == "queue":
+        jobs = [
+            {
+                "facility":      facility,
+                "module":        q["module"],
+                "table":         q["table"],
+                "namespace":     q["namespace"],
+                "database":      cfg.get("db"),
+                "updated_since": last_run,
+                "limit":         500,
+            }
+            for q in read_extraction_queue()
+            if q["namespace"] and (not only_tables or q["table"].lower() in only_tables)
+        ]
+        log.info("Prepared %d extraction-queue jobs for facility=%s", len(jobs), facility)
+        return jobs
 
     if table_set == "old_system_history":
         jobs = [
@@ -644,7 +679,20 @@ def post_with_retry_and_fallback(
             except HTTPError:
                 raise
 
-    raise Exception("All fallback request bodies returned 404")
+    raise NamespaceNotFound("All fallback request bodies returned 404")
+
+
+class NamespaceNotFound(Exception):
+    """Every namespace spelling 404'd: this V2 site has no such model."""
+
+
+def _log_not_on_site(job: dict) -> None:
+    """A table whose model this V2 site doesn't have (every namespace spelling
+    404s on the first request) has nothing to extract — skipped, not failed.
+    Sheet table sets list some V3-style names a V2 site never had; the queue
+    table set (exact V2 names) avoids them."""
+    log.warning("    %s · %s — not on this V2 site (%s → 404 on every namespace variant) — skipped",
+                job.get("module"), job["table"], job["namespace"])
 
 def extract_all_pages(url, headers, body, singular_body,
                       double_namespace_body, double_namespace_singular_body,
@@ -829,7 +877,15 @@ MAX_PAGES      = 10000
 # times out on the V2 server (investigations didn't answer page 1 in 120s);
 # keyset answers in ~1s. after_id is exclusive, so a fresh run starts at 0.
 # The API ignores updated_since in this mode, so every run is a full extract.
-KEYSET_TABLES  = {t.strip() for t in os.getenv("KEYSET_TABLES", "evaluation_investigations,users").split(",") if t.strip()}
+# Default "*" = every table: since V2's uuid layer (2026-10) the gateway
+# ignores updated_since in page mode too (same total either way, checked live
+# on level6), so offset paging is just a slower full extract — and each page
+# runs a COUNT(*). KEYSET_TABLES=a,b limits keyset to those tables again.
+KEYSET_TABLES  = {t.strip() for t in os.getenv("KEYSET_TABLES", "*").split(",") if t.strip()}
+
+
+def _use_keyset(table: str) -> bool:
+    return "*" in KEYSET_TABLES or table in KEYSET_TABLES
 
 # Never written to spool, S3 or Snowflake — at any depth (admissions embed
 # their doctor's whole user record, e.g. doctor_email_token).
@@ -961,6 +1017,13 @@ def _extract_keyset(job: dict, run_id: str, dry_run: bool, sf: "SnowflakeClient 
             "per_page": KEYSET_PER_PAGE}
     state_path, spool = _page_state_paths(job)
     state = {} if dry_run else _load_page_state(state_path)
+    if state and state.get("mode") != "keyset":
+        # a half-done page-mode run (from before keyset became the default):
+        # its page numbers / spool would be mistaken for keyset batches — start over
+        log.info("    %s — discarding page-mode resume state; starting a keyset walk", job["table"])
+        for f in _spooled_pages(spool):
+            (spool / f"page_{f:05d}.jsonl.gz").unlink(missing_ok=True)
+        state = {}
     state.setdefault("mode", "keyset")
     state.setdefault("after_id", 0)
     state.setdefault("batch", 0)
@@ -971,16 +1034,40 @@ def _extract_keyset(job: dict, run_id: str, dry_run: bool, sf: "SnowflakeClient 
         log.info("    %s — resuming keyset after id %s: %d batch(es) already in Snowflake, %d spooled",
                  job["table"], state["after_id"], len(state["loaded_pages"]), len(_spooled_pages(spool)))
 
+    # Until one answers, try the same namespace spellings as the page loop
+    # (V2 class names are singular or plural per model: Visit, Patients …);
+    # the one that worked is kept for every later batch and for a resume.
+    if state.get("namespace"):
+        body["namespace"] = state["namespace"]
+        variants = [body]
+    else:
+        ns = body["namespace"]
+        variants = list({b["namespace"]: b for b in (
+            body, {**body, "namespace": namespace_to_singular_model(ns)},
+            {**body, "namespace": double_namespace_model(ns)},
+            {**body, "namespace": double_namespace_model(namespace_to_singular_model(ns))})}.values())
+
     counted, error = 0, None
+    resolved = bool(state.get("namespace"))   # a namespace that answered before
     while state["batch"] < MAX_PAGES:
         try:
-            r, _ = post_with_retry_and_fallback(
+            r, used = post_with_retry_and_fallback(
                 url=url, headers=headers, session=session, timeout=60,
-                bodies=[{**body, "after_id": state["after_id"]}],
+                bodies=[{**b, "after_id": state["after_id"]} for b in variants],
             )
+        except NamespaceNotFound as e:
+            if not resolved and not state["batch"] and not counted:
+                _log_not_on_site(job)          # nothing fetched yet: the model isn't on this site
+                return None
+            error = e                          # a 404 mid-walk is a real failure
+            break
         except Exception as e:
             error = e
             break
+        if not resolved:
+            resolved = True
+            body["namespace"] = state["namespace"] = used["namespace"]
+            variants = [body]
         payload = r.json()
         rows = _extract_rows(payload)
         pagination = payload.get("pagination") or {}
@@ -1057,7 +1144,7 @@ def extract_one_model(job: dict, run_id: str, dry_run: bool = False,
     double_namespace_body          = {**body, "namespace": double_namespace_model(job["namespace"])}
     double_namespace_singular_body = {**body, "namespace": double_namespace_model(namespace_to_singular_model(job["namespace"]))}
 
-    if job["table"] in KEYSET_TABLES:
+    if _use_keyset(job["table"]):
         return _extract_keyset(job, run_id, dry_run, sf, url=url, headers=headers, session=session)
 
     if dry_run:
@@ -1096,11 +1183,15 @@ def extract_one_model(job: dict, run_id: str, dry_run: bool = False,
     # accepts (fallback chain) and the page count. On resume both come from
     # the state file and page 1 is never requested again.
     if "chosen_body" not in state:
-        r, chosen = post_with_retry_and_fallback(
-            url=url, headers=headers, session=session, timeout=60,
-            bodies=[{**b, "page": 1} for b in (body, singular_body, double_namespace_body,
-                                               double_namespace_singular_body)],
-        )
+        try:
+            r, chosen = post_with_retry_and_fallback(
+                url=url, headers=headers, session=session, timeout=60,
+                bodies=[{**b, "page": 1} for b in (body, singular_body, double_namespace_body,
+                                                   double_namespace_singular_body)],
+            )
+        except NamespaceNotFound:
+            _log_not_on_site(job)
+            return None
         payload = r.json()
         pagination = payload.get("pagination") or {}
         last_page = pagination.get("last_page")

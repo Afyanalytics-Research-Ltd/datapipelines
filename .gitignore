@@ -65,6 +65,8 @@ failed_mapped_logs/*
 
 # But allow jsons inside this folder
 !dags/jsons/*.json
+# test fixtures (table snapshots, no patient data)
+!tests/fixtures/*.json
 
 # V3 migration state, committed so the online Airflow (which imports the
 # scripts from the repo root) starts from the same id maps / progress as the
@@ -86,6 +88,8 @@ failed_mapped_logs/*
 .migration_state/**/*.tmp
 .migration_state/**/*.bak*
 *.csv
+# V2 extraction queue (table / namespace list, no data) — read by table_set=queue
+!mapping/v2_extraction_queue.csv
 rsa_key*
 *.pdf
 *.jsonl
@@ -93,3 +97,6 @@ rsa_key*
 # Backup files
 *.BAK
 *.sql
+
+.migration_state/*/journey/journeys.ndjson
+.migration_state/*/journey/

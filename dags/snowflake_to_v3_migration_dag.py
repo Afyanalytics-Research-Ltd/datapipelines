@@ -40,13 +40,18 @@ Trigger form options:
   mode            migrate     — POST to V3
                   dry_run     — fetch + transform only, nothing posted
                   list_tables — log each table's tier and V3 target, then stop
-  record_workers  parallel POSTs within one table (RECORD_WORKERS).
+  record_workers  parallel POSTs within one table (RECORD_WORKERS, default 8).
+  post_throttle   seconds to pause after each POST (V3_POST_THROTTLE, 0 = none).
   record_limit    canary: post at most N not-yet-migrated records per table
                   and leave each job open; run again with 0 for the rest.
   allow_history_tables
                   old-system-history tables (reception_patients,
-                  evaluation_prescriptions, ...) are refused unless ticked:
-                  they're archive copies for old_system_history.
+                  evaluation_prescriptions, ...) are left out unless ticked.
+                  Ticked with `tables` empty = the whole schema, history
+                  included (e.g. all of KISUMU_CLEAN): where a history table
+                  is a second copy of another table (admissions /
+                  inpatient_admissions …) it posts only the ids that table
+                  lacks, so no record goes in twice (v3_extra_mappings.TWINS).
   fail_on_waiting mark WAITING tables as failed instead of skipped.
 
 The destination org/facility come from FACILITY_V3_CONFIG and the V3
@@ -86,12 +91,14 @@ PARALLEL_TABLES = int_env("V3_MIGRATION_PARALLEL_TABLES", 4)
 
 def _setup_modules(p: dict, facility: str):
     os.environ["RECORD_WORKERS"] = str(int(p["record_workers"]))
+    os.environ["V3_POST_THROTTLE"] = str(float(p.get("post_throttle") or 0))
     use_pipelines_dir([facility])
     import snowflake_to_v3_migration as s2v3
     import v2_to_v3_api_migration as v2v3
     # Read at import time by both modules — set them in case either was
     # already imported in this process.
     s2v3.RECORD_WORKERS = v2v3.RECORD_WORKERS = int(p["record_workers"])
+    v2v3.V3_POST_THROTTLE = float(p.get("post_throttle") or 0)
     s2v3.RECORD_LIMIT = int(p["record_limit"])
     return s2v3
 
@@ -114,14 +121,21 @@ def _setup_modules(p: dict, facility: str):
         "exclude_tables": Param([], type="array", items={"type": "string"}, title="Exclude tables",
                                 description="Skip these source tables (one per line), e.g. ones already migrated."),
         "mode": Param("migrate", type="string", enum=["migrate", "dry_run", "list_tables"], title="Mode"),
-        "record_workers": Param(4, type="integer", minimum=1, maximum=32,
+        "record_workers": Param(8, type="integer", minimum=1, maximum=64,
                                 title="Parallel POSTs per table",
-                                description="Lower it if V3 starts returning 504s. Tables in parallel = "
-                                            f"V3_MIGRATION_PARALLEL_TABLES (currently {PARALLEL_TABLES})."),
+                                description="Raise it to post faster; lower it if V3 starts returning 504s. "
+                                            "Total in flight ≈ this × tables in parallel "
+                                            f"(V3_MIGRATION_PARALLEL_TABLES, currently {PARALLEL_TABLES})."),
+        "post_throttle": Param(0, type="number", minimum=0, maximum=10,
+                               title="Pause after each POST (seconds)",
+                               description="0 = no pause (fastest). Set e.g. 0.2 to ease off V3 without "
+                                           "dropping workers."),
         "record_limit": Param(0, type="integer", minimum=0, title="Record limit (canary)",
                               description="Post at most this many new records per table and leave the "
                                           "job open, to check a table before the full load. 0 = no limit."),
-        "allow_history_tables": Param(False, type="boolean", title="Allow old-system-history tables"),
+        "allow_history_tables": Param(False, type="boolean", title="Include old-system-history tables",
+                                      description="With tables empty: the whole schema, history tables included "
+                                                  "(a second copy of a table only posts the ids that table lacks)."),
         "order": Param("all_at_once", type="string", enum=["all_at_once", "by_tier"], title="Order",
                        description="all_at_once: every requested table starts together (up to "
                                    f"{PARALLEL_TABLES} at a time) — child records whose parent isn't in V3 "
@@ -154,14 +168,19 @@ def snowflake_to_v3_migration():
                 s2v3.list_tables(facility)
                 continue
             try:
-                planned = s2v3.plan_table_jobs(facility, tables or None, clean_list(p["exclude_tables"]))
+                planned = s2v3.plan_table_jobs(facility, tables or None, clean_list(p["exclude_tables"]),
+                                               include_history=bool(p["allow_history_tables"]))
             except SystemExit as e:
                 raise AirflowFailException(f"[{facility}] setup failed (exit {e.code}); see log.")
             for j in planned["jobs"]:
                 j["tier"] = min(max(int(j["tier"]), TIERS[0]), TIERS[-1])
             jobs.extend(planned["jobs"])
+            reasons = planned.get("skip_reasons") or {}
             for t in planned["unmapped"]:
-                log.warning("[%s] SKIPPED %s — no NAMESPACE_MAP entry", facility, t)
+                if reasons.get(t):
+                    log.info("[%s] skipped %s — %s", facility, t, reasons[t])
+                else:
+                    log.warning("[%s] SKIPPED %s — UNACCOUNTED: no mapping and no recorded reason", facility, t)
             for t in planned["not_insertable"]:
                 log.warning("[%s] SKIPPED %s — not insertable in the gateway", facility, t)
         for n in TIERS:

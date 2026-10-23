@@ -1,0 +1,821 @@
+{
+ "_about": "KISUMU_CLEAN tables/views (2026-10-11 snapshot): V2 namespace as discovered (null = not in RAW) and row count",
+ "tables": {
+  "activations": {
+   "namespace": "Ignite\\Users\\Entities\\Activations",
+   "rows": 173
+  },
+  "admissions": {
+   "namespace": "Ignite\\Inpatient\\Entities\\Admissions",
+   "rows": 2694
+  },
+  "copays": {
+   "namespace": "Ignite\\Finance\\Entities\\Copays",
+   "rows": 83
+  },
+  "core_approvals": {
+   "namespace": "Ignite\\Core\\Entities\\Approvals",
+   "rows": 23
+  },
+  "core_notifications": {
+   "namespace": "Ignite\\Core\\Entities\\Notifications",
+   "rows": 82367
+  },
+  "credit_notes": {
+   "namespace": "Ignite\\Finance\\Entities\\CreditNotes",
+   "rows": 52
+  },
+  "dialysis_chairs": {
+   "namespace": null,
+   "rows": 16
+  },
+  "dialysis_coagulation_types": {
+   "namespace": null,
+   "rows": 2
+  },
+  "dialysis_machines": {
+   "namespace": null,
+   "rows": 6
+  },
+  "dialysis_patients": {
+   "namespace": null,
+   "rows": 253
+  },
+  "dialysis_plants": {
+   "namespace": null,
+   "rows": 3
+  },
+  "dialysis_schedules": {
+   "namespace": null,
+   "rows": 8
+  },
+  "dialysis_sessions": {
+   "namespace": null,
+   "rows": 3
+  },
+  "dialysis_vascular_accesses": {
+   "namespace": null,
+   "rows": 3
+  },
+  "dialysis_ward_types": {
+   "namespace": null,
+   "rows": 4
+  },
+  "dialysis_wards": {
+   "namespace": null,
+   "rows": 6
+  },
+  "discharges": {
+   "namespace": "Ignite\\Inpatient\\Entities\\Discharges",
+   "rows": 2805
+  },
+  "dispatches": {
+   "namespace": "Ignite\\Finance\\Entities\\Dispatches",
+   "rows": 11215
+  },
+  "doctor_notes": {
+   "namespace": "Ignite\\Evaluation\\Entities\\DoctorNotes",
+   "rows": 38119
+  },
+  "doctor_notes_view_logs": {
+   "namespace": "Ignite\\Evaluation\\Entities\\DoctorNotesViewLogs",
+   "rows": 5732
+  },
+  "evaluation_age_groups": {
+   "namespace": "Ignite\\Evaluation\\Entities\\AgeGroups",
+   "rows": 124
+  },
+  "evaluation_consumable_types": {
+   "namespace": "Ignite\\Evaluation\\Entities\\ConsumableTypes",
+   "rows": 3
+  },
+  "evaluation_consumables": {
+   "namespace": "Ignite\\Evaluation\\Entities\\Consumables",
+   "rows": 121809
+  },
+  "evaluation_critical_values": {
+   "namespace": "Ignite\\Evaluation\\Entities\\CriticalValues",
+   "rows": 13
+  },
+  "evaluation_dimension_categories": {
+   "namespace": "Ignite\\Evaluation\\Entities\\DimensionCategories",
+   "rows": 5
+  },
+  "evaluation_dimensions": {
+   "namespace": "Ignite\\Evaluation\\Entities\\Dimensions",
+   "rows": 90
+  },
+  "evaluation_dispensing": {
+   "namespace": "Ignite\\Evaluation\\Entities\\Dispensing",
+   "rows": 89179
+  },
+  "evaluation_dispensing_details": {
+   "namespace": "Ignite\\Evaluation\\Entities\\DispensingDetails",
+   "rows": 88051
+  },
+  "evaluation_doctor_notes": {
+   "namespace": "Ignite\\Evaluation\\Entities\\DoctorNotes",
+   "rows": 56996
+  },
+  "evaluation_examination_review_details": {
+   "namespace": "Ignite\\Evaluation\\Entities\\ExaminationReviewDetails",
+   "rows": 8
+  },
+  "evaluation_examination_reviews": {
+   "namespace": "Ignite\\Evaluation\\Entities\\ExaminationReviews",
+   "rows": 80
+  },
+  "evaluation_eyewear_prescriptions": {
+   "namespace": "Ignite\\Evaluation\\Entities\\EyewearPrescriptions",
+   "rows": 192
+  },
+  "evaluation_facilities": {
+   "namespace": "Ignite\\Evaluation\\Entities\\Facilities",
+   "rows": 2
+  },
+  "evaluation_icd10_categories": {
+   "namespace": "Ignite\\Evaluation\\Entities\\Icd10Categories",
+   "rows": 21
+  },
+  "evaluation_icd10_notes": {
+   "namespace": "Ignite\\Evaluation\\Entities\\Icd10Notes",
+   "rows": 27468
+  },
+  "evaluation_icd10_sub_categories": {
+   "namespace": "Ignite\\Evaluation\\Entities\\Icd10SubCategories",
+   "rows": 285
+  },
+  "evaluation_icd10_types": {
+   "namespace": "Ignite\\Evaluation\\Entities\\Icd10Types",
+   "rows": 1912
+  },
+  "evaluation_icd10_variations": {
+   "namespace": "Ignite\\Evaluation\\Entities\\Icd10Variations",
+   "rows": 84327
+  },
+  "evaluation_investigation_approval_statuses": {
+   "namespace": "Ignite\\Evaluation\\Entities\\InvestigationApprovalStatuses",
+   "rows": 3
+  },
+  "evaluation_investigation_approvals": {
+   "namespace": "Ignite\\Evaluation\\Entities\\InvestigationApprovals",
+   "rows": 74994
+  },
+  "evaluation_investigation_result_details": {
+   "namespace": "Ignite\\Evaluation\\Entities\\InvestigationResultDetails",
+   "rows": 653141
+  },
+  "evaluation_investigation_results": {
+   "namespace": "Ignite\\Evaluation\\Entities\\InvestigationResults",
+   "rows": 47696
+  },
+  "evaluation_investigations": {
+   "namespace": "Ignite\\Evaluation\\Entities\\Investigations",
+   "rows": 69855
+  },
+  "evaluation_lab_test_additive": {
+   "namespace": "Ignite\\Evaluation\\Entities\\LabTestAdditive",
+   "rows": 50
+  },
+  "evaluation_lab_test_categories": {
+   "namespace": "Ignite\\Evaluation\\Entities\\LabTestCategories",
+   "rows": 16
+  },
+  "evaluation_lab_test_unit": {
+   "namespace": "Ignite\\Evaluation\\Entities\\LabTestUnit",
+   "rows": 183
+  },
+  "evaluation_patient_meta": {
+   "namespace": "Ignite\\Evaluation\\Entities\\PatientMeta",
+   "rows": 24
+  },
+  "evaluation_payments": {
+   "namespace": "Ignite\\Finance\\Entities\\EvaluationPayments",
+   "rows": 22831
+  },
+  "evaluation_pos_sale_details": {
+   "namespace": "Ignite\\Evaluation\\Entities\\PosSaleDetails",
+   "rows": 66070
+  },
+  "evaluation_prescription_payments": {
+   "namespace": "Ignite\\Evaluation\\Entities\\PrescriptionPayments",
+   "rows": 91567
+  },
+  "evaluation_prescriptions": {
+   "namespace": "Ignite\\Evaluation\\Entities\\Prescriptions",
+   "rows": 56556
+  },
+  "evaluation_procedure_categories": {
+   "namespace": "Ignite\\Evaluation\\Entities\\ProcedureCategories",
+   "rows": 62
+  },
+  "evaluation_procedure_prices": {
+   "namespace": "Ignite\\Evaluation\\Entities\\ProcedurePrices",
+   "rows": 25562
+  },
+  "evaluation_procedures": {
+   "namespace": "Ignite\\Evaluation\\Entities\\Procedures",
+   "rows": 1772
+  },
+  "evaluation_reference_range": {
+   "namespace": "Ignite\\Evaluation\\Entities\\ReferenceRange",
+   "rows": 238
+  },
+  "evaluation_refraction": {
+   "namespace": "Ignite\\Evaluation\\Entities\\Refraction",
+   "rows": 225
+  },
+  "evaluation_result_details_reference_ranges": {
+   "namespace": "Ignite\\Evaluation\\Entities\\ResultDetailsReferenceRanges",
+   "rows": 187756
+  },
+  "evaluation_sample_collection_methods": {
+   "namespace": "Ignite\\Evaluation\\Entities\\SampleCollectionMethods",
+   "rows": 8
+  },
+  "evaluation_sample_types": {
+   "namespace": "Ignite\\Evaluation\\Entities\\SampleTypes",
+   "rows": 120
+  },
+  "evaluation_samples": {
+   "namespace": "Ignite\\Evaluation\\Entities\\Samples",
+   "rows": 21173
+  },
+  "evaluation_slit_lamp_exam": {
+   "namespace": "Ignite\\Evaluation\\Entities\\SlitLampExam",
+   "rows": 245
+  },
+  "evaluation_sub_procedures": {
+   "namespace": "Ignite\\Evaluation\\Entities\\SubProcedures",
+   "rows": 571
+  },
+  "evaluation_systems_reviews": {
+   "namespace": "Ignite\\Evaluation\\Entities\\SystemsReviews",
+   "rows": 63
+  },
+  "evaluation_tags": {
+   "namespace": "Ignite\\Evaluation\\Entities\\Tags",
+   "rows": 23
+  },
+  "evaluation_template_lab": {
+   "namespace": "Ignite\\Evaluation\\Entities\\TemplateLab",
+   "rows": 117
+  },
+  "evaluation_treatment_locations": {
+   "namespace": "Ignite\\Evaluation\\Entities\\TreatmentLocations",
+   "rows": 4
+  },
+  "evaluation_visit_consultants": {
+   "namespace": "Ignite\\Evaluation\\Entities\\VisitConsultants",
+   "rows": 24971
+  },
+  "evaluation_visit_destinations": {
+   "namespace": "Ignite\\Evaluation\\Entities\\VisitDestinations",
+   "rows": 704594
+  },
+  "evaluation_visits": {
+   "namespace": "Ignite\\Evaluation\\Entities\\Visits",
+   "rows": 42013
+  },
+  "evaluation_vitals": {
+   "namespace": "Ignite\\Evaluation\\Entities\\Vitals",
+   "rows": 26940
+  },
+  "events": {
+   "namespace": null,
+   "rows": 843796
+  },
+  "events_lab_flags": {
+   "namespace": null,
+   "rows": 310859
+  },
+  "finance_account_groups": {
+   "namespace": "Ignite\\Finance\\Entities\\AccountGroups",
+   "rows": 5
+  },
+  "finance_account_types": {
+   "namespace": "Ignite\\Finance\\Entities\\AccountTypes",
+   "rows": 3
+  },
+  "finance_banks": {
+   "namespace": "Ignite\\Finance\\Entities\\Banks",
+   "rows": 6
+  },
+  "finance_copay": {
+   "namespace": "Ignite\\Finance\\Entities\\Copay",
+   "rows": 84
+  },
+  "finance_dispatch": {
+   "namespace": "Ignite\\Finance\\Entities\\Dispatch",
+   "rows": 10792
+  },
+  "finance_evaluation_payment_details": {
+   "namespace": null,
+   "rows": 18925
+  },
+  "finance_evaluation_payments": {
+   "namespace": "Ignite\\Finance\\Entities\\EvaluationPayments",
+   "rows": 16993
+  },
+  "finance_invoice_dispatches": {
+   "namespace": null,
+   "rows": 7187
+  },
+  "finance_invoice_items": {
+   "namespace": "Ignite\\Finance\\Entities\\InvoiceItems",
+   "rows": 302090
+  },
+  "finance_invoice_payments": {
+   "namespace": "Ignite\\Finance\\Entities\\InvoicePayments",
+   "rows": 1653
+  },
+  "finance_invoices": {
+   "namespace": "Ignite\\Finance\\Entities\\Invoices",
+   "rows": 24094
+  },
+  "finance_patient_accounts": {
+   "namespace": "Ignite\\Finance\\Entities\\PatientAccounts",
+   "rows": 779
+  },
+  "finance_patient_deposits": {
+   "namespace": "Ignite\\Finance\\Entities\\PatientDeposits",
+   "rows": 1397
+  },
+  "finance_patient_withdrawals": {
+   "namespace": "Ignite\\Finance\\Entities\\PatientWithdrawals",
+   "rows": 105
+  },
+  "finance_payments_card": {
+   "namespace": "Ignite\\Finance\\Entities\\PaymentsCard",
+   "rows": 422
+  },
+  "finance_payments_cash": {
+   "namespace": "Ignite\\Finance\\Entities\\PaymentsCash",
+   "rows": 991
+  },
+  "finance_payments_mpesa": {
+   "namespace": "Ignite\\Finance\\Entities\\PaymentsMpesa",
+   "rows": 13865
+  },
+  "finance_payments_pesa_pal_card": {
+   "namespace": "Ignite\\Finance\\Entities\\PaymentsPesaPalCard",
+   "rows": 81
+  },
+  "finance_payments_pesa_pal_mpesa": {
+   "namespace": "Ignite\\Finance\\Entities\\PaymentsPesaPalMpesa",
+   "rows": 224
+  },
+  "finance_petty_cash": {
+   "namespace": "Ignite\\Finance\\Entities\\PettyCash",
+   "rows": 1
+  },
+  "finance_transactions": {
+   "namespace": "Ignite\\Finance\\Entities\\Transactions",
+   "rows": 22
+  },
+  "finance_waivers": {
+   "namespace": "Ignite\\Finance\\Entities\\Waivers",
+   "rows": 73
+  },
+  "inpatient_admission_requests": {
+   "namespace": "Ignite\\Inpatient\\Entities\\AdmissionRequests",
+   "rows": 279
+  },
+  "inpatient_admission_types": {
+   "namespace": "Ignite\\Inpatient\\Entities\\AdmissionTypes",
+   "rows": 11
+  },
+  "inpatient_admissions": {
+   "namespace": "Ignite\\Inpatient\\Entities\\Admissions",
+   "rows": 2119
+  },
+  "inpatient_bed_types": {
+   "namespace": "Ignite\\Inpatient\\Entities\\BedTypes",
+   "rows": 6
+  },
+  "inpatient_beds": {
+   "namespace": "Ignite\\Inpatient\\Entities\\Beds",
+   "rows": 173
+  },
+  "inpatient_charges": {
+   "namespace": "Ignite\\Inpatient\\Entities\\Charges",
+   "rows": 9
+  },
+  "inpatient_discharge_requests": {
+   "namespace": "Ignite\\Inpatient\\Entities\\DischargeRequests",
+   "rows": 1211
+  },
+  "inpatient_discharge_types": {
+   "namespace": "Ignite\\Inpatient\\Entities\\DischargeTypes",
+   "rows": 7
+  },
+  "inpatient_discharges": {
+   "namespace": "Ignite\\Inpatient\\Entities\\Discharges",
+   "rows": 2223
+  },
+  "inpatient_doctor_notes_view_logs": {
+   "namespace": "Ignite\\Evaluation\\Entities\\InpatientDoctorNotesViewLogs",
+   "rows": 223290
+  },
+  "inpatient_history_view_logs": {
+   "namespace": "Ignite\\Evaluation\\Entities\\InpatientHistoryViewLogs",
+   "rows": 680
+  },
+  "inpatient_inpatient_visit_charges": {
+   "namespace": "Ignite\\Inpatient\\Entities\\InpatientVisitCharges",
+   "rows": 3583
+  },
+  "inpatient_inpatient_visit_rebates": {
+   "namespace": "Ignite\\Inpatient\\Entities\\InpatientVisitRebates",
+   "rows": 492
+  },
+  "inpatient_investigation_result_view_logs": {
+   "namespace": "Ignite\\Evaluation\\Entities\\InpatientInvestigationResultViewLogs",
+   "rows": 30082
+  },
+  "inpatient_notes": {
+   "namespace": "Ignite\\Inpatient\\Entities\\Notes",
+   "rows": 131708
+  },
+  "inpatient_nurse_notes_view_logs": {
+   "namespace": "Ignite\\Evaluation\\Entities\\InpatientNurseNotesViewLogs",
+   "rows": 311987
+  },
+  "inpatient_nursing_care_plan": {
+   "namespace": "Ignite\\Inpatient\\Entities\\NursingCarePlan",
+   "rows": 15
+  },
+  "inpatient_partial_bill_breakdowns": {
+   "namespace": "Ignite\\Inpatient\\Entities\\PartialBillBreakdowns",
+   "rows": 3
+  },
+  "inpatient_prescriptions_view_logs": {
+   "namespace": "Ignite\\Evaluation\\Entities\\InpatientPrescriptionsViewLogs",
+   "rows": 70448
+  },
+  "inpatient_visit_rebates": {
+   "namespace": null,
+   "rows": 656
+  },
+  "inpatient_visit_wards": {
+   "namespace": "Ignite\\Inpatient\\Entities\\VisitWards",
+   "rows": 2325
+  },
+  "inpatient_vitals": {
+   "namespace": "Ignite\\Inpatient\\Entities\\Vitals",
+   "rows": 25291
+  },
+  "inpatient_wards": {
+   "namespace": "Ignite\\Inpatient\\Entities\\Wards",
+   "rows": 9
+  },
+  "inventory_batch_sales": {
+   "namespace": null,
+   "rows": 4454
+  },
+  "inventory_batches": {
+   "namespace": null,
+   "rows": 1
+  },
+  "inventory_categories": {
+   "namespace": "Ignite\\Inventory\\Entities\\Categories",
+   "rows": 16
+  },
+  "inventory_customers": {
+   "namespace": "Ignite\\Inventory\\Entities\\Customers",
+   "rows": 1252
+  },
+  "inventory_evaluation_dispensing": {
+   "namespace": "Ignite\\Evaluation\\Entities\\Dispensing",
+   "rows": 52274
+  },
+  "inventory_goods_received": {
+   "namespace": "Ignite\\Inventory\\Entities\\GoodsReceived",
+   "rows": 1
+  },
+  "inventory_goods_received_details": {
+   "namespace": "Ignite\\Inventory\\Entities\\GoodsReceivedDetails",
+   "rows": 3
+  },
+  "inventory_internal_order": {
+   "namespace": "Ignite\\Inventory\\Entities\\InternalOrder",
+   "rows": 44
+  },
+  "inventory_internal_order_details": {
+   "namespace": "Ignite\\Inventory\\Entities\\InternalOrderDetails",
+   "rows": 49
+  },
+  "inventory_inventory_batch_product_sales": {
+   "namespace": "Ignite\\Inventory\\Entities\\InventoryBatchProductSales",
+   "rows": 8644
+  },
+  "inventory_inventory_categories": {
+   "namespace": "Ignite\\Inventory\\Entities\\InventoryCategories",
+   "rows": 19
+  },
+  "inventory_inventory_dispensing": {
+   "namespace": "Ignite\\Inventory\\Entities\\InventoryDispensing",
+   "rows": 1499
+  },
+  "inventory_inventory_payment_terms": {
+   "namespace": "Ignite\\Inventory\\Entities\\InventoryPaymentTerms",
+   "rows": 8
+  },
+  "inventory_inventory_products": {
+   "namespace": "Ignite\\Inventory\\Entities\\InventoryProducts",
+   "rows": 3187
+  },
+  "inventory_inventory_stock_adjustments": {
+   "namespace": "Ignite\\Inventory\\Entities\\InventoryStockAdjustments",
+   "rows": 88048
+  },
+  "inventory_inventory_stocks": {
+   "namespace": "Ignite\\Inventory\\Entities\\InventoryStocks",
+   "rows": 239779
+  },
+  "inventory_inventory_tax_categories": {
+   "namespace": "Ignite\\Inventory\\Entities\\InventoryTaxCategories",
+   "rows": 3
+  },
+  "inventory_inventory_units": {
+   "namespace": "Ignite\\Inventory\\Entities\\InventoryUnits",
+   "rows": 63
+  },
+  "inventory_products": {
+   "namespace": "Ignite\\Inventory\\Entities\\Products",
+   "rows": 3108
+  },
+  "inventory_purchase_order_details": {
+   "namespace": "Ignite\\Inventory\\Entities\\PurchaseOrderDetails",
+   "rows": 6
+  },
+  "inventory_purchase_orders": {
+   "namespace": "Ignite\\Inventory\\Entities\\PurchaseOrders",
+   "rows": 2
+  },
+  "inventory_requisition_details": {
+   "namespace": "Ignite\\Inventory\\Entities\\RequisitionDetails",
+   "rows": 11
+  },
+  "inventory_requisitions": {
+   "namespace": "Ignite\\Inventory\\Entities\\Requisitions",
+   "rows": 4
+  },
+  "inventory_store_products": {
+   "namespace": "Ignite\\Inventory\\Entities\\StoreProducts",
+   "rows": 8923
+  },
+  "inventory_stores": {
+   "namespace": "Ignite\\Inventory\\Entities\\Stores",
+   "rows": 53
+  },
+  "inventory_units": {
+   "namespace": "Ignite\\Inventory\\Entities\\Units",
+   "rows": 62
+  },
+  "investigations": {
+   "namespace": "Ignite\\Evaluation\\Entities\\Investigations",
+   "rows": 150479
+  },
+  "invoice_payers": {
+   "namespace": "Ignite\\Finance\\Entities\\InvoicePayers",
+   "rows": 4729
+  },
+  "invoices": {
+   "namespace": "Ignite\\Finance\\Entities\\Invoices",
+   "rows": 30806
+  },
+  "manual_data": {
+   "namespace": null,
+   "rows": 34
+  },
+  "notifications": {
+   "namespace": "Ignite\\Core\\Entities\\Notifications",
+   "rows": 92300
+  },
+  "out_patient_notes_history_view_log": {
+   "namespace": "Ignite\\Evaluation\\Entities\\OutPatientNotesHistoryViewLog",
+   "rows": 31606
+  },
+  "partograph": {
+   "namespace": "Ignite\\Inpatient\\Entities\\Partograph",
+   "rows": 37
+  },
+  "patient_accounts": {
+   "namespace": "Ignite\\Finance\\Entities\\PatientAccounts",
+   "rows": 958
+  },
+  "patient_deposits": {
+   "namespace": "Ignite\\Finance\\Entities\\PatientDeposits",
+   "rows": 1751
+  },
+  "patient_insurance": {
+   "namespace": "Ignite\\Reception\\Entities\\PatientInsurance",
+   "rows": 16923
+  },
+  "patient_management": {
+   "namespace": "Ignite\\Inpatient\\Entities\\PatientManagement",
+   "rows": 6055
+  },
+  "patient_withdrawals": {
+   "namespace": "Ignite\\Finance\\Entities\\PatientWithdrawals",
+   "rows": 142
+  },
+  "patients": {
+   "namespace": "Ignite\\Reception\\Entities\\Patients",
+   "rows": 53114
+  },
+  "payments_card": {
+   "namespace": "Ignite\\Finance\\Entities\\PaymentsCard",
+   "rows": 609
+  },
+  "payments_cash": {
+   "namespace": "Ignite\\Finance\\Entities\\PaymentsCash",
+   "rows": 1007
+  },
+  "payments_mpesa": {
+   "namespace": "Ignite\\Finance\\Entities\\PaymentsMpesa",
+   "rows": 19045
+  },
+  "reception_appointment_categories": {
+   "namespace": "Ignite\\Reception\\Entities\\AppointmentCategories",
+   "rows": 9
+  },
+  "reception_next_of_kin": {
+   "namespace": "Ignite\\Reception\\Entities\\NextOfKin",
+   "rows": 7182
+  },
+  "reception_patient_dependants": {
+   "namespace": "Ignite\\Reception\\Entities\\PatientDependants",
+   "rows": 1
+  },
+  "reception_patient_documents": {
+   "namespace": "Ignite\\Reception\\Entities\\PatientDocuments",
+   "rows": 7
+  },
+  "reception_patient_insurance": {
+   "namespace": "Ignite\\Reception\\Entities\\PatientInsurance",
+   "rows": 14150
+  },
+  "reception_patient_random_notes": {
+   "namespace": "Ignite\\Reception\\Entities\\PatientRandomNotes",
+   "rows": 3
+  },
+  "reception_patient_schemes": {
+   "namespace": null,
+   "rows": 10191
+  },
+  "reception_patients": {
+   "namespace": "Ignite\\Reception\\Entities\\Patients",
+   "rows": 50070
+  },
+  "reception_patients_nok": {
+   "namespace": "Ignite\\Reception\\Entities\\NextOfKin",
+   "rows": 9433
+  },
+  "reception_time_trackers": {
+   "namespace": "Ignite\\Reception\\Entities\\TimeTrackers",
+   "rows": 148840
+  },
+  "settings_clinics": {
+   "namespace": "Ignite\\Settings\\Entities\\Clinics",
+   "rows": 1
+  },
+  "settings_insurance": {
+   "namespace": "Ignite\\Settings\\Entities\\Insurance",
+   "rows": 55
+  },
+  "settings_options": {
+   "namespace": "Ignite\\Settings\\Entities\\Options",
+   "rows": 358
+  },
+  "settings_scheme_exclusions": {
+   "namespace": null,
+   "rows": 2776
+  },
+  "settings_schemes": {
+   "namespace": "Ignite\\Settings\\Entities\\Schemes",
+   "rows": 3823
+  },
+  "settings_settings": {
+   "namespace": "Ignite\\Settings\\Entities\\Settings",
+   "rows": 216
+  },
+  "symptoms": {
+   "namespace": "Ignite\\Evaluation\\Entities\\Symptoms",
+   "rows": 98
+  },
+  "system_logs": {
+   "namespace": "Ignite\\Core\\Entities\\SystemLogs",
+   "rows": 448
+  },
+  "theatre_before_leaving_theatres": {
+   "namespace": "Ignite\\Theatre\\Entities\\BeforeLeavingTheatres",
+   "rows": 32
+  },
+  "theatre_bookings": {
+   "namespace": "Ignite\\Theatre\\Entities\\TheatreBookings",
+   "rows": 1396
+  },
+  "theatre_consumable_requirements": {
+   "namespace": "Ignite\\Theatre\\Entities\\ConsumableRequirements",
+   "rows": 4
+  },
+  "theatre_medic": {
+   "namespace": "Ignite\\Theatre\\Entities\\Medic",
+   "rows": 4204
+  },
+  "theatre_operation_investigations": {
+   "namespace": "Ignite\\Theatre\\Entities\\OperationInvestigations",
+   "rows": 37
+  },
+  "theatre_operation_procedures": {
+   "namespace": "Ignite\\Theatre\\Entities\\OperationProcedures",
+   "rows": 3420
+  },
+  "theatre_operations": {
+   "namespace": "Ignite\\Theatre\\Entities\\TheatreOperations",
+   "rows": 1235
+  },
+  "theatre_schedules": {
+   "namespace": "Ignite\\Theatre\\Entities\\TheatreSchedules",
+   "rows": 1425
+  },
+  "theatre_theatre_before_anaesthesias": {
+   "namespace": "Ignite\\Theatre\\Entities\\TheatreBeforeAnaesthesias",
+   "rows": 31
+  },
+  "theatre_theatre_before_leaving_theatres": {
+   "namespace": "Ignite\\Theatre\\Entities\\TheatreBeforeLeavingTheatres",
+   "rows": 33
+  },
+  "theatre_theatre_before_skin_incisions": {
+   "namespace": "Ignite\\Theatre\\Entities\\TheatreBeforeSkinIncisions",
+   "rows": 30
+  },
+  "theatre_theatre_bookings": {
+   "namespace": "Ignite\\Theatre\\Entities\\TheatreBookings",
+   "rows": 1132
+  },
+  "theatre_theatre_deposits": {
+   "namespace": "Ignite\\Theatre\\Entities\\TheatreDeposits",
+   "rows": 4
+  },
+  "theatre_theatre_medic_types": {
+   "namespace": "Ignite\\Theatre\\Entities\\TheatreMedicTypes",
+   "rows": 4
+  },
+  "theatre_theatre_operation_fluids": {
+   "namespace": "Ignite\\Theatre\\Entities\\TheatreOperationFluids",
+   "rows": 7
+  },
+  "theatre_theatre_operation_pulses": {
+   "namespace": "Ignite\\Theatre\\Entities\\TheatreOperationPulses",
+   "rows": 8
+  },
+  "theatre_theatre_operations": {
+   "namespace": "Ignite\\Theatre\\Entities\\TheatreOperations",
+   "rows": 1030
+  },
+  "theatre_theatre_payment_types": {
+   "namespace": "Ignite\\Theatre\\Entities\\TheatrePaymentTypes",
+   "rows": 2
+  },
+  "theatre_theatre_payments": {
+   "namespace": "Ignite\\Theatre\\Entities\\TheatrePayments",
+   "rows": 10
+  },
+  "theatre_theatre_schedules": {
+   "namespace": "Ignite\\Theatre\\Entities\\TheatreSchedules",
+   "rows": 1125
+  },
+  "theatre_theatre_types": {
+   "namespace": "Ignite\\Theatre\\Entities\\TheatreTypes",
+   "rows": 3
+  },
+  "theatres": {
+   "namespace": "Ignite\\Theatre\\Entities\\Theatres",
+   "rows": 3
+  },
+  "users": {
+   "namespace": "Ignite\\Users\\Entities\\Users",
+   "rows": 233
+  },
+  "users_permissions": {
+   "namespace": "Ignite\\Users\\Entities\\Permissions",
+   "rows": 748
+  },
+  "users_roles": {
+   "namespace": "Ignite\\Users\\Entities\\Roles",
+   "rows": 62
+  },
+  "visits": {
+   "namespace": "Ignite\\Evaluation\\Entities\\Visits",
+   "rows": 53413
+  },
+  "waivers": {
+   "namespace": "Ignite\\Finance\\Entities\\Waivers",
+   "rows": 77
+  }
+ }
+}

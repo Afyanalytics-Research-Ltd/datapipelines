@@ -265,6 +265,33 @@ def run(args: argparse.Namespace) -> int:
     return 0 if ok else 1
 
 
+import boto3
+from botocore.exceptions import ClientError
+def upload_json_file(file_name, bucket, object_name=None):
+        """Upload a JSON file from disk to an S3 bucket."""
+        # If S3 object_name was not specified, use file_name
+        if object_name is None:
+            object_name = file_name
+            # Initialize the S3 client
+        import os
+        s3_client = boto3.client('s3',aws_access_key_id=os.getenv('AWS_ACCESS_KEY_ID'),
+                                aws_secret_access_key=os.getenv('AWS_SECRET_ACCESS_KEY'))
+        try:
+            # Upload the file
+            s3_client.upload_file(
+                Filename=file_name,
+                Bucket=bucket,
+                Key=object_name,
+                ExtraArgs={'ContentType': 'application/json'} # Correctly sets metadata
+            )
+            print(f"Successfully uploaded {file_name} to {bucket}/{object_name}")
+            return True
+        except ClientError as e:
+            print(f"Error uploading file: {e}")
+            return False
+# Example usage:
+# upload_json_file('data.json', 'my-s3-bucket-name', 'folder/data.json')
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--host", default=SSH_HOST, help=f"SSH host/IP of the server to back up (default: {SSH_HOST})")
