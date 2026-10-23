@@ -11,6 +11,10 @@ Three groups run side by side, each one step after another (a step's parents mus
 plus `base`, run first and alone when asked for (patients, visits, catalogue, products, payments,
 appointments, users, insurance, invoices, extra_notes — all already loaded 2026-10-20).
 
+`target` picks the platform (gyno = migrate org 6, gyno159 = production org 159; AFYA_<KEY>_* in the server's
+.env). `steps` (when not empty) runs just those gyno_to_v3 steps, in order, instead of the groups — e.g. the
+fix-up steps prescription_drug_links, prescription_dose, insurance_schemes, procedure_price_facility.
+
 With only_missing (default) every step posts only rows whose uuid V3 doesn't have yet, so a run resumes
 where the last one stopped. Rows are matched by stable uuid5s, so nothing is duplicated either way.
 Needs AFYA_GYNO_* in the server's .env. The documents step reads the S3 manifest at `manifest`
@@ -19,6 +23,7 @@ Needs AFYA_GYNO_* in the server's .env. The documents step reads the S3 manifest
 from __future__ import annotations
 
 import logging
+import os
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -41,10 +46,19 @@ BASE = ["patients", "visits", "catalogue", "products", "payments", "appointments
         "invoices", "extra_notes"]
 
 
-def run_steps(steps: list[str], *, only_missing: bool, dry_run: bool, workers: int, limit: int, manifest: str) -> dict:
+TARGETS = ["gyno", "gyno159"]   # migrate org 6 / production org 159
+
+
+def run_steps(steps: list[str], *, target: str, only_missing: bool, dry_run: bool, workers: int, limit: int,
+              manifest: str) -> dict:
     """One gyno_to_v3 Run, the steps in order; a failed step fails the task (the rest of the group waits)."""
-    use_pipelines_dir(["gyno"])
+    os.environ["GYNO_TARGET"] = target          # gyno_to_v3 reads it at import
+    use_pipelines_dir([target])
     import gyno_to_v3 as G
+    G.TARGET = target                            # in case the module was imported earlier in this process
+    unknown = [s for s in steps if s not in G.STEPS]
+    if unknown:
+        raise AirflowFailException(f"unknown steps {unknown}; valid: {list(G.STEPS)}")
     run = G.Run(dry_run, limit, workers, only_missing)
     run.manifest = manifest
     out = {}
@@ -69,6 +83,11 @@ def run_steps(steps: list[str], *, only_missing: bool, dry_run: bool, workers: i
     tags=["v3", "migration", "gyno"],
     default_args={"owner": "data-eng", "retries": 1, "retry_delay": timedelta(minutes=5)},
     params={
+        "target": Param("gyno", type="string", enum=TARGETS, title="Target",
+                        description="gyno = migrate org 6 / facility 8; gyno159 = production org 159 / facility 157."),
+        "steps": Param([], type="array", items={"type": "string"}, title="Steps (instead of the groups)",
+                       description="Run just these gyno_to_v3 steps, in order — e.g. prescription_drug_links. "
+                                   "Empty = run the groups below."),
         "groups": Param(list(GROUPS), type="array", items={"type": "string", "enum": list(GROUPS)}, title="Groups",
                         description="clinical / money / structure — run side by side."),
         "base": Param(False, type="boolean", title="Run the base steps first",
@@ -86,8 +105,16 @@ def gyno_to_v3():
 
     def args() -> dict:
         p = get_current_context()["params"]
-        return {"only_missing": bool(p["only_missing"]), "dry_run": bool(p["dry_run"]), "workers": int(p["workers"]),
-                "limit": int(p["limit"]), "manifest": p["manifest"]}
+        return {"target": p["target"], "only_missing": bool(p["only_missing"]), "dry_run": bool(p["dry_run"]),
+                "workers": int(p["workers"]), "limit": int(p["limit"]), "manifest": p["manifest"]}
+
+    @task(execution_timeout=timedelta(hours=14))
+    def chosen_steps(_) -> dict:
+        p = get_current_context()["params"]
+        if not p["steps"]:
+            log.info("no steps listed — the groups run")
+            return {}
+        return run_steps(list(p["steps"]), **args())
 
     @task(execution_timeout=timedelta(hours=8))
     def base() -> dict:
@@ -101,6 +128,9 @@ def gyno_to_v3():
         @task(task_id=name, execution_timeout=timedelta(hours=14))
         def _run(_) -> dict:
             p = get_current_context()["params"]
+            if p["steps"]:
+                log.info("steps listed — groups skipped")
+                return {}
             if name not in p["groups"]:
                 log.info("%s not selected", name)
                 return {}
@@ -123,7 +153,7 @@ def gyno_to_v3():
             raise AirflowFailException(f"groups that failed (re-run; only_missing resumes them): {failed}")
 
     b = base()
-    results = [group_task(n)(b) for n in GROUPS]
+    results = [group_task(n)(b) for n in GROUPS] + [chosen_steps(b)]
     summary(*results)
 
 

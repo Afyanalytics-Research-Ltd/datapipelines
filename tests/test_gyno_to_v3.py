@@ -52,7 +52,7 @@ def test_doctor_note_payload_spreads_fields():
     n = g.doctor_note_payload({"id": 7, "notes": "Pain lower abdomen", "eprescription": "Paracetamol", "lmp": "2026-09-01",
                                "due_date": "2027-06-08", "noofweeks": "6", "nextappointment": "0000-00-00",
                                "updated_on": "2026-10-01 10:00:00"}, 1, 2, ("Dr. A", "Gynaecology"))
-    assert n[g.NOTE_FIELD] == "Pain lower abdomen" and n["treatment_plan"] == "Paracetamol"
+    assert n["presenting_complaints"] == n["history_of_present_illness"] == "Pain lower abdomen" and n["treatment_plan"] == "Paracetamol"
     assert "LMP: 2026-09-01" in n["remarks"] and "EDD: 2027-06-08" in n["remarks"] and n["next_visit_date"] is None
     assert n["doctor_name"] == "Dr. A" and n["visit_id"] == 1 and n["patient_id"] == 2
 
@@ -146,7 +146,7 @@ def test_visit_payload_sets_clinic():
 def test_product_names_and_prices():
     p = g.product_payload({"id": 2, "title": "Methyldopa 250mg tabs", "details": "100s", "cost": "10.0",
                            "buying_price": "6", "insurancecost": None}, 1, 1)
-    assert (p["selling_price"], p["insurance_price"], p["cost_price"], p["trade_price"]) == (10.0, 10.0, 6.0, 6.0)
+    assert (p["selling_price"], p["insurance_price"], p["cost_price"], p["trade_price"]) == (10.0, 13.0, 6.0, 6.0)
     assert p["generic_name"] == "Methyldopa 250mg tabs" and p["is_active"] is True
     junk = g.product_payload({"id": 9, "title": "0", "details": "null", "cost": "0.0"}, 1, 1)
     assert junk["generic_name"] == "Unnamed item 9" and junk["is_active"] is False and junk["description"] is None
@@ -161,3 +161,180 @@ def test_receipt_payload():
     d = g.receipt_payload({"id": 4, "amount": "500", "updated_on": "2021-01-01 09:00:00"}, 5, None, 1, payment_id=7,
                           invoice_id=None, deposit=True)
     assert d["receipt_no"] == "GYN-D-4" and d["receipt_type"] == "deposit" and d["payment_id"] == 7
+
+
+def test_procedure_price_payload():
+    lab = g.procedure_price_payload("laboratory", {"id": 4, "cost": "800", "insurance_cost": "1000"}, 77, 8)
+    assert (lab["evaluation_procedure_id"], lab["cash_charge"], lab["insurance_charge"], lab["facility_id"]) == (77, 800.0, 1000.0, 8)
+    svc = g.procedure_price_payload("otherservices", {"id": 5, "cost": "300.0", "insurancecost": None}, 78, 8)
+    assert svc["insurance_charge"] == 300.0 and svc["status"] == 1
+    assert lab["uuid"] != g.procedure_price_payload("otherservices", {"id": 4, "cost": "1"}, 1, 8)["uuid"]
+
+
+def test_stock_row_carries_quantity_on_hand():
+    s = g.stock_row_payload("u", 1, 89, quantity="700", unit_cost="6", selling="10.0", insurance=None)
+    assert (s["quantity"], s["available_quantity"], s["average_cost"], s["total_value"]) == (700, 700, 6.0, 4200.0)
+    assert s["selling_price"] == 10.0 and s["insurance_price"] == 10.0
+    assert g.stock_row_payload("u", 1, 89, quantity="-3", unit_cost="5", selling="1")["quantity"] == 0
+
+
+def test_person_name_and_profile():
+    assert g.person_name("Dr Salome Waweru") == ("Dr", "Salome", None, "Waweru")
+    assert g.person_name("Dr.Shiphrah Kuria") == ("Dr", "Shiphrah", None, "Kuria")
+    assert g.person_name("DR. JOY W. KURIA") == ("Dr", "JOY", "W.", "KURIA")
+    assert g.person_name("Nurse") == (None, "Nurse", None, "Nurse") and g.person_name("") == (None, "Staff", None, "Member")
+    p = g.user_profile_payload({"id": 149, "name": "Dr. Evelyn Njagi", "description": "Doctor", "email": "e@x.com"}, 1196)
+    assert (p["user_id"], p["first_name"], p["last_name"], p["staff_number"]) == (1196, "Evelyn", "Njagi", "GYN-U-149")
+    assert p["job_description"] == "Dr Doctor" and p["work_email"] == "e@x.com"
+
+
+def test_profile_title_codes():
+    assert g.user_profile_payload({"id": 1, "name": "Dr Salome Waweru"}, 5)["title"] == 4
+    assert "title" not in g.user_profile_payload({"id": 2, "name": "Jane Wanjiru"}, 6)
+
+
+def test_rx_dosing_and_fix():
+    assert g.rx_dosing(" 1 od") == ("1 od", "once a day (OD)")
+    assert g.rx_dosing(" STAT") == ("STAT", "immediately (STAT)")
+    assert g.rx_dosing("1 tab bd x5/7") == ("1 tab bd x5/7", "twice a day (BD)")
+    assert g.rx_dosing(" ") == (None, None) and g.rx_dosing("apply thinly")[1] is None
+    f = g.rx_fix_payload({"notes": "1 od"}, (89, "Main Store"), 55)
+    assert f == {"status": "active", "dosage": "1 od", "frequency": None, "store_id": 89,     # the Dose column reads method
+                 "store_name": "Main Store", "admission_id": 55, "take": "1", "method": 5}
+    assert g.rx_dose("1 tab bd x5/7")["duration"] == "5"
+    assert "admission_id" not in g.rx_fix_payload({"notes": ""}, (89, "Main Store"), None)
+
+
+def test_admission_status():
+    base = {"id": 7, "dateofvisit": "2025-03-01", "timeofvisit": "10:00:00", "status": "hold", "check_out": "2025-03-04"}
+    a = g.admission_payload(base, 1, 2, type_id=3, doctor=4, discharge="2025-03-03 12:00:00", today="2026-10-21")
+    assert a["status"] == "discharged" and a["discharge_date"] == "2025-03-03 12:00:00" and a["admission_number"] == "GYN-ADM-7"
+    old = g.admission_payload(base, 1, 2, type_id=3, doctor=4, discharge=None, today="2026-10-21")
+    assert old["status"] == "discharged" and old["discharge_date"] == "2025-03-04 00:00:00"
+    now = g.admission_payload({**base, "dateofvisit": "2026-10-19"}, 1, 2, type_id=3, doctor=4, discharge=None, today="2026-10-21")
+    assert now["status"] == "admitted" and now["discharge_date"] is None
+    assert g.admission_payload({**base, "dateofvisit": "0000-00-00"}, 1, 2, type_id=3, doctor=4, discharge=None, today="2026-10-21") is None
+
+
+def test_po_history_payload():
+    p = g.po_history_payload({"lpostatus": "Full Delivery", "subtotal": "12000", "vat": "1920", "grandtotal": "13920",
+                              "totalpayment": "0"}, 13920.0)
+    assert p == {"status": "received", "subtotal": 12000.0, "tax_amount": 1920.0, "total_amount": 13920.0,
+                 "paid_amount": 13920.0, "payment_status": "paid"}
+    assert g.po_history_payload({"lpostatus": "Canceled", "grandtotal": "500"})["status"] == "cancelled"
+    assert g.po_history_payload({"lpostatus": "Partial Delivery", "grandtotal": "1000", "totalpayment": "400"})["payment_status"] == "partial"
+    assert g.po_history_payload({"lpostatus": "FirstApproval", "grandtotal": "10"})["status"] == "pending_approval"
+
+
+def test_theatre_booking_payload():
+    st = {"booked": 10, "completed": 14}
+    up = g.theatre_booking_payload({"id": 1, "surgeryprocedure": "ECS Private", "surgeryappointment": "2026-11-04",
+                                    "updated_on": "2026-10-20 08:00:00"}, 5, 6, status=st, requested_by=7, today="2026-10-21")
+    assert (up["status_id"], up["preferred_date"], up["reason"], up["requested_by"]) == (10, "2026-11-04", "ECS Private", 7)
+    past = g.theatre_booking_payload({"id": 2, "surgeryprocedure": "TAH", "surgeryappointment": "2025-02-01"}, 5, 6,
+                                     status=st, requested_by=7, today="2026-10-21")
+    assert past["status_id"] == 14
+    assert g.theatre_booking_payload({"id": 3, "surgeryprocedure": "", "surgeryappointment": "0000-00-00"}, 5, 6,
+                                     status=st, requested_by=7, today="2026-10-21") is None
+
+
+def test_evaluation_payment_payload():
+    r = {"id": 120690, "amount": "1000", "date_of_transaction": "2026-10-20 10:43:04", "descrpt": "UJKK0B5934-JANE",
+         "invoiceno": "120972/2026", "updated_by": "Ann Kariuki"}
+    p = g.evaluation_payment_payload(r, patient=(55, "JANE DOE", "GYN-9"), visit_id=7, invoice_id=8, ptype=("MPESA", "No"),
+                                     cashier=1150, insurer=None)
+    assert p["receipt"] == "120972/2026" and p["payment_mode"] == "mpesa" and p["mpesa_amount"] == 1000.0
+    assert p["cash_amount"] == 0.0 and p["amount"] == 1000.0 and p["patient"] == 55 and p["patient_no"] == "GYN-9"
+    assert p["created_at"] == "2026-10-20 10:43:04" and p["receipt_date"] == "2026-10-20" and p["transaction_id"] == "UJKK0B5934-JANE"
+    ins = g.evaluation_payment_payload({**r, "invoiceno": None}, patient=None, visit_id=None, invoice_id=None,
+                                       ptype=("CIC", "Yes"), cashier=1, insurer=33)
+    assert ins["company"] == 33 and ins["receipt"] == "GYN-R-120690" and all(ins[c] == 0.0 for c in g.MODE_COLUMN.values())
+    d = g.evaluation_payment_payload({"id": 4, "amount": "500", "updated_on": "2021-01-01 09:00:00"}, patient=None, visit_id=None,
+                                     invoice_id=None, ptype=("Cash", "No"), cashier=1, insurer=None, deposit=True)
+    assert d["receipt"] == "GYN-D-4" and d["cash_amount"] == 500.0
+    det = g.evaluation_payment_detail_payload(r, 99, visit_id=7, invoice_id=8, method="MPESA")
+    assert det["payment"] == 99 and det["amount"] == 1000.0 and det["name"] == "UJKK0B5934-JANE"
+
+
+def test_fp_item_mapping():
+    assert g.fp_item("Microgynon Fe (pack)") == (["combined_oral_pills"], [])
+    assert g.fp_item("Microlut pills  0.03mg") == (["progestin_only_pills"], [])
+    assert g.fp_item("Depo injection") == (["dmpa_im"], []) and g.fp_item("Primolut Depo") is None
+    assert g.fp_item("Mirena Subsidized") == (["iucd_hormonal"], [])
+    assert g.fp_item("Multiload  IUD Insertion") == (["iucd_non_hormonal"], [])
+    assert g.fp_item("Lost IUD removal") == ([], ["iucd"]) and g.fp_item("Jadelle Removal") == ([], ["implant"])
+    assert g.fp_item("Implanon Insertion") == (["implant_1_rod"], []) and g.fp_item("BTL") == (["btl"], [])
+    assert g.fp_item("POSTINOR -2 TABS") == (["emergency_contraceptive_pill"], [])
+    assert g.fp_item("IUD SET") is None and g.fp_item("Paracetamol") is None
+
+
+def test_fp_service_payload():
+    p = g.fp_service_payload(5, 6, 77, "2024-01-02", [(["iucd_hormonal"], []), ([], ["implant"])], ["Mirena", "Jadelle Removal"],
+                             revisit=True, reinsertion=True)
+    assert p["methods"] == ["iucd_hormonal"] and p["removals"] == ["implant"] and p["client_type"] == "revisit"
+    assert p["insertion_type"] == "reinsertion" and p["notes"].startswith("Gyno visit 77:")
+    pills = g.fp_service_payload(5, 6, 78, "2024-01-02", [(["combined_oral_pills"], [])], ["Microgynon"], revisit=False, reinsertion=True)
+    assert pills["insertion_type"] is None and pills["client_type"] == "new"
+    btl = g.fp_service_payload(5, 6, 79, "2024-01-02", [(["btl"], [])], ["BTL"], revisit=True, reinsertion=True)
+    assert btl["insertion_type"] == "first_insertion"
+
+
+def test_blood_group_and_pregnancy():
+    assert g.blood_group("O POSITIVE") == ("O", "+") and g.blood_group("o+") == ("O", "+")
+    assert g.blood_group("B NEGATIVE") == ("B", "-") and g.blood_group("AB") == ("AB", None)
+    assert g.blood_group("A +ve") == ("A", "+") and g.blood_group("") == (None, None)
+    assert g.current_pregnancy({"due_date": "2027-03-01", "first_day_of_last_lmp": "2026-05-25"}, "2026-10-22") == ("2026-05-25", "2027-03-01")
+    assert g.current_pregnancy({"due_date": "2027-03-01", "first_day_of_last_lmp": ""}, "2026-10-22") == ("2026-05-25", "2027-03-01")
+    assert g.current_pregnancy({"due_date": "2026-10-01"}, "2026-10-22") is None
+    assert g.current_pregnancy({"due_date": "2028-01-01"}, "2026-10-22") is None
+
+
+def test_immunization_payload():
+    p = g.immunization_payload("pharmacy_records", {"id": 9, "quantity": "1.0", "status": "No", "updated_by": "Nurse A",
+                                                    "updated_on": "2024-03-04 10:00:00"}, 11, 12, "Tetanus vaccine 10ml", 1)
+    assert p["uuid"] == g.gid("immunization-pharmacy_records", 9) and p["visit_id"] == 11 and p["patient_id"] == 12
+    assert p["administration_date"] == "2024-03-04" and "not marked dispensed" in p["notes"]
+    assert g.VACCINE_RE.search("TETANUS VACCINE 10ML") and not g.VACCINE_RE.search("HEPARIN INJ")
+
+
+def test_drug_insurance_price():
+    assert g.drug_insurance_price("100") == 133.0 and g.drug_insurance_price("150", "") == 200.0   # 199.5 → 200
+    assert g.drug_insurance_price("100", "180") == 180.0 and g.drug_insurance_price("0") is None
+    p = g.product_payload({"id": 1, "title": "Panadol", "cost": "50", "buying_price": "20"}, 1, 1)
+    assert p["selling_price"] == 50.0 and p["insurance_price"] == 67.0   # 66.5 → 67
+
+
+def test_rx_dose():
+    assert g.rx_dose(" 1 BD FOR 10/7") == {"frequency": None, "take": "1", "method": 1, "duration": "10", "time_measure": 1}
+    assert g.rx_dose("120 mg od for 5/7 then Prn") == {"frequency": None, "take": "120", "unit": "mg", "method": 5,
+                                                       "duration": "5", "time_measure": 1}
+    assert g.rx_dose("1tab tds 10/7")["take"] == "1" and g.rx_dose("1tab tds 10/7")["method"] == 2
+    assert g.rx_dose("0.5mls im stat") == {"frequency": None, "take": "0.5", "unit": "ml", "method": 4, "whereto": 10}
+    assert g.rx_dose(" insert pv nocte") == {"frequency": None, "method": 23, "whereto": 21}
+    assert g.rx_dose("1 bd* 1/52 ")["time_measure"] == 2 and g.rx_dose(" 1 bd 1/12")["time_measure"] == 3
+    assert g.rx_dose(" one tab bd")["take"] == "1" and g.rx_dose(" 1 tab od for 30 days")["duration"] == "30"
+    assert g.rx_dose(" partner rx") == {"frequency": None} and g.rx_dose("") == {}
+
+
+def test_rx_dose_multiline_is_notes_only():
+    d = g.rx_dose(" cefasyn 1 bd 5/7\r\nnuclin v 1 od 3/7\r\npartner sec/azm")
+    assert d and all(v is None for v in d.values()) and "method" in d
+
+
+def test_core_insurer_match_and_scheme_type():
+    core = {"social health authority (sha)": 1, "aar insurance": 2, "cic insurance": 3, "apa insurance": 4, "jubilee insurance": 5}
+    assert g.core_insurer_match("SHA-SHIF", core) == 1 and g.core_insurer_match("SHIF", core) == 1
+    assert g.core_insurer_match("SHA - MWALIMU MEDICAL", core) == 1 and g.core_insurer_match("AAR INSURANCE", core) == 2
+    assert g.core_insurer_match("Cooperative Insurance", core) == 3 and g.core_insurer_match("APA", core) == 4
+    assert g.core_insurer_match("NHIF NATIONAL SCHEME", core) is None and g.core_insurer_match("PACIS INSURANCE", core) is None
+    assert g.core_insurer_match("CO-OP BANK", core) is None
+    assert g.scheme_type("SHA - PUBLIC OFFICER") == "government" and g.scheme_type("NHIF CIVIL SERVANT") == "government"
+    assert g.scheme_type("MINET") == "private"
+
+
+def test_rx_dose_spelled_out_frequency():
+    assert g.rx_dose("take one tablet twice daily for 7 days") == {"frequency": None, "take": "1", "method": 1,
+                                                                   "duration": "7", "time_measure": 1}
+    assert g.rx_dose("take one tablet three times daily for 5 days")["method"] == 2
+    assert g.rx_dose("1 tab once daily")["method"] == 5 and g.rx_dose("take one tablet stat")["method"] == 4
+    assert g.rx_dose("2 tabs at night")["method"] == 23 and g.rx_dose("1 when needed")["method"] == 19
