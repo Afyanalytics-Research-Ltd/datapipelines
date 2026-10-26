@@ -100,3 +100,9 @@ rsa_key*
 
 .migration_state/*/journey/journeys.ndjson
 .migration_state/*/journey/
+
+# keys & secrets
+*.p8
+*.pem
+gsheet_load_rsa_key*
+secrets/*
