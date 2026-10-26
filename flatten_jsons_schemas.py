@@ -6,6 +6,8 @@ from pathlib import Path
 import snowflake.connector
 from dotenv import load_dotenv
 
+import dedup
+
 load_dotenv(Path(__file__).resolve().parent / ".env")
 
 SCHEMA_PAIRS = [
@@ -216,12 +218,8 @@ def expand_objects(cursor, raw_schema, table,
 
 # Build the final SQL statement to create or replace the flattened view for a given table, based on the discovered and expanded fields. 
 # This function constructs a dynamic SELECT list that extracts the appropriate JSON paths and casts them to the inferred types
-def build_flatten_sql(raw_schema: str, clean_schema: str, table: str, expanded_fields: list[tuple[str, str, str]],
-                      materialize: str = "view") -> str:
-    """CREATE OR REPLACE VIEW (default — always as fresh as RAW) or TABLE (a
-    snapshot of the same query, refreshed each time this runs)."""
-    if materialize not in ("view", "table"):
-        raise ValueError(f"materialize must be view or table, not {materialize!r}")
+def flatten_select(raw_schema: str, table: str, expanded_fields: list[tuple[str, str, str]]) -> str:
+    """The query behind {clean_schema}.{table}: RAW's JSON as typed columns."""
     # 3. Build the dynamic SELECT list
     select_parts = []
     for name, json_path, dtype in expanded_fields:
@@ -237,9 +235,7 @@ def build_flatten_sql(raw_schema: str, clean_schema: str, table: str, expanded_f
             )
     select_list = ",\n".join(select_parts)
 
-    # 4. Construct the final CREATE OR REPLACE VIEW / TABLE statement
-    create_table_query = f"""
-    CREATE OR REPLACE {materialize.upper()} {clean_schema}.{table} AS
+    return f"""
     WITH deduped AS (
         SELECT
             DISTINCT facility_id,
@@ -251,9 +247,27 @@ def build_flatten_sql(raw_schema: str, clean_schema: str, table: str, expanded_f
     SELECT
         facility_id as source_schema, 
         {select_list}
-    FROM deduped;
+    FROM deduped
     """
-    return create_table_query
+
+
+def flatten_columns(expanded_fields) -> list[tuple[str, str | None]]:
+    """(column, SQL type) per flattened field; None for ARRAY / OBJECT / VARIANT."""
+    return [(name.upper(), None if dtype in ('ARRAY', 'OBJECT', 'VARIANT') else infer_type(dtype))
+            for name, _, dtype in expanded_fields]
+
+
+def build_flatten_sql(raw_schema: str, clean_schema: str, table: str, expanded_fields: list[tuple[str, str, str]],
+                      materialize: str = "view", query: str | None = None) -> str:
+    """CREATE OR REPLACE VIEW (default — always as fresh as RAW) or TABLE (a
+    snapshot of the same query, refreshed each time this runs)."""
+    if materialize not in ("view", "table"):
+        raise ValueError(f"materialize must be view or table, not {materialize!r}")
+    # 4. Construct the final CREATE OR REPLACE VIEW / TABLE statement
+    return f"""
+    CREATE OR REPLACE {materialize.upper()} {clean_schema}.{table} AS
+    {query or flatten_select(raw_schema, table, expanded_fields)};
+    """
 
 MATERIALIZE_MODES = ("auto", "view", "table")
 
@@ -283,13 +297,16 @@ def backup_table(cursor, clean_schema: str, table: str) -> str:
 
 
 def flatten_table(cursor, raw_schema: str, clean_schema: str, table: str, expanded_fields,
-                  materialize: str = "auto") -> dict:
+                  materialize: str = "auto", facility: str | None = None) -> dict:
     """Flatten one RAW source table into CLEAN.
 
       auto   keep what's there: an existing TABLE is refreshed in place
              (CREATE OR REPLACE TABLE … AS the flatten query); otherwise a VIEW
       view   always a view — an existing table is backed up, dropped, replaced
       table  always a table, refreshed from RAW on every run
+
+    With `facility`, records dedup merged away are left out and links point at
+    the survivors (dedup.crosswalk_select).
 
     A table is cloned to <clean_schema>_BACKUP before it's replaced. Returns
     {"object": view|table, "was": view|table|None, "backup": name|None}."""
@@ -302,7 +319,11 @@ def flatten_table(cursor, raw_schema: str, clean_schema: str, table: str, expand
         cursor.execute(f"DROP TABLE {clean_schema}.{table}")
     elif was == "view" and target == "table":
         cursor.execute(f"DROP VIEW {clean_schema}.{table}")
-    cursor.execute(build_flatten_sql(raw_schema, clean_schema, table, expanded_fields, materialize=target))
+    query = flatten_select(raw_schema, table, expanded_fields)
+    if facility:
+        query = dedup.crosswalk_select(cursor, facility, table, query, flatten_columns(expanded_fields))
+    cursor.execute(build_flatten_sql(raw_schema, clean_schema, table, expanded_fields, materialize=target,
+                                     query=query))
     return {"object": target, "was": was, "backup": backup}
 
 
@@ -317,13 +338,16 @@ def flatten_all(conn):
             print(f"\n=== {raw_schema} → {clean_schema} ===")
             tables = get_source_tables(cursor, raw_schema)
             print(f"  Found {len(tables)} tables to process")
+            facility = raw_schema.removesuffix("_RAW")
+            expanded = {t: expand_objects(cursor, raw_schema, t, discover_fields(cursor, raw_schema, t))
+                        for t in tables}
+            dedup.run(f"HOSPITALS.{raw_schema}", facility=facility, fields=expanded)
             ok, fail = 0, 0
             for table in tables:
                 try:
-                    fields = discover_fields(cursor, raw_schema, table)
-                    expanded = expand_objects(cursor, raw_schema, table, fields)
-                    done = flatten_table(cursor, raw_schema, clean_schema, table, expanded)
-                    print(f"  ✓ {table} ({len(expanded)} cols, {done['object']}"
+                    done = flatten_table(cursor, raw_schema, clean_schema, table, expanded[table],
+                                         facility=facility)
+                    print(f"  ✓ {table} ({len(expanded[table])} cols, {done['object']}"
                           f"{', backup ' + done['backup'] if done['backup'] else ''})")
                     ok += 1
                 except Exception as e:
