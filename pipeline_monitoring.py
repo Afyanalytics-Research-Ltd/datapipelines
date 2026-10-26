@@ -116,6 +116,13 @@ def configure_sentry(
     with _SENTRY_INITIALIZATION_LOCK:
         if _SENTRY_INITIALIZED:
             return True
+        airflow_sentry_enabled = os.getenv(
+            "AIRFLOW__SENTRY__SENTRY_ON", ""
+        ).strip().lower() in {"1", "true", "yes", "on"}
+        if airflow_sentry_enabled:
+            # Airflow initializes its Sentry client around task execution.
+            _SENTRY_INITIALIZED = True
+            return True
         try:
             import sentry_sdk
             from sentry_sdk.integrations.logging import LoggingIntegration
@@ -219,7 +226,9 @@ class PipelineMonitor:
             level,
             log_message,
             # When sending log records as Sentry logs, any fields provided in 
-            # the extra dictionary are automatically promoted to top-level attributes on the log entry. This makes them searchable and filterable in the Sentry UI.
+            # the extra dictionary are automatically promoted to top-level 
+            # attributes on the log entry. This makes them searchable and 
+            # filterable in the Sentry UI.
             extra={
                 "pipeline_monitor_event_id": event["event_id"],
                 "pipeline_monitor_pipeline": self.pipeline,
@@ -574,6 +583,95 @@ def check_referential_integrity(
         expected={"max_orphan_rate": max_orphan_rate},
         severity=severity,
     )
+
+
+# Future central reconciliation hook. Keep disabled until DAGs publish
+# comparable per-target counts and explicitly configured quality thresholds.
+#
+# def report_reconciliation(
+#     monitor: PipelineMonitor,
+#     *,
+#     target: str,
+#     expected_target_rows: int,
+#     loaded_target_rows: int,
+#     duplicate_count: int | None = None,
+#     max_duplicates: int = 0,
+#     null_count: int | None = None,
+#     total_count: int | None = None,
+#     max_null_rate: float | None = None,
+#     expected_columns: Sequence[str] | None = None,
+#     actual_columns: Sequence[str] | None = None,
+#     allow_extra_columns: bool = False,
+#     actual_metric: int | float | None = None,
+#     baseline_metric: int | float | None = None,
+#     max_change_fraction: float | None = None,
+#     orphan_count: int | None = None,
+#     child_count: int | None = None,
+#     max_orphan_rate: float = 0.0,
+# ) -> None:
+#     checks = [
+#         check_row_count(
+#             f"{target}.loaded_rows",
+#             loaded_target_rows,
+#             minimum=expected_target_rows,
+#             maximum=expected_target_rows,
+#         )
+#     ]
+#     if duplicate_count is not None:
+#         checks.append(
+#             check_duplicates(
+#                 f"{target}.duplicates",
+#                 duplicate_count,
+#                 max_duplicates=max_duplicates,
+#             )
+#         )
+#     if null_count is not None or total_count is not None or max_null_rate is not None:
+#         if null_count is None or total_count is None or max_null_rate is None:
+#             raise ValueError("Null checks require counts and an explicit maximum rate")
+#         checks.append(
+#             check_null_rate(
+#                 f"{target}.null_rate",
+#                 null_count=null_count,
+#                 total_count=total_count,
+#                 max_rate=max_null_rate,
+#             )
+#         )
+#     if expected_columns is not None or actual_columns is not None:
+#         if expected_columns is None or actual_columns is None:
+#             raise ValueError("Schema checks require expected and actual columns")
+#         checks.append(
+#             check_schema(
+#                 f"{target}.schema",
+#                 expected_columns=expected_columns,
+#                 actual_columns=actual_columns,
+#                 allow_extra=allow_extra_columns,
+#             )
+#         )
+#     metric_values = (actual_metric, baseline_metric, max_change_fraction)
+#     if any(value is not None for value in metric_values):
+#         if any(value is None for value in metric_values):
+#             raise ValueError("Metric checks require actual, baseline, and threshold")
+#         checks.append(
+#             check_metric_change(
+#                 f"{target}.metric_change",
+#                 actual=actual_metric,
+#                 baseline=baseline_metric,
+#                 max_change_fraction=max_change_fraction,
+#             )
+#         )
+#     if orphan_count is not None or child_count is not None:
+#         if orphan_count is None or child_count is None:
+#             raise ValueError("Referential checks require orphan and child counts")
+#         checks.append(
+#             check_referential_integrity(
+#                 f"{target}.referential_integrity",
+#                 orphan_count=orphan_count,
+#                 child_count=child_count,
+#                 max_orphan_rate=max_orphan_rate,
+#             )
+#         )
+#     for result in checks:
+#         monitor.quality(result, stage="reconcile")
 
 
 def airflow_failure_callback(context: Mapping[str, Any]) -> None:

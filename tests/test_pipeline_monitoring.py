@@ -27,6 +27,7 @@ from pipeline_monitoring import (
 def disable_sentry_initialization(monkeypatch: Any) -> None:
     """Keep ordinary unit tests local and independent of Sentry credentials."""
     monkeypatch.delenv("SENTRY_DSN", raising=False)
+    monkeypatch.delenv("AIRFLOW__SENTRY__SENTRY_ON", raising=False)
     monkeypatch.setattr(monitoring, "_SENTRY_INITIALIZED", False)
 
 
@@ -220,6 +221,17 @@ def test_configure_sentry_without_dsn_does_not_initialize() -> None:
     """Sentry remains optional for local runs without configured credentials."""
     assert not monitoring.configure_sentry("")
     assert not monitoring._SENTRY_INITIALIZED
+
+
+def test_configure_sentry_defers_to_airflow_task_sdk(
+    monkeypatch: Any,
+) -> None:
+    """Airflow owns SDK initialization when its Sentry integration is enabled."""
+    monkeypatch.setenv("SENTRY_DSN", "https://public@example.invalid/1")
+    monkeypatch.setenv("AIRFLOW__SENTRY__SENTRY_ON", "true")
+
+    assert monitoring.configure_sentry()
+    assert monitoring._SENTRY_INITIALIZED
 
 
 def test_sentry_cron_checkin_tracks_start_and_success(
