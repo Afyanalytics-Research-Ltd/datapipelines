@@ -34,3 +34,4 @@ openai
 anthropic
 ollama
 chromadb
+sentry-sdk>=2.35,<3
