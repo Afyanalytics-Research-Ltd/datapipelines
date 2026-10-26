@@ -2032,6 +2032,9 @@ _PER_KEY_COERCIONS: dict[str, dict[str, Any]] = {
             "ordered", "on_credit", "is_walkin", "cancelled", "moved", "moved_from_chargesheet",
             "is_interim", "requires_preauth", "preauth_approved", "remove_from_report")},
         "can_be_offered": _null_to(1),
+        # the doctor a procedure is tagged to: a V2 user id → the V3 user (it went out raw, so V3 showed no /
+        # the wrong doctor — 2026-10-23); None when that staff member isn't in V3, never a guess
+        "performing_doctor": _v3_user_for_v2_id,
     },
     "theatre_theatre": {
         "associated_procedures": _wrap_in_list,
@@ -3666,6 +3669,9 @@ _FK_REMAP: dict[str, dict[str, str]] = {
     # investigation_results.investigation_id → investigations.id
     "evaluation_investigation": {
         "visit_id": "visit",
+        # without it V2's admission id went out unchanged: the inpatient screen (by admission) showed none
+        # of the admission's investigations (org 284, 2026-10-23)
+        "admission_id": "admission",
     },
     "evaluation_inv_result": {
         "visit_id":         "visit",
