@@ -1,16 +1,19 @@
-"""Opt-in pipeline logging and quality checks with Sentry integration.
+"""Pipeline events and data-quality checks, reported to Sentry.
 
-Operational events are emitted through Python's standard logging framework.
-When ``SENTRY_DSN`` is configured, the Sentry SDK forwards those logs and
-ERROR-level events without storing them in a local or Airflow database.
+Events are emitted through Python's standard logging framework. ERROR-level
+events (failed stages, failed checks, failed runs, breached deadlines) are
+also sent to Sentry when the host process has initialized the Sentry SDK.
+
+This module never initializes Sentry itself. Under Airflow, the SDK is set up
+once per service at startup by ``config/airflow_local_settings.py``, whose
+cluster policies also call this module for every DAG and task. Nothing is
+stored in a local or Airflow database.
 """
 from __future__ import annotations
 
 import logging
 import math
-import os
 import re
-import threading
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -27,12 +30,13 @@ _SENSITIVE_TEXT = re.compile(
     r"(?i)\b(password|passwd|secret|token|authorization|api[_-]?key|private[_-]?key)"
     r"(\s*[:=]\s*)[^\s,;]+"
 )
-_SENTRY_INITIALIZED = False
-_SENTRY_INITIALIZATION_LOCK = threading.Lock()
+# Airflow's task process ends with os._exit(), which skips the SDK's atexit
+# flush, so each Sentry event is flushed as soon as it is captured.
+SENTRY_FLUSH_TIMEOUT_SECONDS = 5.0
 
 
 class MonitoringError(RuntimeError):
-    """Raised when Sentry monitoring setup fails in strict mode."""
+    """Raised when sending to Sentry fails in strict mode."""
 
 
 @dataclass(frozen=True)
@@ -96,70 +100,22 @@ def _safe_message(message: str) -> str:
     return _SENSITIVE_TEXT.sub(r"\1\2" + _REDACTED, message)[:2000]
 
 
-def configure_sentry(
-    dsn: str | None = None,
-    *,
-    environment: str | None = None,
-    release: str | None = None,
-) -> bool:
-    """Initialize Sentry log capture once; return false when no DSN is configured.
-
-    Sentry's logging integration sends INFO-and-higher records as searchable
-    Sentry Logs and ERROR-and-higher records as Sentry issue events.
-    """
-    global _SENTRY_INITIALIZED
-
-    sentry_dsn = (dsn or os.getenv("SENTRY_DSN", "")).strip()
-    if not sentry_dsn:
-        return False
-
-    with _SENTRY_INITIALIZATION_LOCK:
-        if _SENTRY_INITIALIZED:
-            return True
-        airflow_sentry_enabled = os.getenv(
-            "AIRFLOW__SENTRY__SENTRY_ON", ""
-        ).strip().lower() in {"1", "true", "yes", "on"}
-        if airflow_sentry_enabled:
-            # Airflow initializes its Sentry client around task execution.
-            _SENTRY_INITIALIZED = True
-            return True
-        try:
-            import sentry_sdk
-            from sentry_sdk.integrations.logging import LoggingIntegration
-        except ImportError as error:
-            raise MonitoringError(
-                "SENTRY_DSN is configured but sentry-sdk is not installed"
-            ) from error
-
-        try:
-            sentry_sdk.init(
-                dsn=sentry_dsn,
-                environment=environment or os.getenv("SENTRY_ENVIRONMENT"),
-                release=release or os.getenv("SENTRY_RELEASE"),
-                send_default_pii=False,
-                integrations=[
-                    LoggingIntegration(
-                        level=logging.INFO,
-                        event_level=logging.ERROR,
-                        capture_sentry_logs=True,
-                        sentry_logs_level=logging.INFO,
-                    )
-                ],
-            )
-        except Exception as error:
-            raise MonitoringError(
-                f"Could not initialize Sentry ({type(error).__name__})"
-            ) from error
-        _SENTRY_INITIALIZED = True
-    return True
+def _initialized_sentry_sdk() -> Any:
+    """Return the Sentry SDK if the host process initialized it, else None."""
+    try:
+        import sentry_sdk
+    except ImportError:
+        return None
+    return sentry_sdk if sentry_sdk.is_initialized() else None
 
 
 @dataclass
 class PipelineMonitor:
-    """Emit structured pipeline events to standard logging and optionally Sentry.
+    """Emit structured pipeline events to standard logging and Sentry.
 
-    Monitoring is fail-open by default. Set ``fail_open=False`` to raise
-    :class:`MonitoringError` if Sentry cannot be initialized.
+    ``tags`` are added to every Sentry event this monitor sends. Monitoring is
+    fail-open by default. Set ``fail_open=False`` to raise
+    :class:`MonitoringError` if an event cannot be sent to Sentry.
     """
 
     pipeline: str
@@ -167,6 +123,7 @@ class PipelineMonitor:
     facility: str | None = None
     fail_open: bool = True
     cron_monitor_config: Mapping[str, Any] | None = None
+    tags: Mapping[str, Any] | None = None
     _finished: bool = field(default=False, init=False, repr=False)
     _check_in_id: str | None = field(default=None, init=False, repr=False)
 
@@ -176,12 +133,6 @@ class PipelineMonitor:
         if not self.pipeline:
             raise ValueError("pipeline must not be blank")
         self.run_id = self.run_id or str(uuid.uuid4())
-        try:
-            configure_sentry()
-        except MonitoringError:
-            if not self.fail_open:
-                raise
-            LOGGER.exception("Could not initialize Sentry for pipeline monitoring")
 
     def emit(
         self,
@@ -194,7 +145,7 @@ class PipelineMonitor:
         occurred_at: datetime | None = None,
         exception: BaseException | None = None,
     ) -> dict[str, Any]:
-        """Log a structured event; Sentry forwards it when configured."""
+        """Log a structured event; ERROR-level events also go to Sentry."""
         if not event_type.strip():
             raise ValueError("event_type must not be blank")
 
@@ -246,7 +197,43 @@ class PipelineMonitor:
                 else None
             ),
         )
+        if level == logging.ERROR:
+            self._send_to_sentry(event, log_message, exception)
         return event
+
+    def _send_to_sentry(
+        self,
+        event: Mapping[str, Any],
+        message: str,
+        exception: BaseException | None,
+    ) -> None:
+        """Capture one tagged Sentry issue for an ERROR-level event."""
+        sentry_sdk = _initialized_sentry_sdk()
+        if sentry_sdk is None:
+            return
+        try:
+            with sentry_sdk.new_scope() as scope:
+                for name in ("pipeline", "run_id", "facility", "event_type", "status", "stage"):
+                    if event[name] is not None:
+                        scope.set_tag(name, str(event[name]))
+                for name, value in (self.tags or {}).items():
+                    if value is not None:
+                        scope.set_tag(str(name), str(value))
+                scope.set_context(
+                    "pipeline_monitor",
+                    {
+                        "event_id": event["event_id"],
+                        "occurred_at": event["occurred_at"],
+                        "data": event["data"],
+                    },
+                )
+                if exception is not None:
+                    sentry_sdk.capture_exception(exception)
+                else:
+                    sentry_sdk.capture_message(message, level="error")
+            sentry_sdk.flush(timeout=SENTRY_FLUSH_TIMEOUT_SECONDS)
+        except Exception as error:
+            self._handle_sentry_error("send the event to Sentry", error)
 
     def start(self, *, metadata: Mapping[str, Any] | None = None) -> dict[str, Any]:
         """Record a pipeline run start."""
@@ -257,11 +244,7 @@ class PipelineMonitor:
 
     def _start_cron_checkin(self) -> None:
         """Start a Sentry Cron check-in when this run has a monitor configuration."""
-        try:
-            if not configure_sentry():
-                return
-        except MonitoringError as error:
-            self._handle_sentry_error("initialize Sentry for Cron monitoring", error)
+        if _initialized_sentry_sdk() is None:
             return
         try:
             from sentry_sdk.crons import capture_checkin
@@ -291,6 +274,9 @@ class PipelineMonitor:
                     else MonitorStatus.ERROR
                 ),
             )
+            sentry_sdk = _initialized_sentry_sdk()
+            if sentry_sdk is not None:
+                sentry_sdk.flush(timeout=SENTRY_FLUSH_TIMEOUT_SECONDS)
         except Exception as error:
             self._handle_sentry_error("finish Sentry Cron check-in", error)
 
@@ -675,11 +661,11 @@ def check_referential_integrity(
 
 
 def airflow_failure_callback(context: Mapping[str, Any]) -> None:
-    """Send failed Airflow task metadata and traceback to Sentry through logging.
+    """Log a failed Airflow task and send it, with its traceback, to Sentry.
 
-    Configure a DAG or task with ``on_failure_callback=airflow_failure_callback``.
-    Only operational metadata is read; task arguments and XCom payloads are not
-    copied into monitoring events.
+    The cluster policy in ``config/airflow_local_settings.py`` attaches this
+    to every task, so DAGs do not reference it. Only operational metadata is
+    read; task arguments and XCom payloads are not copied into events.
     """
     dag = context.get("dag")
     task_instance = context.get("task_instance") or context.get("ti")
@@ -694,6 +680,12 @@ def airflow_failure_callback(context: Mapping[str, Any]) -> None:
         pipeline=pipeline,
         run_id=str(run_id or uuid.uuid4()),
         facility=str(facility) if facility is not None else None,
+        tags={
+            "monitor_type": "task_failure",
+            "dag_id": dag_id,
+            "task_id": task_id,
+            "try_number": getattr(task_instance, "try_number", None),
+        },
     )
     message = (
         f"{type(exception).__name__}: {exception}"
@@ -705,6 +697,3 @@ def airflow_failure_callback(context: Mapping[str, Any]) -> None:
         stage=str(task_id) if task_id else None,
         exception=exception if isinstance(exception, BaseException) else None,
     )
-
-
-configure_sentry()

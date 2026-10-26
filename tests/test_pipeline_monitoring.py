@@ -23,12 +23,66 @@ from pipeline_monitoring import (
 )
 
 
+class FakeSentry:
+    """Stand-in sentry_sdk module that records captured events and flushes."""
+
+    def __init__(self, *, initialized: bool) -> None:
+        self.initialized = initialized
+        self.events: list[dict[str, Any]] = []
+        self.flushes = 0
+        self.fail_capture = False
+        self._tags: dict[str, str] = {}
+
+    def module(self) -> ModuleType:
+        fake = self
+        sentry_sdk = ModuleType("sentry_sdk")
+
+        class Scope:
+            def __enter__(self) -> Scope:
+                fake._tags = {}
+                return self
+
+            def __exit__(self, *args: Any) -> None:
+                return None
+
+            def set_tag(self, key: str, value: str) -> None:
+                fake._tags[key] = value
+
+            def set_context(self, key: str, value: Any) -> None:
+                return None
+
+        def record(kind: str, payload: Any) -> None:
+            if fake.fail_capture:
+                raise ConnectionError("Sentry unavailable")
+            fake.events.append({"kind": kind, "payload": payload, "tags": dict(fake._tags)})
+
+        def flush(timeout: float | None = None) -> None:
+            fake.flushes += 1
+
+        sentry_sdk.is_initialized = lambda: fake.initialized  # type: ignore[attr-defined]
+        sentry_sdk.new_scope = Scope  # type: ignore[attr-defined]
+        sentry_sdk.capture_message = (  # type: ignore[attr-defined]
+            lambda message, *, level: record("message", message)
+        )
+        sentry_sdk.capture_exception = lambda error: record("exception", error)  # type: ignore[attr-defined]
+        sentry_sdk.flush = flush  # type: ignore[attr-defined]
+        return sentry_sdk
+
+
 @pytest.fixture(autouse=True)
-def disable_sentry_initialization(monkeypatch: Any) -> None:
-    """Keep ordinary unit tests local and independent of Sentry credentials."""
-    monkeypatch.delenv("SENTRY_DSN", raising=False)
-    monkeypatch.delenv("AIRFLOW__SENTRY__SENTRY_ON", raising=False)
-    monkeypatch.setattr(monitoring, "_SENTRY_INITIALIZED", False)
+def uninitialized_sentry(monkeypatch: Any) -> FakeSentry:
+    """Keep ordinary unit tests local: the process has not initialized Sentry."""
+    fake = FakeSentry(initialized=False)
+    monkeypatch.setitem(sys.modules, "sentry_sdk", fake.module())
+    return fake
+
+
+@pytest.fixture
+def initialized_sentry(monkeypatch: Any) -> FakeSentry:
+    """Simulate a process whose Sentry SDK was initialized at startup."""
+    fake = FakeSentry(initialized=True)
+    monkeypatch.setitem(sys.modules, "sentry_sdk", fake.module())
+    return fake
 
 
 def test_context_manager_logs_lifecycle_events_and_redacts_secrets(
@@ -177,65 +231,81 @@ def test_check_metric_change_handles_zero_baseline_and_rejects_invalid_values() 
         )
 
 
-def test_configure_sentry_enables_logs_without_default_pii(
-    monkeypatch: Any,
+def test_module_never_initializes_sentry_itself() -> None:
+    """Sentry setup belongs to service startup (airflow_local_settings.py)."""
+    assert not hasattr(monitoring, "configure_sentry")
+
+
+def test_error_events_go_to_initialized_sentry_with_tags(
+    initialized_sentry: FakeSentry,
 ) -> None:
-    """Sentry receives INFO logs, ERROR events, and the configured environment."""
-    init_calls: list[dict[str, Any]] = []
-    sentry_sdk = ModuleType("sentry_sdk")
-    sentry_sdk.init = lambda **kwargs: init_calls.append(kwargs)  # type: ignore[attr-defined]
-
-    integrations = ModuleType("sentry_sdk.integrations")
-    integrations.__path__ = []  # type: ignore[attr-defined]
-    logging_integration = ModuleType("sentry_sdk.integrations.logging")
-
-    class FakeLoggingIntegration:
-        def __init__(self, **kwargs: Any) -> None:
-            self.options = kwargs
-
-    logging_integration.LoggingIntegration = FakeLoggingIntegration  # type: ignore[attr-defined]
-    monkeypatch.setitem(sys.modules, "sentry_sdk", sentry_sdk)
-    monkeypatch.setitem(sys.modules, "sentry_sdk.integrations", integrations)
-    monkeypatch.setitem(
-        sys.modules, "sentry_sdk.integrations.logging", logging_integration
+    """ERROR-level events become tagged Sentry issues and are flushed at once."""
+    monitor = PipelineMonitor(
+        "quality-pipeline",
+        run_id="run-5",
+        facility="clinic_a",
+        tags={"monitor_type": "data_quality", "unset": None},
     )
-    monkeypatch.setattr(monitoring, "_SENTRY_INITIALIZED", False)
-    monkeypatch.setenv("SENTRY_DSN", "https://public@example.invalid/1")
-    monkeypatch.setenv("SENTRY_ENVIRONMENT", "test")
 
-    assert monitoring.configure_sentry()
+    monitor.metric("rows", 4)
+    monitor.stage("extract", status="succeeded")
+    monitor.quality(QualityResult("row_count", False, 0, {"minimum": 1}), stage="load")
 
-    options = init_calls[0]
-    assert options["dsn"] == "https://public@example.invalid/1"
-    assert options["environment"] == "test"
-    assert options["send_default_pii"] is False
-    assert options["integrations"][0].options == {
-        "level": logging.INFO,
-        "event_level": logging.ERROR,
-        "capture_sentry_logs": True,
-        "sentry_logs_level": logging.INFO,
+    assert len(initialized_sentry.events) == 1
+    event = initialized_sentry.events[0]
+    assert event["kind"] == "message"
+    assert event["payload"] == "Pipeline quality-pipeline quality_check status=failed: row_count"
+    assert event["tags"] == {
+        "pipeline": "quality-pipeline",
+        "run_id": "run-5",
+        "facility": "clinic_a",
+        "event_type": "quality_check",
+        "status": "failed",
+        "stage": "load",
+        "monitor_type": "data_quality",
     }
+    assert initialized_sentry.flushes == 1
 
 
-def test_configure_sentry_without_dsn_does_not_initialize() -> None:
-    """Sentry remains optional for local runs without configured credentials."""
-    assert not monitoring.configure_sentry("")
-    assert not monitoring._SENTRY_INITIALIZED
-
-
-def test_configure_sentry_defers_to_airflow_task_sdk(
-    monkeypatch: Any,
+def test_error_event_with_exception_is_captured_as_exception(
+    initialized_sentry: FakeSentry,
 ) -> None:
-    """Airflow owns SDK initialization when its Sentry integration is enabled."""
-    monkeypatch.setenv("SENTRY_DSN", "https://public@example.invalid/1")
-    monkeypatch.setenv("AIRFLOW__SENTRY__SENTRY_ON", "true")
+    """Exceptions keep their traceback in Sentry instead of a plain message."""
+    error = RuntimeError("load failed")
 
-    assert monitoring.configure_sentry()
-    assert monitoring._SENTRY_INITIALIZED
+    PipelineMonitor("failed-pipeline").failure("Load failed", exception=error)
+
+    assert initialized_sentry.events[0]["kind"] == "exception"
+    assert initialized_sentry.events[0]["payload"] is error
+
+
+def test_error_events_are_only_logged_without_initialized_sentry(
+    uninitialized_sentry: FakeSentry, caplog: Any
+) -> None:
+    """Local runs without Sentry still log every event."""
+    caplog.set_level(logging.ERROR, logger=monitoring.LOGGER.name)
+
+    PipelineMonitor("local-pipeline").failure("Load failed")
+
+    assert uninitialized_sentry.events == []
+    assert caplog.records[-1].pipeline_monitor_event_type == "failure"
+
+
+def test_sentry_send_failure_can_be_strict_or_fail_open(
+    initialized_sentry: FakeSentry, caplog: Any
+) -> None:
+    """A Sentry outage raises only when monitoring is configured as strict."""
+    initialized_sentry.fail_capture = True
+
+    PipelineMonitor("fail-open-pipeline").failure("Load failed")
+    assert "Could not send the event to Sentry" in caplog.text
+
+    with pytest.raises(MonitoringError, match="send the event to Sentry"):
+        PipelineMonitor("strict-pipeline", fail_open=False).failure("Load failed")
 
 
 def test_sentry_cron_checkin_tracks_start_and_success(
-    monkeypatch: Any,
+    monkeypatch: Any, initialized_sentry: FakeSentry,
 ) -> None:
     """Configured scheduled runs send Sentry Cron start and success check-ins."""
     checkins: list[dict[str, Any]] = []
@@ -251,7 +321,6 @@ def test_sentry_cron_checkin_tracks_start_and_success(
     )
     monkeypatch.setitem(sys.modules, "sentry_sdk.crons", crons)
     monkeypatch.setitem(sys.modules, "sentry_sdk.crons.consts", consts)
-    monkeypatch.setattr(monitoring, "configure_sentry", lambda: True)
 
     monitor = PipelineMonitor(
         "hourly-pipeline",
@@ -276,10 +345,24 @@ def test_sentry_cron_checkin_tracks_start_and_success(
             "status": "ok",
         },
     ]
+    assert initialized_sentry.flushes == 1
+
+
+def test_sentry_cron_checkin_is_skipped_without_initialized_sentry(
+    monkeypatch: Any,
+) -> None:
+    """No check-ins are attempted when the process has not set up Sentry."""
+    crons = ModuleType("sentry_sdk.crons")
+    crons.capture_checkin = lambda **kwargs: pytest.fail("unexpected check-in")  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "sentry_sdk.crons", crons)
+
+    monitor = PipelineMonitor("hourly-pipeline", cron_monitor_config={})
+    monitor.start()
+    monitor.finish("succeeded")
 
 
 def test_sentry_cron_checkin_marks_failed_run_as_error(
-    monkeypatch: Any,
+    monkeypatch: Any, initialized_sentry: FakeSentry,
 ) -> None:
     """Failed scheduled runs finish their check-in with Sentry error status."""
     checkins: list[dict[str, Any]] = []
@@ -295,7 +378,6 @@ def test_sentry_cron_checkin_marks_failed_run_as_error(
     )
     monkeypatch.setitem(sys.modules, "sentry_sdk.crons", crons)
     monkeypatch.setitem(sys.modules, "sentry_sdk.crons.consts", consts)
-    monkeypatch.setattr(monitoring, "configure_sentry", lambda: True)
 
     monitor = PipelineMonitor("failing-cron", cron_monitor_config={})
     monitor.start()
@@ -331,17 +413,3 @@ def test_airflow_failure_callback_logs_task_context_and_exception(
     assert record.pipeline_monitor_stage == "load_rows"
     assert record.exc_info is not None
     assert record.exc_info[0] is RuntimeError
-
-
-def test_sentry_initialization_failure_can_be_strict_or_fail_open(
-    monkeypatch: Any,
-) -> None:
-    """Sentry setup errors raise only when monitoring is configured as strict."""
-    def fail_initialization() -> bool:
-        raise MonitoringError("Sentry unavailable")
-
-    monkeypatch.setattr(monitoring, "configure_sentry", fail_initialization)
-
-    PipelineMonitor("fail-open-pipeline")
-    with pytest.raises(MonitoringError, match="Sentry unavailable"):
-        PipelineMonitor("strict-pipeline", fail_open=False)

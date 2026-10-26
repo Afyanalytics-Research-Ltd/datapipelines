@@ -1,155 +1,218 @@
 # Sentry pipeline monitoring
 
-`pipeline_monitoring.py` emits structured pipeline events through Python's
-standard `logging` module. Airflow's Sentry integration captures Airflow task
-exceptions; the helper adds pipeline lifecycle, quality, and scheduled-run
-monitoring where pipelines explicitly use it. Events are not written to a
-local or Airflow database.
+Every Airflow pipeline in this repository is monitored centrally. No DAG
+imports anything or sets any callback to take part. Three alerts go to Sentry:
 
-The module does not discover or instrument every existing pipeline by itself.
-Import it from the pipeline or callback code that should emit monitoring
-events.
+| What | Raised when | Sentry tag `monitor_type` |
+|---|---|---|
+| Pipeline failure | any task in any DAG fails (with traceback) | `task_failure` |
+| SLA breach | a DAG run is still running one hour after it was queued | `dag_deadline` |
+| Data-quality degradation | a successful terminal task reports zero output rows | `data_quality` |
+
+Events are not written to a local or Airflow database.
+
+## How it works
+
+Two files do the work:
+
+- **`config/airflow_local_settings.py`** is Airflow's local-settings module.
+  Airflow imports it automatically in every service (api-server, scheduler,
+  dag-processor, worker, triggerer) when the service starts, because
+  `config/` is mounted at `/opt/airflow/config`. When imported it:
+  1. **Initializes Sentry once for that service** from Airflow's `[sentry]`
+     settings (see Setup). This is the only place Sentry is configured.
+  2. Registers **cluster policies** that Airflow applies to every DAG and task
+     each time a DAG file is parsed, including on the worker just before a
+     task runs:
+     - `task_policy` adds `pipeline_failure_callback` to every task's
+       `on_failure_callback`, and `pipeline_row_count_callback` to the
+       `on_success_callback` of every terminal task (no downstream tasks).
+       Callbacks a DAG already defines are kept; the monitoring callback is
+       appended.
+     - `dag_policy` gives every DAG a one-hour Deadline Alert, measured from
+       when the run is queued, unless the DAG defines its own `deadline`.
+- **`pipeline_monitoring.py`** (repo root, mounted at `PIPELINES_DIR`) builds
+  the events. `PipelineMonitor` logs every event through Python logging and
+  sends ERROR-level events (failed tasks, failed checks, breached deadlines)
+  to Sentry as tagged issues. It never initializes Sentry itself. If the
+  process has no initialized Sentry client, as in local CLI runs or tests,
+  events are only logged.
+
+Where each callback runs:
+
+| Callback | Runs in | Sentry client from |
+|---|---|---|
+| `pipeline_failure_callback` | worker (task process) | worker startup |
+| `pipeline_row_count_callback` | worker (task process) | worker startup |
+| `sentry_deadline_callback` | triggerer | triggerer startup |
+
+### Why not Airflow's own `[sentry]` integration
+
+Airflow 3.1.7 still ships `airflow/sentry.py`, but it only wraps the old
+Airflow 2 task path. Airflow 3 runs tasks through the Task SDK supervisor,
+which never loads it. So setting `sentry_on = true` alone does **not** report
+failed tasks. `airflow_local_settings.py` reads the same `[sentry]` settings and
+initializes the SDK itself. Leave `[sentry]` options such as `before_send` or
+`transport` unset: they are not applied.
 
 ## Setup
 
-The Airflow image already installs the Sentry SDK through `requirements.txt`.
-The shared Airflow Compose environment enables Airflow's built-in Sentry
-integration in the API server, scheduler, DAG processor, workers, and
-triggerer. Set `SENTRY_DSN` in the Compose project `.env` file or deployment
-environment before starting the services:
+1. Rebuild the Airflow image (`docker compose build`) so it includes
+   `sentry-sdk` from `requirements.txt`. Images built before the dependency
+   was added do not have it. In that case each service logs
+   `sentry_on is set but sentry-sdk is not installed` at startup, and events
+   are only logged.
+2. Set the DSN in the Compose project `.env` file or the deployment
+   environment:
 
-```dotenv
-SENTRY_DSN=https://public@example.invalid/1
-```
+   ```dotenv
+   SENTRY_DSN=https://public@example.invalid/1
+   # optional
+   SENTRY_ENVIRONMENT=production
+   SENTRY_RELEASE=datapipelines@fd99a39
+   ```
 
-The DSN is a secret: provide it through the deployment environment or a secret
-manager and do not commit it. `AIRFLOW__SENTRY__SENTRY_ON` defaults to `true`
-in both Compose files; set it to `false` to disable Sentry. Without a DSN,
-Sentry has nowhere to send events. Recreate/restart the Airflow services after
-changing these settings.
+   The DSN is a secret: provide it through the deployment environment or a
+   secret manager and do not commit it.
+3. Recreate the Airflow services (`docker compose up -d`). Settings are read
+   only at service startup.
 
-Airflow initializes Sentry in the task execution path and captures task
-exceptions with DAG/task tags and run context. When this integration is
-enabled, `pipeline_monitoring.configure_sentry()` defers to Airflow's SDK
-client instead of initializing a second client. Outside Airflow, the helper
-still initializes Sentry itself when `SENTRY_DSN` is set.
+Configuration, all read at service startup:
 
-See the official Sentry documentation for
-[Python logging](https://docs.sentry.io/platforms/python/integrations/logging/)
-and [Cron monitoring](https://docs.sentry.io/platforms/python/crons/).
+| Setting | Default | Effect |
+|---|---|---|
+| `AIRFLOW__SENTRY__SENTRY_ON` | `true` in both Compose files | `false` turns all Sentry reporting off |
+| `SENTRY_DSN` (or `AIRFLOW__SENTRY__SENTRY_DSN`) | empty | Without a DSN, reporting is off and a warning is logged at startup |
+| `SENTRY_ENVIRONMENT` / `AIRFLOW__SENTRY__ENVIRONMENT` | `production` | Sentry environment |
+| `SENTRY_RELEASE` / `AIRFLOW__SENTRY__RELEASE` | unset | Sentry release |
+
+A Sentry misconfiguration never prevents Airflow from starting. Sentry setup
+only logs its problems, and `pipeline_monitoring` is imported only when a
+callback runs.
+
+To confirm it is active, check a service's startup log. A warning containing
+`[sentry]` or `Could not initialize Sentry` means alerts are off. A task that
+raises an exception should appear in Sentry tagged `monitor_type:task_failure`.
 
 ## What is sent
 
-Airflow captures task exceptions as Sentry issue events and adds Airflow
-context, including DAG ID, task ID, operator, and data interval. The Airflow
-Sentry integration also adds breadcrumbs for completed tasks in the same DAG
-run.
+Each issue is tagged with `pipeline` (the DAG ID), `run_id`, `event_type`,
+`status` and `stage` (the task ID), plus `facility` when the run has a
+`facility` param, and the `monitor_type` tags below:
 
-The Airflow cluster policy in `config/airflow_local_settings.py` assigns a
-one-hour deadline from the time each DAG run is queued, unless that DAG
-already defines its own deadline. A missed deadline sends a tagged Sentry
-error event from the triggerer. Airflow 3.1.7 marks Deadline Alerts as
-experimental.
+- **`task_failure`**: also `dag_id`, `task_id` and `try_number`. The task's
+  exception is captured with its traceback. A task with retries alerts on each
+  failed try, and `try_number` tells the tries apart.
+- **`dag_deadline`**: also `dag_id`. The message reads `DAG run exceeded its
+  one-hour runtime deadline`. Airflow 3.1.7 marks Deadline Alerts as
+  experimental.
+- **`data_quality`**: also `dag_id`, `task_id` and `quality_check`. Raised only
+  when a terminal task explicitly publishes a zero row count (see below).
 
-The same cluster policy checks successful terminal tasks for the XCom key
-`pipeline_row_count`. If a terminal task explicitly publishes a count of
-zero, it sends a tagged data-quality Sentry event; tasks that do not publish
-this key are skipped. For example, a task whose output is required to be
-nonempty should publish:
+Each event also carries a `pipeline_monitor` context with the event ID,
+timestamp and the event's (redacted) data. Events are flushed as soon as they
+are captured, because Airflow's task process exits without running the SDK's
+normal shutdown flush.
+
+Only these monitoring events are sent. Ordinary log lines are neither Sentry
+issues nor breadcrumbs, because pipeline logs can contain patient rows, and
+the SDK's auto-enabled framework integrations are off. The SDK's default
+integrations stay on, so an unhandled exception that crashes an Airflow
+service process is also reported.
+
+Values under keys resembling `password`, `secret`, `token`, `authorization`,
+`api_key` and `private_key` are redacted, and common inline secret
+assignments in messages are masked. Exception messages are sent as raised.
+Redaction is a safeguard, not a guarantee: **never include patient data,
+credentials, full source rows, or other sensitive information in messages,
+exception text or event metadata.**
+
+## Reporting row counts for the data-quality check
+
+`pipeline_row_count_callback` reads the XCom key `pipeline_row_count` from a
+successful terminal task. A task whose output must not be empty can publish:
 
 ```python
 context["ti"].xcom_push(key="pipeline_row_count", value=row_count)
 ```
 
-Only publish the key where zero rows indicate degradation. Incremental
-pipelines may legitimately process zero new rows and should not publish this
-key for those runs. No current DAG uses this standard key, so row-count
-alerting becomes active as the relevant tasks adopt this contract.
+A value of `0` raises a `data_quality` issue. A missing key is skipped, and a
+non-integer value fails the callback with `TypeError`. Only publish the key
+where zero rows indicates degradation. Incremental pipelines may legitimately
+process zero new rows and should not publish it for those runs. No current DAG
+publishes this key, so row-count alerting becomes active as tasks adopt it.
 
-`PipelineMonitor` emits structured Python log records for lifecycle events,
-metrics, and data-quality checks. Failed stages and checks are logged at
-`ERROR` level. Heartbeats are `DEBUG` records. Which log records are forwarded
-depends on the Sentry logging integration enabled by the deployed Airflow and
-SDK versions; this is distinct from Airflow's guaranteed task-exception
-capture.
+## Changing the deadline for one DAG
 
-The helper redacts values under keys resembling `password`, `secret`, `token`,
-`authorization`, `api_key`, and `private_key`, and masks common inline secret
-assignments in messages. Redaction is a safeguard, not a guarantee: **never
-include patient data, credentials, full source rows, or other sensitive
-information in messages or event metadata.**
-
-Without `SENTRY_DSN`, events are still emitted through normal Python logging,
-but are not sent to Sentry. Sentry initialization is fail-open by default
-outside Airflow; set `fail_open=False` on `PipelineMonitor` to raise
-`MonitoringError` when SDK initialization fails.
-
-## Instrument a pipeline
-
-Use the context manager for a whole run. It logs run start and completion,
-records an exception with its traceback when one escapes, and does not swallow
-pipeline exceptions:
+Give the DAG its own `deadline` and the default one-hour alert is not added:
 
 ```python
-from pipeline_monitoring import PipelineMonitor, check_row_count
+from datetime import timedelta
+from airflow.sdk.definitions.deadline import AsyncCallback, DeadlineAlert, DeadlineReference
+from airflow_local_settings import sentry_deadline_callback
 
-with PipelineMonitor(
-    pipeline="nightly_patient_ingest",
-    run_id="airflow-run-2026-10-23T02:00:00Z",
-    facility="clinic_a",
-) as monitor:
-    monitor.stage("extract", status="running")
-    rows = extract_rows()
-    monitor.metric("source_rows", len(rows), stage="extract")
-    monitor.stage("extract", status="succeeded", metrics={"rows": len(rows)})
-
-    result = check_row_count("source_rows_present", len(rows), minimum=1)
-    monitor.quality(result, stage="extract")
-    if not result.passed:
-        raise RuntimeError("Source row count did not meet the expected minimum")
-
-    monitor.stage("load", status="running")
-    load_rows(rows)
-    monitor.stage("load", status="succeeded", metrics={"rows_loaded": len(rows)})
+DAG(
+    ...,
+    deadline=DeadlineAlert(
+        reference=DeadlineReference.DAGRUN_QUEUED_AT,
+        interval=timedelta(hours=6),
+        callback=AsyncCallback(sentry_deadline_callback),
+    ),
+)
 ```
 
-Event methods include:
+The alert message still says "one-hour", so the issue title will not match a
+custom interval.
+
+## Optional: richer events from inside a pipeline
+
+The central callbacks need no code in the pipelines. A pipeline that wants
+stage-level events or extra quality checks can still use `PipelineMonitor`
+directly. Its ERROR-level events reach Sentry through the client the service
+already initialized:
+
+```python
+from pipeline_monitoring import PipelineMonitor, check_null_rate
+
+monitor = PipelineMonitor(pipeline="nightly_patient_ingest", run_id=run_id, facility="clinic_a")
+monitor.stage("extract", status="succeeded", metrics={"rows": len(rows)})
+monitor.quality(
+    check_null_rate("patient_id_null_rate", null_count=missing, total_count=len(rows), max_rate=0.005),
+    stage="extract",
+)
+```
+
+Event methods:
 
 - `start(metadata=...)` and `finish(status, summary=...)` for run lifecycle.
+  The monitor also works as a context manager. It records the outcome, keeps
+  the traceback of an escaping exception, and does not swallow it.
 - `stage(name, status=..., message=..., metrics=...)` for stage transitions.
 - `heartbeat(stage=..., metadata=...)` for debug-level liveness messages.
 - `metric(name, value, unit=..., stage=...)` for numeric operational values.
 - `quality(result, stage=...)` for data-quality outcomes.
 - `failure(message, stage=..., exception=...)` for explicit errors.
+- `emit(event_type, status=..., ...)` for any other event. Status `failed` or
+  `breached` makes it an ERROR.
 
-Failed stages, failed quality checks, failed runs, and calls to `failure()`
-are logged at `ERROR` level. Pass an exception to `failure()` to include its
-traceback.
+Failed stages, failed quality checks, failed runs, `failure()` calls and
+breached events are ERROR level and go to Sentry. Pass `tags={...}` to add
+Sentry tags to every event from a monitor. Sending is fail-open by default.
+Set `fail_open=False` to raise `MonitoringError` when an event cannot be sent.
 
-## Airflow failure callback
+The quality helpers each return an immutable `QualityResult`:
+`check_row_count`, `check_null_rate`, `check_duplicates`,
+`check_metric_change`, `check_schema` and `check_referential_integrity`.
+`check_metric_change` compares against a baseline the caller supplies. The
+module does not keep metric history.
 
-Add the callback to a DAG or task that should report task failures:
+### Sentry Cron check-ins
 
-```python
-from pipeline_monitoring import airflow_failure_callback
-
-with DAG(
-    dag_id="my_pipeline",
-    # Other DAG arguments...
-    on_failure_callback=airflow_failure_callback,
-) as dag:
-    ...
-```
-
-The callback logs the DAG ID, task ID, run ID, optional
-`params["facility"]`, and exception traceback. It does not copy task arguments
-or XCom payloads into the log.
-
-## Sentry Cron monitoring
-
-Sentry Cron monitoring can alert on missed scheduled runs and runs that exceed
-the configured maximum runtime. Enable it for a scheduled pipeline by passing
-its expected schedule and runtime limit to `PipelineMonitor`:
+Passing `cron_monitor_config` to `PipelineMonitor` sends an `IN_PROGRESS`
+check-in at `start()` and `OK` or `ERROR` at `finish()`, using the pipeline
+name as the Sentry monitor slug. Sentry can then alert on missed or overlong
+scheduled runs. The same slug must always refer to the same scheduled job.
+Check-ins are only sent when the process has an initialized Sentry client.
 
 ```python
 with PipelineMonitor(
@@ -164,69 +227,17 @@ with PipelineMonitor(
     run_invoice_sync()
 ```
 
-The pipeline name is used as the Sentry monitor slug. The helper sends an
-`IN_PROGRESS` check-in at `start()` and completes it as `OK` or `ERROR` at
-`finish()`. The same slug must always refer to the same scheduled job and
-schedule. For an existing Sentry Cron monitor, the configuration may be
-omitted if Sentry already knows its schedule; a monitor configuration creates
-or updates the monitor from code. Cron check-ins are only sent when the Sentry
-SDK is initialized with a DSN.
+## Alerting the operations team
 
-## Data-quality checks
+Notification routing is configured in the Sentry project, not in code. Create
+issue-alert rules that notify the operations team (for example by Slack or
+email) for new and regressed issues, filtered by tag:
 
-The helper includes checks for row counts, null rates, duplicate counts,
-metric changes, schemas, and referential integrity. Each returns an immutable
-`QualityResult`; pass it to `monitor.quality(result)` to log it and send failed
-checks to Sentry as error events:
+- `monitor_type:task_failure`: pipeline failures.
+- `monitor_type:dag_deadline`: SLA breaches.
+- `monitor_type:data_quality`: data-quality degradation.
 
-```python
-monitor.quality(check_row_count("target_rows", actual, minimum=expected_min))
-monitor.quality(
-    check_null_rate(
-        "patient_id_null_rate",
-        null_count=missing_patient_ids,
-        total_count=rows_checked,
-        max_rate=0.005,
-    )
-)
-monitor.quality(check_duplicates("duplicate_visit_ids", duplicate_count))
-monitor.quality(
-    check_schema(
-        "warehouse_schema",
-        expected_columns=["id", "visit_id", "created_at"],
-        actual_columns=warehouse_columns,
-        allow_extra=False,
-    )
-)
-monitor.quality(
-    check_referential_integrity(
-        "orphan_visit_references",
-        orphan_count=orphan_rows,
-        child_count=rows_checked,
-        max_orphan_rate=0,
-    )
-)
-```
-
-`check_metric_change` accepts the current value and a baseline supplied by
-the caller. The helper does not retain metric history; use an existing
-warehouse, metrics service, or other approved source to calculate baselines.
-
-## Alerting and coverage
-
-Configure Sentry issue-alert rules to notify the operations team for Airflow
-task exceptions and failed pipeline/data-quality events. Configure Sentry
-Cron alert rules for missed or overlong runs. Notification destinations and
-thresholds (for example Slack or email) are Sentry project settings and must
-be set up in the Sentry project.
-
-Airflow exception capture applies to every Airflow task without adding
-callbacks to individual DAGs. SLA/Cron monitoring still needs an explicit
-Sentry Cron configuration for missed scheduled runs. A one-hour DAG-run
-deadline is applied by default as described above. The row-count check is
-active only when a task explicitly publishes `pipeline_row_count`; null-rate,
-duplicate, metric-drift, schema, and referential-integrity checks need
-pipeline-specific inputs and thresholds.
+Add Cron alert rules if any pipeline uses Sentry Cron check-ins.
 
 ## Central data reconciliation: current limits and a uniform contract
 
@@ -249,8 +260,8 @@ drift are data-contract decisions; generic code cannot infer them safely.
 
 The existing helpers in `pipeline_monitoring.py` evaluate values passed in by
 the pipeline; they do not independently inspect arbitrary source files or
-connect to each pipeline's source and target systems. Airflow's built-in
-Sentry integration reports task exceptions, not transfer reconciliation.
+connect to each pipeline's source and target systems. The central failure
+callback reports task exceptions, not transfer reconciliation.
 Currently, the global row-count callback only reads the optional
 `pipeline_row_count` XCom from a successful terminal task. No current DAG
 publishes that key, so this callback does not yet produce row-count alerts.
@@ -345,13 +356,30 @@ rules. Add other DAGs as their transfer stages can provide equivalent
 measurements. This avoids changing every DAG at once or raising alerts from
 incomparable counts.
 
+## Testing
+
+```bash
+# from a WSL shell at the repo root
+.venv/bin/python -m pytest tests/test_pipeline_monitoring.py tests/test_airflow_monitoring_policy.py
+```
+
+The tests stub Airflow and the Sentry SDK. To check the policies against real
+Airflow, run in the worker container:
+
+```bash
+docker compose exec airflow-worker airflow dags list-import-errors
+```
+
 ## Limits and deployment notes
 
-Sentry receives events as the application logs them; this module does not
-persist a second copy or replay events after an outage. Sentry retention,
-project quotas, alert rules, and issue grouping are managed in Sentry.
-
-Airflow's built-in integration captures task exceptions, not every log record.
-The helper does not automatically create domain-specific quality checks or
-SLA thresholds. Add instrumentation and explicit checks to the pipeline code
-whose behavior you want monitored.
+- Only DAG runs managed by Airflow are monitored. Running a repo-root script
+  directly from the CLI bypasses the policies. Such a run reaches Sentry only
+  if the script initializes the Sentry SDK itself and uses `PipelineMonitor`.
+- Sentry receives events when they occur. This module does not keep a second
+  copy or replay events after a Sentry outage. Retention, quotas, alert rules
+  and issue grouping are managed in Sentry.
+- Tasks that never start, such as `upstream_failed` or skipped tasks, run no
+  failure callback. The failure of the task they depend on is what is
+  reported.
+- Domain-specific quality checks and per-DAG SLA thresholds are not inferred
+  automatically. See the reconciliation contract above.
