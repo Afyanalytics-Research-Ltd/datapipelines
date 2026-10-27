@@ -46,6 +46,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+from datetime import date
 import os
 import re
 import sys
@@ -55,13 +56,17 @@ from pathlib import Path
 
 SF_DB = os.getenv("TYPED_SF_DB", "HOSPITALS")      # same database snowflake_to_v3_migration reads
 CLEAN_SUFFIX = "CLEAN"
+SOURCE_OVERRIDE: dict[tuple[str, str], str] = {}   # (FACILITY, table) -> SQL name to read instead of <FACILITY>_CLEAN.<table> (set by the flatten step)
+MAX_CASCADE = 30000                     # skipped ids passed on to the tables that point to them
 ERROR_SAMPLE_LIMIT = 5000               # records with errors or skipped listed per table
 CHANGE_LOG_LIMIT = 200000               # changed values listed per table
 
 # ── settings you may want to change ──────────────────────────────────────────
 
-# DD/MM/YYYY (Kenya) is read day-first. Set False to read MM/DD/YYYY instead.
-DAY_FIRST = True
+# There is no day-first or month-first default. A slash date like 06/07/2024 is read in the order the column's own other
+# dates prove (a part above 12: 15/06/2024 means day-first). A column that proves nothing has every such ambiguous date
+# reported as an error, instead of being guessed.
+NUMBER_DATE_YEARS = (1990, 2050)      # an Excel or Unix number is read as a date only if it falls in these years; otherwise it is an error
 
 # text that means "nothing here" — becomes empty before any cast
 NULL_TOKENS = ("", "null", "none", "n/a", "na", "nan", "undefined", "-", "--")
@@ -83,9 +88,14 @@ DEFAULTS: dict[str, object] = {
 # (seen in v2_to_v3_api_migration's error log), so they always get their default.
 ALWAYS_DEFAULT = {"credit_note_status", "invoice_type", "is_a_split"}
 
+def _plain(x: str) -> str:
+    """SQL: the text with tabs, line breaks and non-breaking spaces turned into ordinary spaces (so TRIM removes them)."""
+    return f"TRANSLATE({x}, CHR(9) || CHR(10) || CHR(13) || CHR(160), '    ')"
+
+
 def _blank(x: str) -> str:
-    """SQL test: the value is empty (NULL or blank)."""
-    return f"({x} IS NULL OR TRIM({x}) = '')"
+    """SQL test: the value is empty (NULL or blank, including tabs and non-breaking spaces)."""
+    return f"({x} IS NULL OR TRIM({_plain(x)}) = '')"
 
 
 def _two_words(x: str) -> str:
@@ -99,11 +109,15 @@ FALLBACK_RULES = {
     ("patients", "first_name"): (("first_name", "middle_name", "last_name"), lambda c:
         f"CASE WHEN {_blank(c['first_name'])} AND {_two_words(c['last_name'])} "
         f"THEN SPLIT_PART(TRIM({c['last_name']}), ' ', 1) "
+        f"WHEN {_blank(c['first_name'])} AND {_blank(c['last_name'])} AND {_two_words(c['middle_name'])} "
+        f"THEN SPLIT_PART(TRIM({c['middle_name']}), ' ', 1) "
         f"WHEN {_blank(c['last_name'])} AND {_blank(c['middle_name'])} AND {_two_words(c['first_name'])} "
         f"THEN SPLIT_PART(TRIM({c['first_name']}), ' ', 1) ELSE {c['first_name']} END"),
     ("patients", "last_name"): (("first_name", "middle_name", "last_name"), lambda c:
         f"CASE WHEN {_blank(c['first_name'])} AND {_two_words(c['last_name'])} "
         f"THEN TRIM(REGEXP_REPLACE(TRIM({c['last_name']}), '^[^ ]+ +', '')) "
+        f"WHEN {_blank(c['first_name'])} AND {_blank(c['last_name'])} AND {_two_words(c['middle_name'])} "
+        f"THEN TRIM(REGEXP_REPLACE(TRIM({c['middle_name']}), '^[^ ]+ +', '')) "
         f"WHEN {_blank(c['last_name'])} AND NOT {_blank(c['middle_name'])} THEN TRIM({c['middle_name']}) "
         f"WHEN {_blank(c['last_name'])} AND {_blank(c['middle_name'])} AND {_two_words(c['first_name'])} "
         f"THEN TRIM(REGEXP_REPLACE(TRIM({c['first_name']}), '^[^ ]+ +', '')) "
@@ -116,6 +130,10 @@ FALLBACK_RULES = {
 TABLE_DEFAULTS = {("core_departments", "name"): "Not given", ("inp_wards", "name"): "Not given",
                   ("procedures", "name"): "Not given", ("inv_products", "generic_name"): "Not given",
                   ("patients", "first_name"): "Not given", ("patients", "last_name"): "Not given"}
+
+# A "<something>_by" user column that V3 cannot leave empty gets user 1. One V3 allows to be empty stays empty
+# (approved_by, cancelled_by, deleted_by... being empty means it did not happen).
+BY_RE = re.compile(r"_by$", re.I)
 
 # A number V3 cannot leave empty gets 0 when empty, except ids (0 would link to nothing) and medical values.
 ID_RE = re.compile(r"(^id$|_id$)", re.I)
@@ -144,6 +162,9 @@ DECIMAL_VITALS = {"temperature", "weight", "height", "bmi", "head_circumference"
 
 WARN_FAILURE_SHARE = 0.05    # more than 5% of values failing = the target type is probably wrong
 TEXT_TYPES = {"TEXT", "VARCHAR", "STRING", "CHAR", "CHARACTER"}
+# CLEAN columns that already have a real type: read as text and checked against V3 like any other column
+TYPED_OK = {"NUMBER", "DECIMAL", "NUMERIC", "INT", "INTEGER", "BIGINT", "SMALLINT", "TINYINT", "FLOAT", "DOUBLE", "REAL",
+            "FLOAT4", "FLOAT8", "DATE", "TIMESTAMP", "TIMESTAMP_NTZ", "TIMESTAMP_LTZ", "TIMESTAMP_TZ", "DATETIME", "BOOLEAN"}
 DEFAULT_TEXT_LENGTH = 16777216
 
 
@@ -218,6 +239,8 @@ class Target:
     v3_default: str | None = None
     enum_values: list | None = None    # allowed values when V3 declares the column as an enum
     source: str = "guess"              # 'v3', 'name-rule', 'guess' or 'not in V3'
+    lo: int | None = None              # smallest whole number V3's column holds
+    hi: int | None = None              # largest whole number V3's column holds
 
     def label(self) -> str:
         """Short text for the report, such as 'decimal(6,2)' or 'text(50)'."""
@@ -239,7 +262,11 @@ def target_from_v3_type(ty: str) -> Target:
     if dt == "tinyint" and parts[:1] == ["1"] or dt in ("bit", "bool", "boolean"):
         return Target("flag", source="v3")             # tinyint(1) is how MySQL stores yes/no
     if dt in ("int", "integer", "bigint", "smallint", "mediumint", "tinyint", "number"):
-        return Target("int", source="v3")
+        t = Target("int", source="v3")
+        bits = {"tinyint": 8, "smallint": 16, "mediumint": 24, "int": 32, "integer": 32, "bigint": 64}.get(dt)
+        if bits:
+            t.lo, t.hi = (0, 2 ** bits - 1) if "unsigned" in ty.lower() else (-2 ** (bits - 1), 2 ** (bits - 1) - 1)
+        return t
     if dt in ("decimal", "numeric"):
         return Target("decimal", p=to_int(parts[0] if parts else None) or 18,
                       s=to_int(parts[1] if len(parts) > 1 else None) or 0, source="v3")
@@ -382,9 +409,9 @@ def guess_target(col: str) -> Target:
 
 def clean_sql(col: str, expr: str | None = None) -> str:
     """SQL that trims spaces and turns blanks and 'N/A'-style text into empty. expr = SQL to clean instead of the column."""
-    x = expr or q(col)
+    x = f"TRIM({_plain(expr or q(col))})"
     tokens = ", ".join(lit(t) for t in NULL_TOKENS)
-    return f"CASE WHEN LOWER(TRIM({x})) IN ({tokens}) THEN NULL ELSE TRIM({x}) END"
+    return f"CASE WHEN LOWER({x}) IN ({tokens}) THEN NULL ELSE {x} END"
 
 
 def _fix_comma(e: str) -> str:
@@ -408,10 +435,15 @@ def _words(c: str) -> str:
     return f"TRIM(REGEXP_REPLACE(REGEXP_REPLACE(LOWER({c}), '([0-9])(st|nd|rd|th)([^a-z]|$)', '\\\\1\\\\3'), '[^0-9a-z]+', ' '))"
 
 
+_MONTH_WORDS = {"jan": 1, "january": 1, "feb": 2, "february": 2, "mar": 3, "march": 3, "apr": 4, "april": 4, "may": 5,
+                "jun": 6, "june": 6, "jul": 7, "july": 7, "aug": 8, "august": 8, "sep": 9, "sept": 9, "september": 9,
+                "oct": 10, "october": 10, "nov": 11, "november": 11, "dec": 12, "december": 12}
+
+
 def _month_text(t: str) -> str:
-    """SQL: a month as text, from a number or from a name ('jun', 'june')."""
-    whens = " ".join(f"WHEN '{m}' THEN '{i}'" for i, m in enumerate(_MONTHS, 1))
-    return f"CASE WHEN {t} RLIKE '[a-z]+' THEN CASE LEFT({t}, 3) {whens} END ELSE {t} END"
+    """SQL: a month as text, from a number or from a whole month name or abbreviation ('jun', 'june', 'sept'); anything else is empty."""
+    whens = " ".join(f"WHEN '{w}' THEN '{n}'" for w, n in _MONTH_WORDS.items())
+    return f"CASE WHEN {t} RLIKE '[0-9]+' THEN {t} ELSE CASE {t} {whens} END END"
 
 
 def _year_text(t: str) -> str:
@@ -432,16 +464,27 @@ _NUMBER_KINDS = {"EXCEL": _EXCEL, "EPOCH": _EPOCH}     # a number is read as a d
 
 def _number_stamp(c: str) -> str:
     """SQL: a number that is an Excel day count (5 digits, from 1899-12-30), or Unix seconds or milliseconds (10 or 13 digits, UTC), as a timestamp."""
-    return (f"CASE WHEN {c} RLIKE '{_EXCEL}' THEN DATEADD(second, ROUND(TRY_TO_DOUBLE({c}) * 86400, 0), TO_TIMESTAMP_NTZ('1899-12-30 00:00:00')) "
-            f"WHEN {c} RLIKE '{_EPOCH_S}' THEN DATEADD(second, TRY_TO_NUMBER({c}, 38, 0), TO_TIMESTAMP_NTZ('1970-01-01 00:00:00')) "
-            f"WHEN {c} RLIKE '{_EPOCH_MS}' THEN DATEADD(second, TRY_TO_NUMBER({c}, 38, 0) / 1000, TO_TIMESTAMP_NTZ('1970-01-01 00:00:00')) END")
+    first, last = date(NUMBER_DATE_YEARS[0], 1, 1), date(NUMBER_DATE_YEARS[1], 12, 31)
+    xl_lo, xl_hi = (first - date(1899, 12, 30)).days, (last - date(1899, 12, 30)).days + 1
+    ep_lo, ep_hi = (first - date(1970, 1, 1)).days * 86400, ((last - date(1970, 1, 1)).days + 1) * 86400
+    n = f"TRY_TO_DOUBLE({c})"
+    return (f"CASE WHEN {c} RLIKE '{_EXCEL}' AND {n} >= {xl_lo} AND {n} < {xl_hi} "
+            f"THEN DATEADD(second, ROUND({n} * 86400, 0), TO_TIMESTAMP_NTZ('1899-12-30 00:00:00')) "
+            f"WHEN {c} RLIKE '{_EPOCH_S}' AND {n} >= {ep_lo} AND {n} < {ep_hi} "
+            f"THEN DATEADD(second, TRY_TO_NUMBER({c}, 38, 0), TO_TIMESTAMP_NTZ('1970-01-01 00:00:00')) "
+            f"WHEN {c} RLIKE '{_EPOCH_MS}' AND {n} >= {ep_lo * 1000} AND {n} < {ep_hi * 1000} "
+            f"THEN DATEADD(second, TRY_TO_NUMBER({c}, 38, 0) / 1000, TO_TIMESTAMP_NTZ('1970-01-01 00:00:00')) END")
 
 
-def _date_sql(c: str, day_first: bool, numbers: str = "") -> str:
+def _date_sql(c: str, day_first: bool, numbers: str = "", strict: bool = False) -> str:
     """SQL for a date written as 2024-06-15, 2024/06/15, 15/06/2024, 15-06-24, 15.06.2024, 15 Jun 2024, 15th June 2024, June 15 2024, 20240615, an Excel day count or Unix time."""
     n = _words(c)
     p = lambda k: f"SPLIT_PART({n}, ' ', {k})"
     day, month = (p(1), p(2)) if day_first else (p(2), p(1))
+    if strict:      # the column mixes both orders: a value is read by its own proof (a part above 12 cannot be a month)
+        a, b = (f"TRY_TO_NUMBER({p(k)}, 38, 0)" for k in (1, 2))
+        day, month = (f"IFF({b} > 12, {p(2)}, {p(1)})", f"IFF({b} > 12, {p(1)}, {p(2)})") if day_first else \
+                     (f"IFF({a} > 12, {p(1)}, {p(2)})", f"IFF({a} > 12, {p(2)}, {p(1)})")
     yy, tail = "([0-9]{2}|[0-9]{4})", "( .*)?"
     return (f"CASE WHEN {c} RLIKE '^[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}}.*' THEN TRY_TO_DATE(LEFT({c}, 10), 'YYYY-MM-DD') "
             f"WHEN {n} RLIKE '[0-9]{{4}} [0-9]{{1,2}} [0-9]{{1,2}}{tail}' THEN {_make_date(p(1), _month_text(p(2)), p(3))} "
@@ -452,25 +495,41 @@ def _date_sql(c: str, day_first: bool, numbers: str = "") -> str:
             + (f"WHEN {c} RLIKE '{_NUMBER_KINDS[numbers]}' THEN CAST({_number_stamp(c)} AS DATE) " if numbers else "") + "END")
 
 
-def _timestamp_sql(c: str, day_first: bool, numbers: str = "") -> str:
-    """SQL for a date and time: ISO, or 15/06/2024 14:30[:00] with 24-hour or AM/PM time; a date alone becomes midnight."""
-    d = f"TO_VARCHAR({_date_sql(c, day_first)})"
+_TIME = "[0-9]{1,2}:[0-9]{2}(:[0-9]{2})?( ?[aApP][mM])?"
+_ZONE = ".*[0-9]:[0-9]{2}.*([zZ]|[+-][0-9]{2}(:?[0-9]{2})?)$"       # a time followed by Z or +03:00 / -0500
+TIME_ZONE = "Africa/Nairobi"
+
+
+def _time_text(c: str) -> str:
+    """SQL: the time of day in the value ('2:05pm' becomes '2:05 PM'), empty when there is none."""
+    return f"NULLIF(UPPER(REGEXP_REPLACE(REGEXP_SUBSTR({c}, '{_TIME}'), ' ?([aApP][mM])$', ' \\\\1')), '')"
+
+
+def _date_text(c: str) -> str:
+    """SQL: the value without its time of day, which leaves the date part."""
+    return f"TRIM(REGEXP_REPLACE({c}, 'T?{_TIME}.*$', ''))"
+
+
+def _timestamp_sql(c: str, day_first: bool, numbers: str = "", d: str | None = None, tm: str | None = None,
+                   strict: bool = False) -> str:
+    """SQL for a date and time: ISO, any date format above followed by 24-hour or AM/PM time, or a time zone (Z, +03:00) converted to Nairobi time; a date alone becomes midnight."""
+    d, tm = d or _date_text(c), tm or _time_text(c)
     first = f"WHEN {c} RLIKE '{_NUMBER_KINDS[numbers]}' THEN {_number_stamp(c)} " if numbers else ""
-    tm = f"TRIM(REGEXP_REPLACE({c}, '^[^ ]*', ''))"
-    both = f"{d} || ' ' || {tm}"
-    return (f"CASE {first}"
-            f"WHEN {c} RLIKE '^[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}}([ T].*)?$' THEN TRY_TO_TIMESTAMP_NTZ({c}) "
-            f"WHEN {c} RLIKE '[0-9]{{1,2}}[-/.][0-9]{{1,2}}[-/.]([0-9]{{2}}|[0-9]{{4}})( .*)?' THEN COALESCE("
+    day = f"TO_VARCHAR({_date_sql(d, day_first, strict=strict)})"
+    both = f"{day} || ' ' || {tm}"
+    return (f"CASE {first}WHEN {c} RLIKE '{_ZONE}' THEN TO_TIMESTAMP_NTZ(CONVERT_TIMEZONE('{TIME_ZONE}', TRY_TO_TIMESTAMP_TZ({c}))) "
+            f"WHEN {tm} IS NULL THEN TRY_TO_TIMESTAMP_NTZ({day}, 'YYYY-MM-DD') "
+            f"ELSE COALESCE(IFF({c} RLIKE '^[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}}[ T].*', TRY_TO_TIMESTAMP_NTZ({c}), NULL), "
             f"TRY_TO_TIMESTAMP_NTZ({both}), TRY_TO_TIMESTAMP_NTZ({both}, 'YYYY-MM-DD HH12:MI AM'), "
-            f"TRY_TO_TIMESTAMP_NTZ({both}, 'YYYY-MM-DD HH12:MI:SS AM'), "
-            f"IFF({tm} = '', TRY_TO_TIMESTAMP_NTZ({d}, 'YYYY-MM-DD'), NULL)) "
-            f"ELSE IFF({c} RLIKE '.*:.*', NULL, CAST({_date_sql(c, day_first)} AS TIMESTAMP_NTZ)) END")
+            f"TRY_TO_TIMESTAMP_NTZ({both}, 'YYYY-MM-DD HH12:MI:SS AM')) END")
 
 
-def cast_sql(kind: str, c: str, t: Target, day_first: bool = DAY_FIRST, numbers: str = "") -> str:
+def cast_sql(kind: str, c: str, t: Target, day_first: bool = True, numbers: str = "",
+             d: str | None = None, tm: str | None = None, strict: bool = False) -> str:
     """SQL that converts a tidied value to its V3 type. A value that does not fit becomes empty and is counted."""
     if kind == "int":
-        return f"CASE WHEN {c} RLIKE '^-?[0-9]+([.]0+)?$' THEN TRY_TO_NUMBER({c}, 38, 0) END"
+        fits = f" AND TRY_TO_NUMBER({c}, 38, 0) BETWEEN {t.lo} AND {t.hi}" if t.lo is not None else ""
+        return f"CASE WHEN {c} RLIKE '^-?[0-9]+([.]0+)?$'{fits} THEN TRY_TO_NUMBER({c}, 38, 0) END"
     if kind == "decimal":
         return f"CASE WHEN {c} RLIKE '^-?[0-9]+([.][0-9]+)?$' THEN TRY_TO_NUMBER({c}, {t.p}, {t.s}) END"
     if kind == "float":
@@ -479,9 +538,9 @@ def cast_sql(kind: str, c: str, t: Target, day_first: bool = DAY_FIRST, numbers:
         return (f"CASE LOWER({c}) WHEN 'true' THEN 1 WHEN 'yes' THEN 1 WHEN 'y' THEN 1 WHEN '1' THEN 1 "
                 f"WHEN 'false' THEN 0 WHEN 'no' THEN 0 WHEN 'n' THEN 0 WHEN '0' THEN 0 END")
     if kind == "date":
-        return _date_sql(c, day_first, numbers)
+        return _date_sql(c, day_first, numbers, strict)
     if kind == "timestamp":
-        return _timestamp_sql(c, day_first, numbers)
+        return _timestamp_sql(c, day_first, numbers, d, tm, strict)
     raise ValueError(kind)
 
 
@@ -507,10 +566,13 @@ class ColPlan:
     fill_test: str | None = None       # SQL: true for the records whose value was filled that way (for the report)
     parents: list = field(default_factory=list)   # parent records this value is filled from and checked against
     own: str = ""                      # the tidied value before anything is filled in from a parent
-    day_first: bool = DAY_FIRST        # how this date column's 12/03/2024 is read
+    day_first: bool = True             # how this date column's 12/03/2024 is read when its order is proven month-first or day-first
     date_order: str = ""               # "DMY", "MDY", "MIXED", or "EXCEL" / "EPOCH" (the column has numbers of that kind and no other date format) when the column's own values show it
-    strict: bool = False               # the column mixes day-first and month-first dates
+    strict: bool = False               # a date is read by its own proof; a date that could be either order is an error (columns that mix both orders, or prove neither)
     zero_default: bool = False         # the default is the general 0 for numbers, not a listed default
+    garbage_only: bool = False         # column may be empty in V3: only a value that cannot be read gets the listed default
+    id_required: bool = False          # the record's own id: a record without one is skipped
+    typed: bool = False                # the CLEAN column already has a real type; it is read as text first
     fail_is_error: bool = False        # a value that cannot be converted is an error (not replaced by a listed default)
     empty_if_unfit: bool = False       # a value that cannot be converted is left empty and listed instead of failing the table
     link: dict | None = None           # the parent table this column points to; a record whose parent is missing is skipped
@@ -518,7 +580,8 @@ class ColPlan:
 
 
 def _parent_sql(name: str, ptr: str, info: dict) -> dict:
-    """SQL pieces for one parent: the single value it gives, how many different values it has, how many parent rows match."""
+    """SQL pieces for one parent: the single value it gives, 
+    how many different values it has, how many parent rows match."""
     val = f"TRIM(x.{info['value']})"
     where = f"FROM {info['table']} x WHERE TRIM(x.{info['id']}) = TRIM(t.{ptr})"
     return {"value": f"(SELECT IFF(COUNT(DISTINCT {val}) = 1, MAX({val}), NULL) {where})",
@@ -528,7 +591,8 @@ def _parent_sql(name: str, ptr: str, info: dict) -> dict:
 def plan_columns(table: str, columns: list[dict], structure: V3Structure, service: str | None = None,
                  parents: dict | None = None, date_orders: dict | None = None,
                  links: dict | None = None) -> list[ColPlan]:
-    """Builds one ColPlan per column of a table: finds its V3 type, then sets up the conversion, length check, allowed-words check, default and parent checks."""
+    """Builds one ColPlan per column of a table: finds its V3 type, then sets up the conversion, 
+    length check, allowed-words check, default and parent checks."""
     plans: list[ColPlan] = []
     must_have = structure.required_set(table, service)
     quoted = {c["name"].lower(): q(c["name"]) for c in columns}
@@ -544,7 +608,8 @@ def plan_columns(table: str, columns: list[dict], structure: V3Structure, servic
         p = ColPlan(name=name, src_type=src, target=tgt, final=q(name))
         p.protected = bool(NEVER_DEFAULT_RE.search(name)) or name.lower() == "payment_method"
         p.required = tgt.source == "v3" and name.lower() in must_have
-        is_text = src in TEXT_TYPES
+        p.typed = (src not in TEXT_TYPES and src in TYPED_OK and tgt.kind in ("int", "decimal", "float", "flag", "date", "timestamp"))
+        is_text = src in TEXT_TYPES or p.typed
         if is_text and tgt.kind == "text" and tgt.enum_values:
             p.enum_values = tgt.enum_values
             words = " ".join(f"WHEN {lit(v.lower())} THEN {lit(v)}" for v in tgt.enum_values)
@@ -560,8 +625,8 @@ def plan_columns(table: str, columns: list[dict], structure: V3Structure, servic
                 p.clean = _fix_comma(p.clean)        # '34,5' -> '34.5', once, in the standardise step
             if tgt.kind in ("date", "timestamp"):
                 p.date_order = (date_orders or {}).get(name.lower(), "")
-                p.day_first = DAY_FIRST if p.date_order not in ("DMY", "MDY") else p.date_order == "DMY"
-                p.strict = p.date_order == "MIXED"
+                p.day_first = p.date_order != "MDY"
+                p.strict = p.date_order in ("MIXED", "")
             if parents and name.lower() == "patient_id" and tgt.kind == "int":
                 for ptr, ptable in PARENTS:        # the patient is also known from the visit or invoice this record belongs to
                     if ptr in quoted and ptable != table.lower() and ptable in parents:
@@ -571,7 +636,8 @@ def plan_columns(table: str, columns: list[dict], structure: V3Structure, servic
                     p.clean = f"COALESCE({p.own}, {', '.join(clean_sql(name, pa['value']) for pa in p.parents)})"
                     p.fallback, p.fill_test = True, f"({p.own}) IS NULL AND {q(name + '__C')} IS NOT NULL"
             helper = q(name + "__C")
-            p.cast = cast_sql(tgt.kind, helper, tgt, p.day_first, p.date_order if p.date_order in _NUMBER_KINDS else "")
+            p.cast = cast_sql(tgt.kind, helper, tgt, p.day_first, p.date_order if p.date_order in _NUMBER_KINDS else "",
+                              q(name + "__D"), q(name + "__T"), p.strict)
             p.final = p.cast
         elif is_text and tgt.kind == "text" and tgt.length and tgt.length < DEFAULT_TEXT_LENGTH:
             p.limited = True      # value is kept as is; a value over V3's limit is an error
@@ -582,8 +648,11 @@ def plan_columns(table: str, columns: list[dict], structure: V3Structure, servic
         # default when V3 knows the column and it cannot be empty (even if V3 has a default of its own,
         # V3 rejected empty values for those before), or when it is on the always-default list
         default = DEFAULTS.get(name.lower(), TABLE_DEFAULTS.get((table.lower(), name.lower())))
+        by_rule = default is None and tgt.source == "v3" and tgt.kind == "int" and bool(BY_RE.search(name))
+        if by_rule:
+            default = 1
         zero_rule = (tgt.source == "v3" and tgt.kind in ("int", "decimal", "float") and tgt.nullable is False
-                     and not ID_RE.search(name) and not MEDICAL_RE.search(name))
+                     and not ID_RE.search(name) and not MEDICAL_RE.search(name) and not BY_RE.search(name))
         from_zero = default is None and zero_rule
         if from_zero:
             default = 0
@@ -592,6 +661,11 @@ def plan_columns(table: str, columns: list[dict], structure: V3Structure, servic
             p.default, p.zero_default = default, from_zero
             base = f"NULLIF(TRIM({p.final}), '')" if tgt.kind == "text" and is_text else p.final   # blank text counts as empty
             p.final = f"COALESCE({base}, {lit(p.default)})"
+        elif (default is not None and not by_rule and p.converted and tgt.source == "v3" and name.lower() in DEFAULTS
+              and not p.protected):       # the column may be empty: only an unreadable value gets the default
+            p.default, p.garbage_only = default, True
+            p.final = f"IFF({q(name + '__C')} IS NOT NULL AND ({p.cast}) IS NULL, {lit(default)}, {p.cast})"
+        p.id_required = name.lower() == "id" and tgt.source == "v3"
         p.empty_if_unfit = p.converted and (table.lower(), name.lower()) in EMPTY_WHEN_UNFIT and tgt.nullable is not False
         p.fail_is_error = (p.converted and not p.empty_if_unfit
                            and not (p.default is not None and not p.zero_default))
@@ -609,18 +683,27 @@ def _missing_test(p: ColPlan) -> str:
     """SQL test: the value is empty (NULL or blank)."""
     if p.converted:
         return f"{q(p.name + '__C')} IS NULL"
-    return f"({p.final} IS NULL OR TRIM(TO_VARCHAR({p.final})) = '')"
+    return _blank(f"TO_VARCHAR({p.final})")
 
 
 def _cast_failed_reason(p: ColPlan) -> str:
     """SQL: the error text for a value that could not be converted, naming the column, the value and the type."""
     helper, label = q(p.name + "__C"), p.target.label()
+    if p.target.source in ("guess", "name-rule"):
+        label += " [type " + ("guessed from the column name" if p.target.source == "guess" else "taken from V3's other tables with this column name") + "; this table is not in V3]"
     if p.target.kind == "decimal":
         verb = f"IFF({helper} RLIKE '^-?[0-9]+([.][0-9]+)?$', ' does not fit ', ' is not a valid ')"
+    elif p.target.kind == "int" and p.target.lo is not None:
+        verb = f"IFF({helper} RLIKE '^-?[0-9]+([.]0+)?$', ' is outside the range of ', ' cannot be converted to ')"
+        label = f"{label} ({p.target.lo} to {p.target.hi})"
     else:
         verb = "' cannot be converted to '"
-    note = " (this column has both day-first and month-first dates)" if p.strict and p.date_order == "MIXED" else ""
+    note = (" (this column has both day-first and month-first dates)" if p.strict and p.date_order == "MIXED" else
+            " (no date in this column shows whether it is day-first or month-first)" if p.strict and p.target.kind in ("date", "timestamp") else "")
     tail = lit(label + note)
+    if p.target.kind in ("date", "timestamp") and p.date_order in _NUMBER_KINDS:
+        tail = (f"{lit(label + note)} || IFF({helper} RLIKE '{_NUMBER_KINDS[p.date_order]}', "
+                f"{lit(' (a number is read as a date only in the years %d to %d)' % NUMBER_DATE_YEARS)}, '')")
     if p.target.kind in ("date", "timestamp") and p.date_order not in _NUMBER_KINDS:
         tail = (f"{lit(label + note)} || IFF({helper} RLIKE '{_EXCEL}|{_EPOCH}', "
                 f"' (a number is read as a date only when the column has no other date format)', '')")
@@ -661,6 +744,12 @@ def error_reason_sql(plans: list[ColPlan]) -> str | None:
             parts.append(f"IFF({_enum_bad(p, allowed)}, {lit(p.name + ' (not an allowed value)')}, NULL)")
         if p.fail_is_error:
             parts.append(_cast_failed_reason(p))
+        if p.strict and p.target.kind in ("date", "timestamp"):
+            n = _words(q(p.name + "__C"))
+            first, second = (f"TRY_TO_NUMBER(SPLIT_PART({n}, ' ', {k}), 38, 0)" for k in (1, 2))
+            parts.append(f"IFF({n} RLIKE '[0-9]{{1,2}} [0-9]{{1,2}} ([0-9]{{2}}|[0-9]{{4}})( .*)?' AND {first} <= 12 AND {second} <= 12 "
+                         f"AND {first} <> {second}, {lit(p.name + ': ')} || '\"' || {q(p.name)} || '\"' || "
+                         f"' could be day-first or month-first, and " + ("this column has both" if p.date_order == "MIXED" else "no other date in this column shows which") + "', NULL)")
     return _join_reasons(parts)
 
 
@@ -668,10 +757,15 @@ def skip_reason_sql(plans: list[ColPlan]) -> str | None:
     """SQL that lists why a record is left out: a record it points to (visit, invoice, patient...) does not exist, or its patient disagrees with its visit. Empty = the record is kept."""
     parts = []
     for p in plans:
+        if p.id_required:
+            empty = f"{q(p.name + '__C')} IS NULL" if p.converted else _blank(q(p.name))
+            parts.append(f"IFF({empty}, 'id is empty and cannot be filled', NULL)")
         if p.link:
             value = q(p.name)
-            parts.append(f"IFF({q(p.name + '__L')} = 0 AND NOT {_blank(value)}, {lit(p.name + ' ')} || {value} || "
-                         f"{lit(' not found in ' + p.link['table'])}, NULL)")
+            why = f"{p.link['table']}{' (or that record was skipped)' if p.link.get('excluded') else ''}"
+            parts.append(f"IFF({q(p.name + '__L')} = 0 AND NOT {_blank(value)}, {lit(p.name + ' ')} || TO_VARCHAR({value}) || "
+                         f"IFF(TRY_TO_NUMBER(TRIM(TO_VARCHAR({value})), 38, 0) IS NULL, "
+                         f"{lit(' is not a number, so it matches no record in ' + why)}, {lit(' not found in ' + why)}), NULL)")
         if p.parents:
             if p.required and p.default is None:
                 parts.append(f"IFF({_missing_test(p)}, {lit(p.name + ' (missing, and not found through the visit or invoice)')}, NULL)")
@@ -683,16 +777,30 @@ def _source_cte(facility: str, table: str, plans: list[ColPlan]) -> str:
     """First part of every query: reads the CLEAN table and adds a tidied copy (<COLUMN>__C) of each column to be converted."""
     items = [f"{p.clean} AS {q(p.name + '__C')}" for p in plans if p.converted]
     for p in plans:
+        if p.converted and p.target.kind == "timestamp":
+            items += [f"{_date_text(p.clean)} AS {q(p.name + '__D')}", f"{_time_text(p.clean)} AS {q(p.name + '__T')}"]
+    for p in plans:
         if p.parents:
             items.append(f"{p.own} AS {q(p.name + '__O')}")
             for i, pa in enumerate(p.parents):
                 items += [f"{pa['value']} AS {q(f'{p.name}__P{i}')}", f"{pa['count']} AS {q(f'{p.name}__N{i}')}"]
         if p.link:
-            items.append(f"(SELECT COUNT(*) FROM {p.link['parent']} x WHERE TRIM(x.{p.link['id']}) = TRIM(t.{q(p.name)})) "
-                         f"AS {q(p.name + '__L')}")
+            gone = p.link.get("excluded") or []
+            skipped = f" AND {_norm('x.' + p.link['id'])} NOT IN ({', '.join(lit(i) for i in gone)})" if gone else ""
+            items.append(f"(SELECT COUNT(*) FROM {p.link['parent']} x WHERE {_norm('x.' + p.link['id'])} = {_norm('t.' + q(p.name))}"
+                         f"{skipped}) AS {q(p.name + '__L')}")
     helpers = ", ".join(items)
-    src = f"{sf_schema(facility, CLEAN_SUFFIX)}.{q(table)}"
+    src = SOURCE_OVERRIDE.get((facility.upper(), table.lower())) or f"{sf_schema(facility, CLEAN_SUFFIX)}.{q(table)}"
+    typed = [p for p in plans if p.typed]
+    if typed:
+        src = (f"(SELECT * EXCLUDE ({', '.join(q(p.name) for p in typed)}), "
+               f"{', '.join(f'TO_VARCHAR({q(p.name)}) AS {q(p.name)}' for p in typed)} FROM {src})")
     return f"WITH s AS (SELECT t.*{', ' + helpers if helpers else ''} FROM {src} t)"
+
+
+def _norm(x: str) -> str:
+    """SQL: an id as comparable text, so 001503, 1503 and 1503.0 are the same id."""
+    return f"COALESCE(TO_VARCHAR(TRY_TO_NUMBER(TRIM(TO_VARCHAR({x})), 38, 0)), TRIM(TO_VARCHAR({x})))"
 
 
 def _record_id(plans: list[ColPlan]) -> str:
@@ -716,7 +824,7 @@ def _listing_sql(facility: str, table: str, plans: list[ColPlan], reason: str | 
     pairs = ", ".join(f"{lit(p.name)}, {q(p.name)}" for p in plans)
     return (f"{_source_cte(facility, table, plans)}\n"
             f"SELECT {_record_id(plans)}, {reason}, TO_VARCHAR(OBJECT_CONSTRUCT_KEEP_NULL({pairs}))\n"
-            f"FROM s\nWHERE ({reason}) IS NOT NULL{extra}\nLIMIT {int(limit)}")
+            f"FROM s\nWHERE ({reason}) IS NOT NULL{extra}\nORDER BY 1, 2\nLIMIT {int(limit)}")
 
 
 def error_sample_sql(facility: str, table: str, plans: list[ColPlan], limit: int) -> str | None:
@@ -743,9 +851,15 @@ def change_sql(facility: str, table: str, plans: list[ColPlan], limit: int) -> s
         if kind in ("int", "decimal", "float"):
             differs, label = f"ABS({p.final} - TRY_TO_DOUBLE({orig})) > 0.000001 OR TRY_TO_DOUBLE({orig}) IS NULL", "number changed (comma or rounding)"
         elif kind == "flag":
+            if p.typed and p.src_type == "BOOLEAN":
+                continue
             differs, label = f"{orig} NOT IN ('0', '1')", "yes/no converted to 1/0"
-        elif kind in ("date", "timestamp"):
+        elif kind == "date":
             differs, label = f"NOT ({orig} RLIKE '[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}}.*')", "date written in another format"
+        elif kind == "timestamp":
+            differs = (f"NOT ({orig} RLIKE '[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}}([ T][0-9]{{2}}:[0-9]{{2}}(:[0-9]{{2}}([.][0-9]+)?)?)?') "
+                       f"OR {orig} RLIKE '{_ZONE}'")
+            label = "date written in another format"
         else:
             differs, label = f"{new} IS DISTINCT FROM {orig}", "changed"
         if p.fallback:
@@ -759,16 +873,18 @@ def change_sql(facility: str, table: str, plans: list[ColPlan], limit: int) -> s
         else:
             filled = lit("default applied")
         if p.converted and p.default is not None:
-            unreadable = f"WHEN {p.cast} IS NULL THEN '{'unreadable value: error, table fails' if p.fail_is_error else 'unreadable value replaced by default'}' "
+            unreadable = f"WHEN {q(p.name + '__C')} IS NOT NULL AND {p.cast} IS NULL THEN '{'unreadable value: error, table fails' if p.fail_is_error else 'unreadable value replaced by default'}' "
         else:
             unreadable = ""
         placeholder = f"WHEN {q(p.name + '__C')} IS NULL THEN 'placeholder text (n/a, -, null) treated as empty' " if p.converted else ""
         emptied = ("moved to another column" if p.fallback and not p.converted
                    else "unreadable value: error, table fails" if p.fail_is_error
                    else "value could not be converted, left empty")
+        label_sql = (f"IFF({orig} RLIKE '{_ZONE}', {lit('time zone converted to ' + TIME_ZONE.split('/')[1] + ' time')}, {lit(label)})"
+                     if kind == "timestamp" else lit(label))
         what = (f"CASE WHEN {blank} THEN {filled} {unreadable}{placeholder}WHEN {p.final} IS NULL THEN "
-                f"{lit(emptied)} ELSE {lit(label)} END")
-        where = f"(({blank} AND {new} IS NOT NULL) OR (NOT {blank} AND ({p.final} IS NULL OR {differs})))"
+                f"{lit(emptied)} ELSE {label_sql} END")
+        where = f"(({blank} AND NULLIF({new}, '') IS NOT NULL) OR (NOT {blank} AND ({p.final} IS NULL OR {differs})))"
         if p.spelled and not (p.converted or p.default is not None or p.fallback):
             where = f"(NOT {blank} AND ({p.final} IS NULL OR {differs}))"
         if skip:
@@ -777,7 +893,8 @@ def change_sql(facility: str, table: str, plans: list[ColPlan], limit: int) -> s
                      f"{new} AS NEW_VALUE, {what} AS WHAT_HAPPENED FROM s WHERE {where}")
     if not parts:
         return None
-    return f"{_source_cte(facility, table, plans)}\n" + "\nUNION ALL\n".join(parts) + f"\nLIMIT {int(limit)}"
+    return (f"{_source_cte(facility, table, plans)}\nSELECT * FROM (\n" + "\nUNION ALL\n".join(parts) +
+            f"\n)\nORDER BY RECORD_ID, COLUMN_NAME\nLIMIT {int(limit)}")
 
 
 def stats_sql(facility: str, table: str, plans: list[ColPlan]) -> tuple[str, list[tuple[int, ColPlan]]]:
@@ -814,7 +931,7 @@ def stats_sql(facility: str, table: str, plans: list[ColPlan]) -> tuple[str, lis
 def verify(cur, facility: str, table: str, plans: list[ColPlan], route: str = "unknown") -> list[dict]:
     """Runs stats_sql and turns the counts into report rows (converted, failed, defaulted, rounded, too long, records with errors) with a status."""
     sql, changed = stats_sql(facility, table, plans)
-    if not changed and not any(p.required or p.link or p.parents for p in plans):
+    if not changed and not any(p.required or p.link or p.parents or p.id_required for p in plans):
         return []
     cur.execute(sql)
     names = [d[0] for d in cur.description]
@@ -937,24 +1054,34 @@ def find_parents(cur, facility: str) -> dict:
     return out
 
 
-def find_links(structure: V3Structure, table: str, service: str | None, columns: list[dict],
-               all_cols: dict, facility: str, derived: set) -> dict:
-    """Finds the columns of a table that point to another CLEAN table (V3 foreign keys, or <name>_id pointing to the table <name>s).
-    Columns the mapping builds from other columns are left out: their CLEAN value is not the parent's id."""
+def link_candidates(structure: V3Structure, table: str, service: str | None, columns: list[dict], derived: set) -> dict[str, str]:
+    """The columns of a table that may point to another table, with that table's name (V3 foreign keys, or <name>_id pointing to <name>s).
+    Columns the mapping builds from other columns are left out: their value is not the parent's id."""
     key = structure.key(table, service) if structure else None
     if not key:
         return {}
     fk_parent = {f["column"].lower(): f["table"].lower() for f in structure.fks.get(key, [])}
-    tables = {t.lower(): t for t in all_cols}
     out = {}
     for col in columns:
         name = col["name"].lower()
         if name == "id" or (table.lower(), name) in derived:
             continue
         parent = fk_parent.get(name) or (name[:-3] + "s" if name.endswith("_id") else None)
+        if parent:
+            out[name] = parent
+    return out
+
+
+def find_links(structure: V3Structure, table: str, service: str | None, columns: list[dict],
+               all_cols: dict, facility: str, derived: set) -> dict:
+    """Finds the columns of a table that point to another CLEAN table (see link_candidates) whose table exists and has an id column."""
+    tables = {t.lower(): t for t in all_cols}
+    out = {}
+    for name, parent in link_candidates(structure, table, service, columns, derived).items():
         pcols = {c["name"].lower(): c["name"] for c in all_cols.get(tables.get(parent), [])} if parent in tables else {}
         if "id" in pcols:
-            out[name] = {"table": parent, "parent": f"{sf_schema(facility, CLEAN_SUFFIX)}.{q(tables[parent])}", "id": q(pcols["id"])}
+            out[name] = {"table": parent, "parent": f"{sf_schema(facility, CLEAN_SUFFIX)}.{q(tables[parent])}", "id": q(pcols["id"]),
+                         "excluded": []}
     return out
 
 
@@ -984,7 +1111,8 @@ def detect_date_orders(cur, facility: str, table: str, plans: list[ColPlan]) -> 
 
 def compare_and_cast(cur, facility: str, table: str, columns: list[dict], structure: V3Structure,
                      *, print_sql: bool, route: str, service: str | None = None,
-                     parents: dict | None = None, links: dict | None = None) -> tuple[list[dict], list[dict], list[dict]]:
+                     parents: dict | None = None, links: dict | None = None,
+                     skipped_out: dict | None = None, plans_out: list | None = None) -> tuple[list[dict], list[dict], list[dict]]:
     """Checks one table: plans it, counts what converts and what fails, and lists the errors and, for the audit, every changed value and skipped record. Creates nothing in Snowflake."""
     if structure and structure.key(table, service) is None:
         print(f"\n>> {table}: not found in the V3 structure, or the name exists in several V3 services "
@@ -997,7 +1125,9 @@ def compare_and_cast(cur, facility: str, table: str, columns: list[dict], struct
             for name, order in orders.items():
                 if order:
                     print(f"   {name}: " + {"DMY": "dates are read day-first", "MDY": "dates are read month-first", "EXCEL": "numbers are read as Excel day numbers",
-                                 "EPOCH": "numbers are read as Unix time (UTC)"}.get(order, "DAY-FIRST, but the column MIXES both orders"))
+                                 "EPOCH": "numbers are read as Unix time (UTC)"}.get(order, "the column MIXES both orders: each date is read by its own proof, and a date that could be either is an error"))
+    if plans_out is not None:
+        plans_out[:] = plans
     extra = [p.name for p in plans if p.target.source == "not in V3"]
     if extra:
         print(f"\n>> {table}: {len(extra)} column(s) V3 does not have (not sent as such): "
@@ -1017,20 +1147,39 @@ def compare_and_cast(cur, facility: str, table: str, columns: list[dict], struct
     report += absent_rows(table, route, columns, structure, service)
     print_report(report)
     errors, changes = [], []
+    id_plan = next((p for p in plans if p.name.lower() == "id"), None)
+    if skipped_out is not None and id_plan and any(r.get("records_skipped") for r in report):
+        cur.execute(f"{_source_cte(facility, table, plans)}\nSELECT DISTINCT {_norm(q(id_plan.name))} FROM s "
+                    f"WHERE ({skip_reason_sql(plans)}) IS NOT NULL AND {q(id_plan.name)} IS NOT NULL LIMIT {MAX_CASCADE + 1}")
+        ids = [r[0] for r in cur.fetchall()]
+        if len(ids) > MAX_CASCADE:
+            print(f"  WARNING: more than {MAX_CASCADE} skipped ids in {table}; records that point to the rest are not skipped")
+        skipped_out[table.lower()] = ids[:MAX_CASCADE]
     if any(r["records_with_errors"] for r in report):
         cur.execute(error_sample_sql(facility, table, plans, ERROR_SAMPLE_LIMIT))
         errors = [{"table": table, "record_id": rid, "error": why, "original_values": row}
                   for rid, why, row in cur.fetchall()]
+        total = max(int(r["records_with_errors"] or 0) for r in report)
+        if total > len(errors):
+            errors.append({"table": table, "record_id": "(LIST CUT OFF)", "original_values": "",
+                           "error": f"only the first {len(errors)} of {total} records with errors are listed"})
     if any(r.get("records_skipped") for r in report):
         cur.execute(skipped_sample_sql(facility, table, plans, ERROR_SAMPLE_LIMIT))
         changes = [{"table": table, "record_id": rid, "column": "(whole record)", "original": row,
                     "new_value": "skipped, not migrated", "what_happened": why} for rid, why, row in cur.fetchall()]
+        total = max(int(r.get("records_skipped") or 0) for r in report)
+        if total > len(changes):
+            changes.append({"table": table, "record_id": "(LIST CUT OFF)", "column": "(whole record)", "original": "",
+                            "new_value": "", "what_happened": f"only the first {len(changes)} of {total} skipped records are listed"})
     sql = change_sql(facility, table, plans, CHANGE_LOG_LIMIT)
     if sql:
         cur.execute(sql)
         values = [{"table": table, "record_id": rid, "column": col, "original": old, "new_value": new, "what_happened": what}
                   for rid, col, old, new, what in cur.fetchall()]
         print(f"  values changed in kept records: {len(values)}{' (list is cut off at the limit)' if len(values) >= CHANGE_LOG_LIMIT else ''}")
+        if len(values) >= CHANGE_LOG_LIMIT:
+            values.append({"table": table, "record_id": "(LIST CUT OFF)", "column": "", "original": "", "new_value": "",
+                           "what_happened": f"only the first {CHANGE_LOG_LIMIT} changed values of this table are listed; more exist"})
         changes += values
     return report, errors, changes
 
@@ -1042,6 +1191,65 @@ class TypingErrors(Exception):
         """Keeps the failed tables and their error counts."""
         super().__init__(message)
         self.tables = tables
+
+
+def parents_first(tables: list[str], links: dict) -> list[str]:
+    """Orders tables so a table comes after the tables its records point to (a loop is broken at the first table left)."""
+    left, done, out = list(tables), set(), []
+    names = {t.lower() for t in tables}
+    while left:
+        ready = [t for t in left if all(l["table"] in done or l["table"] not in names or l["table"] == t.lower()
+                                        for l in links[t].values())] or [left[0]]
+        for t in ready:
+            left.remove(t)
+            done.add(t.lower())
+            out.append(t)
+    return out
+
+
+def write_reports(facility: str, rows: list[dict], errors: list[dict], changes: list[dict], report_dir: str | None = None) -> None:
+    """Saves the report, the errors and the changes as CSV files in output/typing (or report_dir); an empty list writes no file."""
+    stamp = time.strftime('%Y%m%dT%H%M%S')
+    out_dir = Path(report_dir) if report_dir else Path(__file__).resolve().parent / "output" / "typing"
+    for name, data in ((f"{facility.upper()}_{stamp}.csv", rows), (f"{facility.upper()}_{stamp}_errors.csv", errors),
+                       (f"{facility.upper()}_{stamp}_changes.csv", changes)):
+        if data:
+            out_dir.mkdir(parents=True, exist_ok=True)
+            with open(out_dir / name, "w", newline="", encoding="utf-8") as fh:
+                w = csv.DictWriter(fh, fieldnames=list(data[0].keys()))
+                w.writeheader()
+                w.writerows(data)
+            kind = "Errors" if "_errors" in name else "Changes and skipped records" if "_changes" in name else "Report"
+            print(f"{kind} saved: {out_dir / name}")
+
+
+def check_table_for_flatten(cur, facility: str, table: str, source: str, columns: list[dict], service: str, *,
+                            structure: V3Structure, derived: set | frozenset = frozenset(), raw_parents: dict | None = None,
+                            report_dir: str | None = None) -> dict:
+    """Used by the flatten step. Checks one table that has been read, as text, into the temporary table `source`
+    (columns = its names and types: TEXT, or VARIANT for nested values). Reads only; creates nothing.
+    raw_parents = {parent table (lower case): {"table": SQL name, "id": quoted id column, "value": quoted patient column or None}}.
+    Returns {"ok", "select_sql" (the finished typed SELECT, set only when ok), "failed_records", "skipped_records", "errors", "changes"}.
+    The report CSV files are saved as well."""
+    raw_parents = raw_parents or {}
+    parents = {t: {k: v for k, v in info.items() if k in ("table", "id", "value")}
+               for t, info in raw_parents.items() if info.get("value") and t in {p for _, p in PARENTS}}
+    links = {}
+    for col, l in find_links(structure, table, service, columns, {t: [{"name": "id"}] for t in raw_parents}, facility, derived).items():
+        links[col] = {**l, "parent": raw_parents[l["table"]]["table"], "id": raw_parents[l["table"]]["id"]}
+    SOURCE_OVERRIDE[(facility.upper(), table.lower())] = source
+    plans: list[ColPlan] = []
+    try:
+        rows, errors, changes = compare_and_cast(cur, facility, table, columns, structure, print_sql=False, route="mapping",
+                                                 service=service, parents=parents, links=links, plans_out=plans)
+        failed = max([int(r.get("records_with_errors") or 0) for r in rows] or [0])
+        skipped = max([int(r.get("records_skipped") or 0) for r in rows] or [0])
+        select_sql = None if failed else typed_select_sql(facility, table, plans)
+    finally:
+        SOURCE_OVERRIDE.pop((facility.upper(), table.lower()), None)
+    write_reports(facility, rows, errors, changes, report_dir)
+    return {"ok": not failed, "select_sql": select_sql, "failed_records": failed, "skipped_records": skipped,
+            "errors": errors, "changes": changes}
 
 
 def run(facility: str, tables: list[str] | None = None, conf: dict | None = None,
@@ -1065,32 +1273,22 @@ def run(facility: str, tables: list[str] | None = None, conf: dict | None = None
         all_cols = read_columns(cur, facility)
         cols = {t: all_cols[t] for t in chosen if t in all_cols}
         parents = find_parents(cur, facility)
-        for table in chosen:
-            if table not in cols:
-                continue
+        links_by = {t: find_links(structure, t, mapped.get(t.lower()), cols[t], all_cols, facility, derived) for t in chosen if t in cols}
+        skipped: dict[str, list] = {}
+        for table in parents_first(list(links_by), links_by):
             service = mapped.get(table.lower())               # the mapping file names the V3 table and service
+            links = {c: {**l, "excluded": skipped.get(l["table"], [])} for c, l in links_by[table].items()}
             rows, errors, changes = compare_and_cast(
                 cur, facility, table, cols[table], structure, print_sql=print_sql,
                 route="mapping" if service else "not in mapping", service=service, parents=parents,
-                links=find_links(structure, table, service, cols[table], all_cols, facility, derived))
+                links=links, skipped_out=skipped)
             all_rows += rows
             all_errors += errors
             all_changes += changes
         cur.close()
     finally:
         conn.close()
-    stamp = time.strftime('%Y%m%dT%H%M%S')
-    out_dir = Path(report_dir) if report_dir else Path(__file__).resolve().parent / "output" / "typing"
-    for name, data in ((f"{facility.upper()}_{stamp}.csv", all_rows), (f"{facility.upper()}_{stamp}_errors.csv", all_errors),
-                       (f"{facility.upper()}_{stamp}_changes.csv", all_changes)):
-        if data:
-            out_dir.mkdir(parents=True, exist_ok=True)
-            with open(out_dir / name, "w", newline="", encoding="utf-8") as fh:
-                w = csv.DictWriter(fh, fieldnames=list(data[0].keys()))
-                w.writeheader()
-                w.writerows(data)
-            kind = "Errors" if "_errors" in name else "Changes and skipped records" if "_changes" in name else "Report"
-            print(f"{kind} saved: {out_dir / name}")
+    write_reports(facility, all_rows, all_errors, all_changes, report_dir)
     # a table with even one error FAILS: it must not be migrated. Other tables are not affected.
     failed: dict[str, int] = {}
     for r in all_rows:

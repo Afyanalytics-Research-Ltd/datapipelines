@@ -1,6 +1,7 @@
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import os
+import re
 from pathlib import Path
 
 import snowflake.connector
@@ -216,31 +217,28 @@ def expand_objects(cursor, raw_schema, table,
 
 # Build the final SQL statement to create or replace the flattened view for a given table, based on the discovered and expanded fields. 
 # This function constructs a dynamic SELECT list that extracts the appropriate JSON paths and casts them to the inferred types
-def build_flatten_sql(raw_schema: str, clean_schema: str, table: str, expanded_fields: list[tuple[str, str, str]],
-                      materialize: str = "view") -> str:
-    """CREATE OR REPLACE VIEW (default — always as fresh as RAW) or TABLE (a
-    snapshot of the same query, refreshed each time this runs)."""
-    if materialize not in ("view", "table"):
-        raise ValueError(f"materialize must be view or table, not {materialize!r}")
-    # 3. Build the dynamic SELECT list
+NESTED_TYPES = ("ARRAY", "OBJECT", "VARIANT")
+
+
+def _flatten_select(raw_schema: str, table: str, expanded_fields: list[tuple[str, str, str]], as_text: bool = False) -> str:
+    """The flatten query itself (no CREATE): de-duplicated RAW records, one column per field. as_text=True reads every
+    scalar field as raw text (no TRY_CAST), which is what the V3 type check needs: it must see the value as it was sent."""
     select_parts = []
     for name, json_path, dtype in expanded_fields:
         path_parts = json_path.split('.')
         sql_path = ':'.join(f'"{p}"' for p in path_parts)  # "id" or "type":"name"
 
         col = f'"{name.upper()}"'  # quoted — some field names (e.g. "group") are reserved SQL keywords
-        if dtype in ('ARRAY', 'OBJECT', 'VARIANT'):
+        if dtype in NESTED_TYPES:
             select_parts.append(f'record:{sql_path} AS {col}')
+        elif as_text:
+            select_parts.append(f'record:{sql_path}::STRING AS {col}')
         else:
             select_parts.append(
                 f'TRY_CAST(record:{sql_path}::STRING AS {infer_type(dtype)}) AS {col}'
             )
     select_list = ",\n".join(select_parts)
-
-    # 4. Construct the final CREATE OR REPLACE VIEW / TABLE statement
-    create_table_query = f"""
-    CREATE OR REPLACE {materialize.upper()} {clean_schema}.{table} AS
-    WITH deduped AS (
+    return f"""WITH deduped AS (
         SELECT
             DISTINCT facility_id,
             payload as record
@@ -251,7 +249,21 @@ def build_flatten_sql(raw_schema: str, clean_schema: str, table: str, expanded_f
     SELECT
         facility_id as source_schema, 
         {select_list}
-    FROM deduped;
+    FROM deduped"""
+
+
+# Build the final SQL statement to create or replace the flattened view for a given table, based on the discovered and expanded fields. 
+# This function constructs a dynamic SELECT list that extracts the appropriate JSON paths and casts them to the inferred types
+def build_flatten_sql(raw_schema: str, clean_schema: str, table: str, expanded_fields: list[tuple[str, str, str]],
+                      materialize: str = "view") -> str:
+    """CREATE OR REPLACE VIEW (default — always as fresh as RAW) or TABLE (a
+    snapshot of the same query, refreshed each time this runs)."""
+    if materialize not in ("view", "table"):
+        raise ValueError(f"materialize must be view or table, not {materialize!r}")
+    # Construct the final CREATE OR REPLACE VIEW / TABLE statement
+    create_table_query = f"""
+    CREATE OR REPLACE {materialize.upper()} {clean_schema}.{table} AS
+    {_flatten_select(raw_schema, table, expanded_fields)};
     """
     return create_table_query
 
@@ -282,6 +294,153 @@ def backup_table(cursor, clean_schema: str, table: str) -> str:
     return target
 
 
+# BACKUP CLEAN-UP
+#
+# Every table replaced in CLEAN is first cloned to <clean_schema>_BACKUP.<TABLE>__YYYYMMDD. Nothing removed them, so they piled up.
+# Rule: a backup older than BACKUP_KEEP_DAYS (default 7) is dropped, but the newest backup of a table is always kept.
+# Only tables in the _BACKUP schema whose name ends in __YYYYMMDD are ever touched. BACKUP_KEEP_DAYS=0 switches the clean-up off.
+BACKUP_NAME = re.compile(r"^(?P<base>.+)__(?P<day>\d{8})$")
+
+
+def backup_keep_days() -> int:
+    """How many days a backup is kept (env BACKUP_KEEP_DAYS, default 7; 0 = never drop any)."""
+    try:
+        return max(0, int(os.getenv("BACKUP_KEEP_DAYS", "7")))
+    except ValueError:
+        return 7
+
+
+def prune_backups(cursor, clean_schema: str, table: str, keep_days: int | None = None, today=None) -> list[str]:
+    """Drops this table's backups that are older than keep_days, never the newest one. Returns the names dropped.
+    A problem here is printed and ignored: it must never make a flatten fail."""
+    keep_days = backup_keep_days() if keep_days is None else keep_days
+    if keep_days <= 0:
+        return []
+    dropped: list[str] = []
+    try:
+        db, schema = clean_schema.split(".") if "." in clean_schema else (None, clean_schema)
+        backup_schema = f"{schema}_BACKUP"
+        info = f"{db}.INFORMATION_SCHEMA.TABLES" if db else "INFORMATION_SCHEMA.TABLES"
+        cursor.execute(f"SELECT table_name FROM {info} WHERE table_schema = %s AND table_type = 'BASE TABLE'",
+                       (backup_schema.upper(),))
+        mine = []
+        for (name,) in cursor.fetchall():
+            m = BACKUP_NAME.match(str(name))
+            if m and m.group("base").upper() == table.upper():
+                try:
+                    mine.append((datetime.strptime(m.group("day"), "%Y%m%d").date(), str(name)))
+                except ValueError:
+                    pass                      # looks like a backup but the date is not one: leave it alone
+        mine.sort()
+        cutoff = (today or datetime.now(timezone.utc).date()) - timedelta(days=keep_days)
+        for day, name in mine[:-1]:           # the newest is never in this list
+            if day < cutoff:
+                cursor.execute(f"DROP TABLE IF EXISTS {(db + '.') if db else ''}{backup_schema}.{name}")
+                dropped.append(name)
+        if dropped:
+            print(f"    backups older than {keep_days} days dropped: {', '.join(dropped)}")
+    except Exception as e:                    # noqa: BLE001 - best effort
+        print(f"    backup clean-up skipped ({table}): {e}")
+    return dropped
+
+
+# V3 TYPE CHECK (cast_clean_to_v3_types.py)
+#
+# A table that is in the facility's mapping file (and known to V3) is not built as the usual TRY_CAST view. Instead:
+#   1. its fields are read AS TEXT into a temporary table (nothing is silently turned into NULL),
+#   2. cast_clean_to_v3_types checks that text against V3's types (links are checked against the parents in RAW),
+#   3. OK     -> CLEAN.<table> becomes a TABLE (a snapshot rebuilt on every run) holding the typed, defaulted data,
+#      FAILED -> nothing is created or changed: the previous object stays, and TypingErrors is raised so the table fails.
+# Tables not in the mapping, and facilities with no mapping file, are built exactly as before.
+
+def _facility_of(clean_schema: str) -> str:
+    """SILVERWOOD_CLEAN (or HOSPITALS.SILVERWOOD_CLEAN) -> SILVERWOOD."""
+    name = clean_schema.split(".")[-1].upper()
+    return name[:-len("_CLEAN")] if name.endswith("_CLEAN") else name
+
+
+def _raw_parents(cursor, raw_schema: str, clean_schema: str, cast, table: str, structure, service: str, columns, derived) -> tuple[dict, list]:
+    """Copies the id (and patient id) of every parent table this table points to out of RAW into temporary tables, so
+    links are checked against the data as it is in RAW right now. Returns the names for check_table_for_flatten, and the
+    temporary tables made (to drop)."""
+    wanted = {p for _, p in cast.PARENTS} | set(cast.link_candidates(structure, table, service, columns, derived).values())
+    if not wanted:
+        return {}, []
+    marks = ", ".join(["%s"] * len(wanted))
+    cursor.execute(f"""SELECT source_table, COUNT(payload:"id"), COUNT(payload:"patient_id"), COUNT(payload:"patient")
+                       FROM {raw_schema}.EVENTS_RAW
+                       WHERE source_table IN ({marks}) AND IS_OBJECT(payload)
+                       GROUP BY 1""", tuple(sorted(wanted)))
+    out, made = {}, []
+    for source_table, n_id, n_patient_id, n_patient in cursor.fetchall():
+        if not n_id:
+            continue
+        patient = "patient_id" if n_patient_id else "patient" if n_patient else None
+        tmp = f"{clean_schema}.V3CHK_P_{str(source_table).upper()}"
+        extra = f', payload:"{patient}"::STRING AS "PATIENT_ID"' if patient else ""
+        cursor.execute(f"""CREATE OR REPLACE TEMPORARY TABLE {tmp} AS
+                           SELECT DISTINCT payload:"id"::STRING AS "ID"{extra}
+                           FROM {raw_schema}.EVENTS_RAW
+                           WHERE source_table = '{source_table}' AND IS_OBJECT(payload)""")
+        made.append(tmp)
+        out[str(source_table).lower()] = {"table": tmp, "id": '"ID"', "value": '"PATIENT_ID"' if patient else None}
+    return out, made
+
+
+def _flatten_checked(cursor, raw_schema: str, clean_schema: str, table: str, expanded_fields) -> dict | None:
+    """The V3-checked build of one table (see V3 TYPE CHECK above). None = this table does not use it.
+    Raises cast_clean_to_v3_types.TypingErrors when the check fails, before anything in CLEAN is touched."""
+    import cast_clean_to_v3_types as cast
+    facility = _facility_of(clean_schema)
+    mapped, derived = cast.load_mapping(facility)
+    service = mapped.get(table.lower())
+    if not service:
+        return None
+    structure = cast.get_v3_structure()
+    if not structure or structure.key(table, service) is None:
+        print(f"    {table}: not found in the V3 structure - built as before (no type check)")
+        return None
+    columns = ([{"name": "SOURCE_SCHEMA", "type": "TEXT", "nullable": True}] +
+               [{"name": n.upper(), "type": "VARIANT" if dtype in NESTED_TYPES else "TEXT", "nullable": True}
+                for n, _, dtype in expanded_fields])
+    tmp = f"{clean_schema}.V3CHK_{table.upper()}"
+    made = [tmp]
+    try:
+        cursor.execute(f"CREATE OR REPLACE TEMPORARY TABLE {tmp} AS\n{_flatten_select(raw_schema, table, expanded_fields, as_text=True)}")
+        raw_parents, parent_tmps = _raw_parents(cursor, raw_schema, clean_schema, cast, table, structure, service, columns, derived)
+        made += parent_tmps
+        result = cast.check_table_for_flatten(cursor, facility, table, tmp, columns, service,
+                                              structure=structure, derived=derived, raw_parents=raw_parents)
+        if not result["ok"]:
+            shown = result["errors"][:10]
+            for e in shown:
+                print(f"    ✗ {table} record {e['record_id']}: {e['error']}")
+            raise cast.TypingErrors(
+                f"{table}: {result['failed_records']} record(s) have errors; nothing was changed in {clean_schema} "
+                f"(the previous {table} stays as it was). Details in output/typing/", {table: result["failed_records"]})
+        print(f"    V3 type check OK ({result['skipped_records']} skipped, {len(result['changes'])} values changed or listed)")
+        # build next to the old object, then swap: the old one is only replaced once the new one exists
+        was = existing_object_type(cursor, clean_schema, table)
+        backup = backup_table(cursor, clean_schema, table) if was == "table" else None
+        new = f"{table}__V3NEW"
+        cursor.execute(f"CREATE OR REPLACE TABLE {clean_schema}.{new} AS\n{result['select_sql']}")
+        if was == "table":
+            cursor.execute(f"ALTER TABLE {clean_schema}.{table} SWAP WITH {clean_schema}.{new}")
+            cursor.execute(f"DROP TABLE {clean_schema}.{new}")
+        else:
+            if was == "view":
+                cursor.execute(f"DROP VIEW {clean_schema}.{table}")
+            cursor.execute(f"ALTER TABLE {clean_schema}.{new} RENAME TO {clean_schema}.{table}")
+        return {"object": "table", "was": was, "backup": backup, "typed": True,
+                "skipped": result["skipped_records"], "changes": len(result["changes"])}
+    finally:
+        for name in made:
+            try:
+                cursor.execute(f"DROP TABLE IF EXISTS {name}")
+            except Exception:              # noqa: BLE001 - temporary tables vanish with the session anyway
+                pass
+
+
 def flatten_table(cursor, raw_schema: str, clean_schema: str, table: str, expanded_fields,
                   materialize: str = "auto") -> dict:
     """Flatten one RAW source table into CLEAN.
@@ -291,10 +450,15 @@ def flatten_table(cursor, raw_schema: str, clean_schema: str, table: str, expand
       view   always a view — an existing table is backed up, dropped, replaced
       table  always a table, refreshed from RAW on every run
 
-    A table is cloned to <clean_schema>_BACKUP before it's replaced. Returns
-    {"object": view|table, "was": view|table|None, "backup": name|None}."""
+    A table is cloned to <clean_schema>_BACKUP before it's replaced (older backups are cleaned up, see BACKUP CLEAN-UP).
+    A table in the facility's mapping file is built by _flatten_checked instead (always a table; `materialize` is
+    ignored for it). Returns {"object": view|table, "was": view|table|None, "backup": name|None}."""
     if materialize not in MATERIALIZE_MODES:
         raise ValueError(f"materialize must be one of {MATERIALIZE_MODES}, not {materialize!r}")
+    checked = _flatten_checked(cursor, raw_schema, clean_schema, table, expanded_fields)
+    if checked is not None:
+        prune_backups(cursor, clean_schema, table)
+        return checked
     was = existing_object_type(cursor, clean_schema, table)
     target = materialize if materialize != "auto" else ("table" if was == "table" else "view")
     backup = backup_table(cursor, clean_schema, table) if was == "table" else None
@@ -303,6 +467,7 @@ def flatten_table(cursor, raw_schema: str, clean_schema: str, table: str, expand
     elif was == "view" and target == "table":
         cursor.execute(f"DROP VIEW {clean_schema}.{table}")
     cursor.execute(build_flatten_sql(raw_schema, clean_schema, table, expanded_fields, materialize=target))
+    prune_backups(cursor, clean_schema, table)
     return {"object": target, "was": was, "backup": backup}
 
 
