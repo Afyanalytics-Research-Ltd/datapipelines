@@ -43,7 +43,7 @@ def _safe(name: str) -> str:
 
 @dataclass(frozen=True)
 class StatePaths:
-    """Immutable paths for one (env, facility). Create a new one per facility."""
+    """Immutable paths for one (env, facility)."""
     root: Path
     watermark: Path
     progress: Path
@@ -53,36 +53,48 @@ class StatePaths:
     visit_admission: Path
     done: Path
     dead_letter: Path
-    pii_corruption: Path
     lock: Path
+    # pii_corruption removed
+
+    def file(self, name: str, ext: str = "json") -> Path:
+        name = name.lstrip(".")
+        if name.startswith("migration_"):
+            name = name[len("migration_"):]
+
+        if name in ("dead_letter", "failures"):
+            return self.dead_letter
+
+        return self.root / f".migration_{name}.{ext}"
 
     @classmethod
     def for_facility(cls, facility: str | None = None, base: Path | None = None,
                      env: str | None = None) -> "StatePaths":
         base = Path(base) if base else _DEFAULT_ROOT
-        env = MIGRATION_ENV if env is None else env.strip()
+        env = MIGRATION_ENV if env is None else (env or "").strip()
+
         if env:
             shared = base / ".migration_state" / _safe(env)
             d = shared / _safe(facility) if facility else shared
-        else:  # legacy layout
+        else:
             shared = base
             d = base / ".migration_state" / _safe(facility) if facility else base
+
         d.mkdir(parents=True, exist_ok=True)
         shared.mkdir(parents=True, exist_ok=True)
+
         return cls(
             root=d,
-            watermark=shared / ".migration_watermarks.json",   # shared across facilities, per env
+            watermark=shared / ".migration_watermarks.json",
             progress=d / ".migration_progress.json",
             record_progress=d / ".migration_record_progress.json",
             id_map=d / ".migration_id_map.json",
             visit_patient=d / ".migration_visit_patient.json",
             visit_admission=d / ".migration_visit_admission.json",
             done=d / ".migration_done.json",
-            dead_letter=shared / ".migration_failures.jsonl",   # shared append-only
-            pii_corruption=shared / ".migration_pii_corruption.jsonl",
+            dead_letter=shared / ".migration_failures.jsonl",
             lock=d / ".migration_run.lock",
+    
         )
-
 
 # ── "current" paths ──────────────────────────────────────────────────────────
 # Lookup order: this thread's paths -> the process-wide paths -> unscoped default.

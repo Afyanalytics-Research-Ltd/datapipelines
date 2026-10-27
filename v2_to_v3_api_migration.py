@@ -137,7 +137,7 @@ VISIT_ADMISSION_FILE = None
 DONE_FILE = None
 WATERMARK_FILE = None
 DEAD_LETTER_FILE = None
-PII_CORRUPTION_LOG = None
+
 
 
 def _sync_path_globals() -> None:
@@ -146,16 +146,16 @@ def _sync_path_globals() -> None:
     p = get_paths()
     global PROGRESS_FILE, RECORD_PROGRESS_FILE, ID_MAP_FILE
     global VISIT_PATIENT_FILE, VISIT_ADMISSION_FILE, DONE_FILE
-    global WATERMARK_FILE, DEAD_LETTER_FILE, PII_CORRUPTION_LOG
+    global WATERMARK_FILE, DEAD_LETTER_FILE
     PROGRESS_FILE = p.progress
     RECORD_PROGRESS_FILE = p.record_progress
-    ID_MAP_FILE = p.id_map
-    VISIT_PATIENT_FILE = p.visit_patient
-    VISIT_ADMISSION_FILE = p.visit_admission
+    ID_MAP_FILE = p.file("id_map")
+    VISIT_PATIENT_FILE = p.file("visit_patient")
+    VISIT_ADMISSION_FILE = p.file("visit_admission")
     DONE_FILE = p.done
     WATERMARK_FILE = p.watermark
     DEAD_LETTER_FILE = p.dead_letter
-    PII_CORRUPTION_LOG = p.pii_corruption
+   
 
 
 # Initialize defaults (repo root, no facility) so early imports/calls have real Paths
