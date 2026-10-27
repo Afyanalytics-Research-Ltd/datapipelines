@@ -1,0 +1,21 @@
+# One entry per domain. DSNs come from environment variables, never from this file.
+domains:
+  patients:
+    ingestor: patients              # custom subclass; omit to use generic_sql
+    source_dsn_env: SRC_DSN_CLINIC
+    source_table: public.patients
+    source_schema_ref: schemas/source/patients.json
+    target_schema_ref: schemas/target/patients.json
+    primary_keys: [patient_id]
+    watermark_column: updated_at
+    schedule: daily
+
+  visits:
+    source_dsn_env: SRC_DSN_CLINIC   # config-only domain, no code needed
+    source_table: public.visits
+    source_schema_ref: schemas/source/visits.json
+    target_schema_ref: schemas/target/visits.json
+    primary_keys: [visit_id]
+    watermark_column: updated_at
+    foreign_keys: {patient_id: patients.patient_id}
+    depends_on: [patients]
