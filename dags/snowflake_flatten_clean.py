@@ -18,6 +18,10 @@ Trigger form options (all optional):
               source_table currently in the facility's EVENTS_RAW.
   dedup       find duplicates before building CLEAN (default on). Off: CLEAN
               still leaves out the last dedup run's merges.
+  dedup_rules per-table changes to the default rules in dedup_rules.py, for
+              every facility in the run, e.g. {"patients": {"burst_seconds": 300},
+              "invoice_items": {"disabled": true}}. Saved per facility, so later
+              runs (ingestion's included) keep them; {"patients": {}} drops one.
   trigger_v3  on success, trigger snowflake_to_v3_migration for the same
               facilities/tables. Old-system-history tables are never passed
               on — they aren't meant to be inserted table-by-table into V3.
@@ -62,6 +66,13 @@ V3_DAG_ID = "snowflake_to_v3_migration"
 FACILITIES = facility_keys()
 
 
+def _dedup_rules(params) -> dict:
+    rules = params.get("dedup_rules") or {}
+    if not all(isinstance(r, dict) for r in rules.values()):
+        raise AirflowFailException('Dedup rules: each table needs an object, e.g. {"patients": {"disabled": true}}.')
+    return {t.strip().lower(): r for t, r in rules.items()}
+
+
 @dag(
     dag_id=DAG_ID,
     description="Flatten RAW.EVENTS_RAW JSON into deduplicated, typed CLEAN views",
@@ -84,6 +95,10 @@ FACILITIES = facility_keys()
                                          "Tables are backed up to {FAC}_CLEAN_BACKUP before being replaced."),
         "dedup": Param(True, type="boolean", title="Dedup",
                        description="Find duplicates in RAW before building CLEAN (results in HOSPITALS.DEDUP)."),
+        "dedup_rules": Param({}, type="object", title="Dedup rules",
+                             description='Per-table changes to the default rules, e.g. {"patients": '
+                                         '{"burst_seconds": 300}, "invoice_items": {"disabled": true}}. '
+                                         'Saved per facility for later runs; {"patients": {}} drops a change.'),
         "trigger_v3": Param(False, type="boolean", title="Trigger V3 migration after flatten",
                             description="Writes to V3. Old-system-history tables are excluded."),
     },
@@ -93,6 +108,7 @@ def snowflake_flatten_clean():
     @task
     def plan() -> list[dict]:
         use_pipelines_dir()
+        import dedup_rules
         import flatten_jsons_schemas as fl
 
         p = get_current_context()["params"]
@@ -100,6 +116,12 @@ def snowflake_flatten_clean():
         wanted = set(clean_list(p["tables"]))
         if not facilities:
             raise AirflowFailException("Pick at least one facility.")
+        rules = _dedup_rules(p)
+        for t in rules:
+            try:
+                dedup_rules.rules_for(t, rules)
+            except ValueError as e:
+                raise AirflowFailException(str(e))
 
         items: list[dict] = []
         conn = fl._snowflake_connect()
@@ -168,7 +190,7 @@ def snowflake_flatten_clean():
         import dedup
 
         results = dedup.run(f"HOSPITALS.{raw_schema(item['facility'])}", facility=item["facility"],
-                            fields=item["fields"])
+                            fields=item["fields"], overrides=_dedup_rules(get_current_context()["params"]))
         merged = sum(r.merged_away for r in results.values())
         review = sum(len(r.review) for r in results.values())
         log.info("%s: %d records merged away, %d pairs for review", item["facility"], merged, review)

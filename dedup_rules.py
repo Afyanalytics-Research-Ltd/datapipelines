@@ -1,8 +1,10 @@
 """
 dedup_rules.py — default duplicate rules, one per V3 table, for every hospital.
 
-A field a hospital lacks is skipped. A hospital can override a table in its
-mappings JSON: "dedup": {"patients": {"burst_seconds": 300}, "invoice_items": {"disabled": true}}.
+A field a hospital lacks is skipped. A run can change a hospital's rules per table
+(the flatten DAG's dedup_rules param, or the "dedup" block of dedup.py --mappings):
+{"patients": {"burst_seconds": 300}, "invoice_items": {"disabled": true}}. Changes are
+saved for that hospital (HOSPITALS.DEDUP.RULES) and kept by later runs; {} for a table drops its change.
 Every table also gets the load / version pass (same ID twice → newest copy kept).
 
 person     merged on a strong id, same name + exact DOB, same name registered within
@@ -159,6 +161,15 @@ DEFAULT_RULES: dict[str, dict] = {
 }
 
 
+# What each type of rule reads; anything else in a rule is a typo.
+_SETTINGS = {
+    "person": {"name", "dob", "gender", "phone", "strong_ids", "registered", "burst_seconds"},
+    "event": {"group", "time", "agree", "optional", "auto_seconds", "review_seconds", "review_differences",
+              "review_untimed", "review_minutes", "auto_identical_text"},
+    "catalogue": {"keys", "attrs", "review_if_differs"},
+}
+
+
 def rules_for(table: str, overrides: dict | None = None) -> dict | None:
     """The rule for a V3 table: the default, with a hospital's mappings-JSON
     override laid over it ({"disabled": true} switches it off). None = no
@@ -173,6 +184,32 @@ def rules_for(table: str, overrides: dict | None = None) -> dict | None:
                                    for k, v in extra.items()}}
         if "group" in rule:            # JSON lists of lists → tuples of tuples
             rule["group"] = tuple(tuple(g) if isinstance(g, (list, tuple)) else (g,) for g in rule["group"])
-    if rule and rule.get("type") not in ("person", "event", "catalogue"):
+    if rule and rule.get("type") not in _SETTINGS:
         raise ValueError(f"dedup rule for {table}: unknown type {rule.get('type')!r}")
+    unknown = set(rule or {}) - _SETTINGS.get((rule or {}).get("type"), set()) - {"type"}
+    if unknown:
+        raise ValueError(f"dedup rule for {table}: no setting {', '.join(sorted(unknown))}")
     return rule
+
+
+def merge_rules(saved: dict | None, changes: dict | None) -> dict:
+    """A hospital's saved changes with this run's laid over, table by table; {} drops a table's change."""
+    out = {t.lower(): r for t, r in (saved or {}).items()}
+    for t, r in (changes or {}).items():
+        if r:
+            out[t.lower()] = r
+        else:
+            out.pop(t.lower(), None)
+    return out
+
+
+def changed_fields(change: dict) -> set[str]:
+    out = set()
+    for k, v in change.items():
+        if k == "keys":
+            out.update(f for spec in v for f in spec["fields"])
+        elif k == "group":
+            out.update(f for alts in v for f in ([alts] if isinstance(alts, str) else alts))
+        elif isinstance(v, (list, tuple)):
+            out.update(v)
+    return out

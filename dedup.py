@@ -10,6 +10,7 @@ Writes to HOSPITALS.DEDUP, shared by all hospitals (FACILITY column):
   LOG        every decision with its evidence (replaced each run)
   RUNS       rows in / out per table per run
   DECISIONS  the team's answers to review pairs ('same' / 'different'), used next run
+  RULES      the hospital's rule changes (dedup_rules.py), kept for later runs
 snowflake_flatten_clean runs it between working out RAW's fields and building CLEAN, and
 CLEAN leaves out the records merged away (crosswalk_select).
 
@@ -810,6 +811,25 @@ def load_decisions(cur, out_schema: str, facility: str) -> dict:
     return {(t, frozenset((str(a), str(b)))): d for t, a, b, d in cur.fetchall()}
 
 
+def saved_rules(cur, out_schema: str, facility: str) -> dict:
+    db, name = _split(out_schema)
+    cur.execute(f"SELECT COUNT(*) FROM {db}.INFORMATION_SCHEMA.TABLES WHERE table_schema = %s AND table_name = 'RULES'",
+                (name,))
+    if not cur.fetchone()[0]:
+        return {}
+    cur.execute(f"SELECT V3_TABLE, RULE FROM {out_schema}.RULES WHERE FACILITY = %s", (facility,))
+    return {t: json.loads(r) for t, r in cur.fetchall()}
+
+
+def _check_changes(overrides: dict, described: dict, input_schema: str) -> None:
+    """A changed rule's fields must be in its table: a misspelt one would quietly drop a check."""
+    for t, change in sorted(overrides.items()):
+        if t in described and not change.get("disabled"):
+            missing = sorted(dr.changed_fields(change) - described[t][1].keys())
+            if missing:
+                raise ValueError(f"dedup rule for {t}: {input_schema} has no {', '.join(missing)} in {t}")
+
+
 def _lit(v: str) -> str:
     return "'" + v.replace("'", "''") + "'"
 
@@ -866,6 +886,7 @@ def _create_outputs(cur, out_schema: str) -> None:
     cur.execute(f"CREATE TABLE IF NOT EXISTS {p}RUNS (FACILITY STRING, RUN_ID STRING, INPUT_SCHEMA STRING, "
                 f"V3_TABLE STRING, ROWS_IN NUMBER, ROWS_OUT NUMBER, MERGED_AWAY NUMBER, COPIES_DROPPED NUMBER, "
                 f"REVIEW_PAIRS NUMBER, RULE STRING, FINISHED_AT TIMESTAMP_TZ)")
+    cur.execute(f"CREATE TABLE IF NOT EXISTS {p}RULES (FACILITY STRING, V3_TABLE STRING, RULE STRING, RUN_ID STRING)")
 
 
 def _insert(cur, table: str, rows: list[tuple], n: int, chunk: int = 5000) -> None:
@@ -885,7 +906,11 @@ def run(input_schema: str, output_schema: str = OUTPUT_SCHEMA, *, facility: str 
     conn = _connect()
     try:
         cur = conn.cursor()
+        overrides = dr.merge_rules(saved_rules(cur, output_schema, facility), overrides)
+        for t in overrides:
+            dr.rules_for(t, overrides)
         described = raw_tables(cur, input_schema, tables, overrides, fields)
+        _check_changes(overrides, described, input_schema)
         if not described and tables:
             raise SystemExit(f"None of {tables} in {input_schema}.EVENTS_RAW")
         if not described:
@@ -914,7 +939,7 @@ def run(input_schema: str, output_schema: str = OUTPUT_SCHEMA, *, facility: str 
         p = f"{output_schema}."
         # this hospital's rows are swapped in one transaction, so readers never see a half-written crosswalk
         cur.execute("BEGIN")
-        for t in ("CROSSWALK", "REVIEW", "LOG"):
+        for t in ("CROSSWALK", "REVIEW", "LOG", "RULES"):
             cur.execute(f"DELETE FROM {p}{t} WHERE FACILITY = %s", (facility,))
         _insert(cur, f"{p}CROSSWALK", [(facility, t, l, s, k, c, run_id) for t, r in results.items()
                                        for l, s, k, c in r.crosswalk], 7)
@@ -922,6 +947,7 @@ def run(input_schema: str, output_schema: str = OUTPUT_SCHEMA, *, facility: str 
                                     for a, b, k, ru in r.review], 7)
         _insert(cur, f"{p}LOG", [(facility, run_id, e.table, e.a, e.b, e.kind, e.rule, e.action,
                                   json.dumps(e.evidence, default=str)) for r in results.values() for e in r.log], 9)
+        _insert(cur, f"{p}RULES", [(facility, t, json.dumps(r), run_id) for t, r in sorted(overrides.items())], 4)
         now = datetime.now(timezone.utc).isoformat()
         _insert(cur, f"{p}RUNS", [(facility, run_id, input_schema, t, r.rows_in, r.rows_out, r.merged_away,
                                    r.copies_dropped, len(r.review), json.dumps(dr.rules_for(t, overrides), default=str),

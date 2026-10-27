@@ -374,6 +374,21 @@ def test_mappings_override_changes_or_disables_a_rule():
     assert dr.rules_for("patients")["burst_seconds"] == 600          # defaults untouched
 
 
+def test_a_misspelt_setting_or_field_is_refused():
+    with pytest.raises(ValueError, match="no setting burst_second"):
+        dr.rules_for("patients", {"patients": {"burst_second": 5}})
+    described = {"patients": ("q", {"id": ("ID", "NUMBER"), "file_no": ("FILE_NO", "STRING")})}
+    d._check_changes({"patients": {"strong_ids": ["file_no"]}}, described, "R")
+    with pytest.raises(ValueError, match="has no fileno in patients"):
+        d._check_changes({"patients": {"strong_ids": ["fileno"]}}, described, "R")
+
+
+def test_saved_changes_carry_over_and_an_empty_one_drops_them():
+    saved = {"patients": {"burst_seconds": 300}, "visits": {"auto_seconds": 60}}
+    assert dr.merge_rules(saved, {"Visits": {}, "invoices": {"disabled": True}}) == {
+        "patients": {"burst_seconds": 300}, "invoices": {"disabled": True}}
+
+
 def test_missing_fields_degrade_instead_of_failing():
     rows = [{"id": "1", "last_name": "Kamau"}, {"id": "2", "last_name": "Kamau"}]   # no first name, dob, phone …
     out = _run_patients(rows)
