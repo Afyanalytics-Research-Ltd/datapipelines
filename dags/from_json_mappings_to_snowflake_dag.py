@@ -13,7 +13,11 @@ extraction tool and becomes the schemas <NAME>_RAW / <NAME>_CLEAN.
   report        rows per V3 table + mapped-field coverage; fails if any table failed
 
 Trigger form options:
-  mappings  mappings JSON file name (repo root) or absolute path
+  mappings  mappings JSON file name (repo root) or absolute path — or the
+            mappings JSON itself (text, or an object in the trigger conf:
+            {"mappings": {"connection": {"id": 35}, "tables": […], "fields": […]}}).
+            Inline JSON is checked in `plan` and saved once under
+            output/inline_mappings/<content hash>.json for the per-table tasks.
   tables    only these source tables (one per line). Empty = all in the file.
   dry_run   extract and map, write nothing
 
@@ -24,8 +28,12 @@ EXTRACTION_PAGE_WORKERS (default 4).
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
+import os
 import sys
+import uuid
 from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -41,11 +49,45 @@ log = logging.getLogger(__name__)
 DAG_ID = "from_json_mappings_to_snowflake"
 
 
-def _mappings_path(value: str) -> Path:
-    path = Path(value.strip())
+INLINE_DIR = Path("output") / "inline_mappings"     # under PIPELINES_DIR, shared by every worker
+
+
+def _mappings_path(value) -> Path:
+    """The trigger's "mappings" → a mappings file every mapped task can read:
+      a file name (repo root) or absolute path  → that file
+      JSON text, or a JSON object (trigger conf) → checked, then saved once under
+                                                    output/inline_mappings/<content hash>.json
+    Inline mappings travel as a path, not as XCom: a real export is ~200 KB and the
+    per-table tasks would each carry a copy."""
+    import from_json_mappings_to_snowflake as fj
+
+    try:
+        if isinstance(value, str) and fj.looks_like_json(value):
+            value = fj.parse_json_text(value)          # → the object, or a quoted file name (str)
+        if isinstance(value, (dict, list)):
+            doc, _ = fj.read_mappings(value)
+            return _save_inline(doc)
+    except fj.MappingsError as e:
+        raise AirflowFailException(str(e)) from None
+    if not isinstance(value, str) or not value.strip():
+        raise AirflowFailException("mappings must be a file name / path, JSON text or a JSON object, got "
+                                   + (repr(value) if isinstance(value, str) else type(value).__name__))
+    path = Path(value.strip()).expanduser()
     path = path if path.is_absolute() else PIPELINES_DIR / path
     if not path.is_file():
         raise AirflowFailException(f"Mappings file not found: {path}")
+    return path
+
+
+def _save_inline(doc: dict) -> Path:
+    text = json.dumps(doc, ensure_ascii=False, sort_keys=True, indent=1)
+    path = PIPELINES_DIR / INLINE_DIR / f"{hashlib.sha256(text.encode('utf-8')).hexdigest()[:16]}.json"
+    if not path.is_file():                              # same content → same file: re-runs reuse it
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(f".{uuid.uuid4().hex}.tmp")   # unique per writer: concurrent saves can't clash
+        tmp.write_text(text, encoding="utf-8")
+        os.replace(tmp, path)
+    log.info("inline mappings saved as %s", path)
     return path
 
 
@@ -60,8 +102,9 @@ def _mappings_path(value: str) -> Path:
     tags=["snowflake", "extraction", "ingest"],
     default_args={"owner": "data-eng", "retries": 1, "retry_delay": timedelta(minutes=2)},
     params={
-        "mappings": Param("silverwood_data_mappings.json", type="string", title="Mappings JSON",
-                          description="File in the repo root, or an absolute path."),
+        "mappings": Param("silverwood_data_mappings.json", type=["string", "object"], title="Mappings JSON",
+                          description='File in the repo root, an absolute path, or the mappings JSON itself '
+                                      '({"connection": {"id": …}, "tables": […], "fields": […]}).'),
         "tables": Param([], type="array", items={"type": "string"}, title="Source tables",
                         description="Only these source tables (one per line). Empty = all in the file."),
         "dry_run": Param(False, type="boolean", title="Dry run", description="Extract and map; write nothing."),
@@ -76,7 +119,10 @@ def from_json_mappings_to_snowflake():
 
         p = get_current_context()["params"]
         path = _mappings_path(p["mappings"])
-        spec = fj.Mappings.load(path)
+        try:
+            spec = fj.Mappings.load(path)
+        except fj.MappingsError as e:
+            raise AirflowFailException(str(e)) from None
         wanted = clean_list(p["tables"])
         unknown = sorted(set(wanted) - set(spec.source_tables))
         if unknown:
