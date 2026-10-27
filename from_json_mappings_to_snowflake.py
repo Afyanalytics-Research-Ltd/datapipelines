@@ -5,7 +5,9 @@ structure, driven by nothing but a connection's mappings export
 (e.g. silverwood_data_mappings.json).
 
 INPUT   one mappings JSON: {"connection": {"id": …}, "tables": [source table →
-        V3 model], "fields": [source column → V3 field, per table/model]}.
+        V3 model], "fields": [source column → V3 field, per table/model]} —
+        given as a file path, as the JSON text itself, or (from Python / an
+        Airflow trigger conf) as the parsed object. See read_mappings().
 
 FLOW
   1. NAME     GET /connections/<id> → the connection's name ("silverwood") →
@@ -35,6 +37,8 @@ Then flatten into <NAME>_CLEAN with the existing step
 USAGE
   python from_json_mappings_to_snowflake.py                             # default mappings file
   python from_json_mappings_to_snowflake.py --mappings other.json
+  python from_json_mappings_to_snowflake.py --mappings '{"connection": {"id": 35}, "tables": [...], "fields": [...]}'
+  cat other.json | python from_json_mappings_to_snowflake.py --mappings -   # JSON on stdin
   python from_json_mappings_to_snowflake.py --list                      # what the file covers
   python from_json_mappings_to_snowflake.py --tables person patient_visit
   python from_json_mappings_to_snowflake.py --dry-run                   # extract + map, write nothing
@@ -224,10 +228,14 @@ class V3Model:
                 continue                      # the source id stays the record's id
             rule = _rule(f)
             column = rule.get("column") or column
-            if (rule.keys() & {"lookup", "map", "part"}) and target != column and row.get(target) is not None:
-                # the extraction tool already worked this field out (lookup,
-                # code conversion, divide) — applying the rule again would
-                # e.g. look a patient id up as an invoice number
+            if ((rule.keys() & {"lookup", "map", "part"}) and target != column
+                    and row.get(column) is None and row.get(target) is not None):
+                # the source column isn't sent but the extraction tool worked
+                # this field out itself (its lookup / code conversion / divide
+                # rules) — applying the rule again would e.g. look a patient
+                # id up as an invoice number. When the source column IS sent,
+                # the rule is applied here: the tool stores rules posted
+                # through its API as plain copies.
                 value = _apply_rule({"steps": rule.get("steps", [])}, row[target])
             else:
                 # the source column, else a name the extraction tool already
@@ -254,15 +262,120 @@ class V3Model:
         return {t: cols for t, cols in by_target.items() if len(cols) > 1}
 
 
+class MappingsError(ValueError):
+    """The mappings can't be used: file missing, not JSON, or not shaped like a mappings export."""
+
+
+INLINE_LABEL = "inline mappings JSON"
+
+
+def looks_like_json(text: str) -> bool:
+    """True for JSON text ({…}, […] or a JSON-encoded string "…") — anything else is a file path."""
+    s = text.lstrip("﻿ \t\r\n")
+    return s[:1] in ("{", "[", '"')
+
+
+def parse_json_text(text: str, label: str = INLINE_LABEL):
+    """JSON text → its value. A JSON-encoded JSON text ("{\\"connection\\": …}", as it arrives when
+    pasted escaped into a trigger conf) is decoded once more; a JSON string that isn't JSON (a quoted
+    file path) comes back as that str."""
+    try:
+        doc = json.loads(text.lstrip("﻿").strip())
+    except json.JSONDecodeError as e:
+        raise MappingsError(f"{label} is not valid JSON: {e.msg} (line {e.lineno}, column {e.colno})") from None
+    if isinstance(doc, str) and looks_like_json(doc) and doc.lstrip("﻿ \t\r\n")[:1] != '"':
+        return parse_json_text(doc, label)
+    return doc
+
+
+def _check_shape(doc, label: str) -> None:
+    """What Mappings.load relies on, checked up front so a bad input fails with a clear message
+    instead of a KeyError half-way through."""
+    if not isinstance(doc, dict):
+        raise MappingsError(f'{label}: expected a JSON object {{"connection": …, "tables": […], "fields": […]}}, '
+                            f"got {type(doc).__name__}")
+    conn = doc.get("connection")
+    if not isinstance(conn, dict) or "id" not in conn:
+        raise MappingsError(f'{label}: "connection" must be an object with an "id"')
+    if isinstance(conn["id"], bool):
+        raise MappingsError(f'{label}: connection "id" must be a number, got {conn["id"]!r}')
+    try:
+        int(conn["id"])
+    except (TypeError, ValueError):
+        raise MappingsError(f'{label}: connection "id" must be a number, got {conn["id"]!r}') from None
+    tables = doc.get("tables")
+    if not isinstance(tables, list) or not tables:
+        raise MappingsError(f'{label}: "tables" must be a non-empty list of source table → V3 model entries')
+    for i, t in enumerate(tables):
+        if not isinstance(t, dict):
+            raise MappingsError(f"{label}: tables[{i}] must be an object, got {type(t).__name__}")
+        for key in ("source table", "v3 model"):
+            if not isinstance(t.get(key), str) or not t[key].strip():
+                raise MappingsError(f'{label}: tables[{i}] needs a "{key}"')
+    fields = doc.get("fields", [])
+    if not isinstance(fields, list):
+        raise MappingsError(f'{label}: "fields" must be a list')
+    for i, f in enumerate(fields):
+        if not isinstance(f, dict):
+            raise MappingsError(f"{label}: fields[{i}] must be an object, got {type(f).__name__}")
+        if not f.get("table") or not (f.get("v3_table") or f.get("model")) or not f.get("field"):
+            raise MappingsError(f'{label}: fields[{i}] needs "table", "field" and "v3_table" or "model"')
+
+
+def read_mappings(source) -> tuple[dict, str]:
+    """The mappings document and a label for messages, from any of:
+      a file path (Path or str)     silverwood_data_mappings.json, /abs/path.json
+      JSON text                     '{"connection": {"id": 35}, "tables": [...], "fields": [...]}'
+                                    (also JSON-encoded twice, or a JSON string holding a path)
+      an already-parsed dict        e.g. an Airflow trigger conf object
+    Raises MappingsError with a readable message for anything unusable."""
+    if isinstance(source, (bytes, bytearray)):
+        try:
+            source = bytes(source).decode("utf-8-sig")
+        except UnicodeDecodeError:
+            raise MappingsError("Mappings bytes are not UTF-8 text") from None
+    if isinstance(source, (dict, list)):               # a list fails the shape check with a clear message
+        doc, label = source, INLINE_LABEL
+    elif isinstance(source, str):
+        text = source.lstrip("﻿").strip()
+        if not text:
+            raise MappingsError("No mappings given: pass a mappings JSON file path or the JSON itself")
+        if looks_like_json(text):
+            doc, label = parse_json_text(text), INLINE_LABEL
+            if isinstance(doc, str):                   # a quoted file path: "silverwood_data_mappings.json"
+                if not doc.strip():
+                    raise MappingsError("No mappings given: the JSON string is empty")
+                return read_mappings(Path(doc.strip()))
+        else:
+            return read_mappings(Path(text))
+    elif isinstance(source, os.PathLike):
+        path = Path(source).expanduser()
+        if path.is_dir():
+            raise MappingsError(f"Mappings path is a directory, not a JSON file: {path}")
+        if not path.is_file():
+            raise MappingsError(f"Mappings file not found: {path}")
+        try:
+            text = path.read_text(encoding="utf-8-sig")
+        except UnicodeDecodeError:
+            raise MappingsError(f"Mappings file {path.name} is not UTF-8 text") from None
+        doc, label = parse_json_text(text, f"Mappings file {path.name}"), path.name
+    else:
+        raise MappingsError(f"Mappings must be a file path, JSON text or a dict, not {type(source).__name__}")
+    _check_shape(doc, label)
+    return doc, label
+
+
 @dataclass
 class Mappings:
     connection_id: int
     exported_name: str
     models: list[V3Model]
+    label: str = ""                                    # file name, or INLINE_LABEL — for messages
 
     @classmethod
-    def load(cls, path: Path) -> "Mappings":
-        doc = json.loads(Path(path).read_text())
+    def load(cls, source) -> "Mappings":
+        """source: a mappings file path, the mappings JSON text, or the parsed dict (see read_mappings)."""
+        doc, label = read_mappings(source)
         # A field belongs to a table entry by (source table, V3 table); fields
         # exported without a v3_table by (source table, model), where model is
         # the full namespace or, in older exports, its last part.
@@ -279,13 +392,13 @@ class Mappings:
                           fields_for(t), t.get("where")) for t in doc["tables"]]
         dupes = sorted(n for n, c in Counter(m.table for m in models).items() if c > 1)
         if dupes:
-            raise SystemExit(f"{Path(path).name}: several entries map to the same V3 table: {dupes}")
+            raise MappingsError(f"{label}: several entries map to the same V3 table: {dupes}")
         for mdl in models:
             for target, cols in mdl.shared_targets.items():
                 log.warning("%s → %s: %s all map to %r — the first with a value is used",
                             mdl.source_table, mdl.table, ", ".join(cols), target)
         conn = doc["connection"]
-        return cls(int(conn["id"]), str(conn.get("name") or ""), models)
+        return cls(int(conn["id"]), str(conn.get("name") or ""), models, label)
 
     @property
     def source_tables(self) -> list[str]:
@@ -535,12 +648,13 @@ def print_report(results: list[TableResult]) -> None:
             print(f"  {table:42s} {r.source_table:30s} {info['rows']:>6}  {len(filled)}/{len(info['fields'])}{note}")
 
 
-def run(mappings: Path = DEFAULT_MAPPINGS, *, tables: list[str] | None = None, name: str | None = None,
+def run(mappings: Path | str | dict = DEFAULT_MAPPINGS, *, tables: list[str] | None = None, name: str | None = None,
         dry_run: bool = False, workers: int = 6, per_page: int = 500, page_workers: int = 4) -> list[TableResult]:
+    """mappings: a mappings file path, the mappings JSON text, or the parsed dict."""
     spec = Mappings.load(mappings)
     unknown = sorted(set(tables or []) - set(spec.source_tables))
     if unknown:
-        raise SystemExit(f"Not in {Path(mappings).name}: {unknown}")
+        raise SystemExit(f"Not in {spec.label}: {unknown}")
     selected = [t for t in spec.source_tables if not tables or t in tables]
     client = ExtractionClient(spec.connection_id, per_page=per_page, page_workers=page_workers)
     wh = Warehouse(name or resolve_name(spec, client))
@@ -563,7 +677,9 @@ def run(mappings: Path = DEFAULT_MAPPINGS, *, tables: list[str] | None = None, n
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--mappings", type=Path, default=DEFAULT_MAPPINGS, help="The connection's mappings export (JSON)")
+    ap.add_argument("--mappings", default=str(DEFAULT_MAPPINGS),
+                    help="The connection's mappings export: a JSON file path, the JSON itself "
+                         "('{\"connection\": …}'), or - to read the JSON from stdin")
     ap.add_argument("--tables", nargs="+", help="Only these source tables")
     ap.add_argument("--name", help="Override the schema name (default: the connection's name in the extraction tool)")
     ap.add_argument("--list", action="store_true", help="Show what the mappings file covers and exit")
@@ -576,13 +692,17 @@ def main() -> None:
     for noisy in ("snowflake.connector", "botocore", "urllib3", "facility_pipeline"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
 
+    source = sys.stdin.read() if args.mappings.strip() == "-" else args.mappings
+    try:
+        spec = Mappings.load(source)
+    except MappingsError as e:
+        raise SystemExit(f"error: {e}") from None
     if args.list:
-        spec = Mappings.load(args.mappings)
-        print(f"connection {spec.connection_id} (export name {spec.exported_name!r})")
+        print(f"connection {spec.connection_id} (export name {spec.exported_name!r}) · {spec.label}")
         for m in sorted(spec.models, key=lambda m: (m.source_table, m.table)):
             print(f"  {m.source_table:32s} → {m.table:42s} {m.namespace}  ({len(m.fields)} fields)")
         return
-    results = run(args.mappings, tables=args.tables, name=args.name, dry_run=args.dry_run,
+    results = run(source, tables=args.tables, name=args.name, dry_run=args.dry_run,
                   workers=args.workers, per_page=args.per_page, page_workers=args.page_workers)
     sys.exit(1 if any(r.status == "failed" for r in results) else 0)
 
