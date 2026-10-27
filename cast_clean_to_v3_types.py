@@ -39,6 +39,10 @@ the way to spot a wrong guess. Do not point the migration at guessed output.
 
 ENV: SNOWFLAKE_USER, SNOWFLAKE_ACCOUNT, SNOWFLAKE_WAREHOUSE, SNOWFLAKE_DATABASE,
      SNOWFLAKE_SCHEMA, SNOWFLAKE_PRIVATE_KEY_PATH  (same .env as the rest of the repo)
+     V3_SCHEMA_PATH   (optional) full path of the V3 structure file
+     V3_MAPPINGS_DIR  (optional) folder of the <facility>_data_mappings.json files
+     Not set: the first dags/jsons folder that has the file is used (next to this script, /opt/airflow/pipelines/dags/jsons,
+     /opt/airflow/dags/jsons, ./dags/jsons). A path set in the environment that does not exist is an error.
 """
 
 from __future__ import annotations
@@ -340,11 +344,60 @@ class V3Structure:
         return need - SYSTEM_COLUMNS
 
 
+# WHERE THE JSON FILES ARE. Both can be set from the environment, as full paths, so a server never has to guess:
+#   V3_SCHEMA_PATH   the V3 structure file, e.g. /opt/airflow/pipelines/dags/jsons/v3-schema.json
+#   V3_MAPPINGS_DIR  the folder holding <facility>_data_mappings.json, e.g. /opt/airflow/pipelines/dags/jsons
+# Not set = the first of these folders that has the file (so it is found wherever the repo is deployed):
+#   1. dags/jsons next to this script          (a checkout, or the repo mounted anywhere)
+#   2. /opt/airflow/pipelines/dags/jsons       (the repo mounted by docker-compose on the Airflow server)
+#   3. /opt/airflow/dags/jsons                 (the dags folder mounted by docker-compose)
+#   4. dags/jsons under the current folder
+# A path that IS set in the environment but is wrong is an error, never a silent fallback.
+V3_SCHEMA_ENV, V3_MAPPINGS_ENV = "V3_SCHEMA_PATH", "V3_MAPPINGS_DIR"
+
+
+def json_dirs() -> list[Path]:
+    """The folders searched for the JSON files when no environment path is set, in order."""
+    return [Path(__file__).resolve().parent / "dags" / "jsons", Path("/opt/airflow/pipelines/dags/jsons"),
+            Path("/opt/airflow/dags/jsons"), Path.cwd() / "dags" / "jsons"]
+
+
+def _find(name: str) -> tuple[Path, list[Path]]:
+    """The first existing <folder>/<name>, and every path tried (the first one is returned when none exists, for messages)."""
+    tried = [d / name for d in json_dirs()]
+    return next((t for t in tried if t.is_file()), tried[0]), tried
+
+
+def v3_schema_path() -> Path:
+    """The V3 structure file this script will read: $V3_SCHEMA_PATH, else the first dags/jsons folder that has v3-schema.json."""
+    env = os.getenv(V3_SCHEMA_ENV, "").strip()
+    return Path(env) if env else _find("v3-schema.json")[0]
+
+
+def v3_schema_tried() -> str:
+    """Every place the V3 structure file is looked for, as text for an error message."""
+    env = os.getenv(V3_SCHEMA_ENV, "").strip()
+    return env if env else ", ".join(str(t) for t in _find("v3-schema.json")[1])
+
+
+def mapping_path(facility: str) -> Path:
+    """The mapping file of a facility: in $V3_MAPPINGS_DIR, else in the first dags/jsons folder that has it."""
+    name = f"{facility.lower()}_data_mappings.json"
+    env = os.getenv(V3_MAPPINGS_ENV, "").strip()
+    return Path(env) / name if env else _find(name)[0]
+
+
 def get_v3_structure(path: str | None = None) -> V3Structure:
-    """Reads v3-schema.json into a V3Structure. No path = dags/jsons/v3-schema.json next to this script; no file at all = an empty structure."""
+    """Reads the V3 structure file into a V3Structure. Path order: the argument, $V3_SCHEMA_PATH, dags/jsons/v3-schema.json
+    next to this script. A path that was given (argument or environment) but does not exist raises FileNotFoundError;
+    only the default location missing gives an empty structure (the script then GUESSES types)."""
     v = V3Structure()
-    default = Path(__file__).resolve().parent / "dags" / "jsons" / "v3-schema.json"
-    path = path or (str(default) if default.is_file() else None)
+    given = path or os.getenv(V3_SCHEMA_ENV, "").strip()
+    if given and not Path(given).is_file():
+        raise FileNotFoundError(f"V3 structure file not found: {given}" +
+                                (f" (set by ${V3_SCHEMA_ENV})" if not path else ""))
+    default = v3_schema_path()
+    path = given or (str(default) if default.is_file() else None)
     if not path:
         return v
     with open(path, encoding="utf-8-sig") as fh:
@@ -372,9 +425,12 @@ def get_v3_structure(path: str | None = None) -> V3Structure:
 
 def load_mapping(facility: str, path: str | None = None) -> tuple[dict[str, str], set]:
     """Reads the mapping JSON: which V3 service each V3 table belongs to, and which (table, field) are not plain copies of a source column."""
-    path = Path(path) if path else Path(__file__).resolve().parent / "dags" / "jsons" / f"{facility.lower()}_data_mappings.json"
+    env_dir = os.getenv(V3_MAPPINGS_ENV, "").strip()
+    if env_dir and not path and not Path(env_dir).is_dir():
+        raise FileNotFoundError(f"mapping folder not found: {env_dir} (set by ${V3_MAPPINGS_ENV})")
+    path = Path(path) if path else mapping_path(facility)
     if not path.is_file():
-        print("Mapping file: none found - tables are matched to V3 by name only")
+        print(f"Mapping file: none found at {path} - tables are matched to V3 by name only")
         return {}, set()
     doc = json.loads(path.read_text(encoding="utf-8-sig"))
     mapped = {str(t["v3 table"]).lower(): t["v3 service"] for t in doc.get("tables", [])

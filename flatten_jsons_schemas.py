@@ -408,8 +408,11 @@ def _flatten_checked(cursor, raw_schema: str, clean_schema: str, table: str, exp
     service = mapped.get(table.lower())
     if not service:
         return None
-    structure = cast.get_v3_structure()
-    if not structure or structure.key(table, service) is None:
+    structure = cast.get_v3_structure()      # a V3_SCHEMA_PATH that does not exist raises here, naming the path
+    if not structure:
+        raise RuntimeError(f"{table} is in the mapping but the V3 structure file was not found. Looked in: {cast.v3_schema_tried()}. "
+                           f"Set {cast.V3_SCHEMA_ENV} to its full path. Nothing was changed in {clean_schema}.")
+    if structure.key(table, service) is None:
         print(f"    {table}: not found in the V3 structure - built as before (no type check)")
         return None
     columns = ([{"name": "SOURCE_SCHEMA", "type": "TEXT", "nullable": True}] +
@@ -434,7 +437,8 @@ def _flatten_checked(cursor, raw_schema: str, clean_schema: str, table: str, exp
             raise cast.TypingErrors(
                 f"{table}: {result['failed_records']} record(s) have errors; nothing was changed in {clean_schema} "
                 f"(the previous {table} stays as it was). Details in output/typing/", {table: result["failed_records"]})
-        print(f"    V3 type check OK ({result['skipped_records']} skipped, {len(result['changes'])} values changed or listed)")
+        print(f"    V3 type check OK ({result['skipped_records']} skipped, {len(result['changes'])} values changed or listed; "
+              f"schema file {structure.source})")
         # build next to the old object, then swap: the old one is only replaced once the new one exists
         was = existing_object_type(cursor, clean_schema, table)
         backup = backup_table(cursor, clean_schema, table) if was == "table" else None
