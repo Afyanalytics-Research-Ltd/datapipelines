@@ -1,6 +1,0 @@
-pandas
-pyarrow
-sqlalchemy
-psycopg2-binary
-pyyaml
-pytest
