@@ -36,10 +36,22 @@ THREE STEPS
                 Tier by tier, parallel within a tier. A table whose hard parent
                 failed is skipped, not loaded with broken links.
 
+BOTH DIRECTIONS
+  Down the tiers (parents first) to load; up the tiers (children first,
+  reverse=True) to delete or roll back a facility — vitals before visits
+  before patients. A table is skipped when what it waits on didn't go through:
+  its parents when loading, its children when deleting.
+    plan.parents(t) / plan.children(t)          one step either way
+    plan.with_parents([t])                      t + all it needs first   (load just t)
+    plan.with_children([t])                     t + all that depends on it (re-load / delete t)
+
 USAGE
   python load_tiers.py --mappings dags/jsons/wema_medical_data_mappings.json
   python load_tiers.py --rows samples.json --overrides overrides.json
   python load_tiers.py --raw wema_medical --tables patients visits vitals
+  python load_tiers.py --mappings … --reverse                 # delete / roll back order
+  python load_tiers.py --mappings … --with-parents vitals     # what loading vitals needs
+  python load_tiers.py --mappings … --with-children patients  # what re-loading patients touches
   python load_tiers.py --mappings … --json
 """
 from __future__ import annotations
@@ -511,25 +523,51 @@ class TierPlan:
     def tier_of(self, table: str, default: int = 1) -> int:
         return self.tiers.get(table, default)
 
-    def groups(self) -> list[tuple[int, list[str]]]:
+    def groups(self, *, reverse: bool = False) -> list[tuple[int, list[str]]]:
+        """[(tier, tables)] parents first — or, reverse, children first (the
+        order to delete or roll back in: vitals before visits before patients)."""
         by = defaultdict(list)
         for t, n in self.tiers.items():
             by[n].append(t)
-        return [(n, sorted(by[n])) for n in sorted(by)]
+        return [(n, sorted(by[n])) for n in sorted(by, reverse=reverse)]
 
-    def order(self) -> list[str]:
-        return [t for _, ts in self.groups() for t in ts]
+    def order(self, *, reverse: bool = False) -> list[str]:
+        return [t for _, ts in self.groups(reverse=reverse) for t in ts]
 
     def parents(self, table: str, *, hard_only: bool = False) -> set[str]:
+        """Tables this one points at (must exist before it)."""
         return {l.parent for l in self.links if l.table == table and (l.hard or not hard_only)}
+
+    def children(self, table: str, *, hard_only: bool = False) -> set[str]:
+        """Tables that point at this one (must go before it on delete)."""
+        return {l.table for l in self.links if l.parent == table and (l.hard or not hard_only)}
+
+    def _walk(self, tables: Iterable[str], step: Callable[..., set[str]], hard_only: bool) -> set[str]:
+        seen, todo = set(tables), list(tables)
+        while todo:
+            for nxt in step(todo.pop(), hard_only=hard_only):
+                if nxt not in seen:
+                    seen.add(nxt)
+                    todo.append(nxt)
+        return seen
+
+    def with_parents(self, tables: Iterable[str], *, hard_only: bool = False) -> set[str]:
+        """The tables plus everything they need first, transitively — what to
+        load for just these (vitals → visits, patients, users)."""
+        return self._walk(tables, self.parents, hard_only)
+
+    def with_children(self, tables: Iterable[str], *, hard_only: bool = False) -> set[str]:
+        """The tables plus everything that depends on them, transitively — what
+        a re-load or delete of these touches (patients → visits, vitals …)."""
+        return self._walk(tables, self.children, hard_only)
 
     def check(self) -> list[str]:
         """Every honoured link has its parent in an earlier tier — [] when sound."""
         return [f"{l.table}.{l.column or '?'} → {l.parent}: tier {self.tiers[l.table]} ≤ {self.tiers[l.parent]}"
                 for l in self.links if self.tiers[l.parent] >= self.tiers[l.table]]
 
-    def describe(self) -> str:
-        lines = [f"tier {n}: {', '.join(ts)}" for n, ts in self.groups()]
+    def describe(self, *, reverse: bool = False) -> str:
+        lines = [f"tier {n}: {', '.join(ts)}" for n, ts in self.groups(reverse=reverse)]
         if self.deferred:
             lines.append("filled in after loading (loop broken): "
                          + ", ".join(f"{l.table}.{l.column or '?'} → {l.parent}" for l in self.deferred))
@@ -624,22 +662,29 @@ def rows_from_raw(name: str, tables: Iterable[str] | None = None) -> dict[str, l
 # ─── RUN ─────────────────────────────────────────────────────────────────
 
 def run_in_tiers(plan: TierPlan, fn: Callable[[str], object], *, tables: Iterable[str] | None = None,
-                 workers: int = 1) -> dict[str, str]:
+                 workers: int = 1, reverse: bool = False) -> dict[str, str]:
     """Run fn(table) tier by tier; within a tier up to `workers` at once.
-    fn returning False or raising = failed. A table whose hard parent failed or
-    was skipped is skipped. Returns {table: done | failed | skipped}."""
+    fn returning False or raising = failed. Returns {table: done | failed | skipped}.
+
+      reverse=False  parents first (load): a table whose hard parent failed or
+                     was skipped is skipped — no rows with broken links
+      reverse=True   children first (delete, roll back): a table whose hard
+                     child failed or was skipped is skipped — never remove
+                     patients while their visits are still there"""
     wanted = set(plan.tiers if tables is None else tables)
+    waits_on = plan.children if reverse else plan.parents
     status: dict[str, str] = {}
-    for n, group in plan.groups():
+    for n, group in plan.groups(reverse=reverse):
         group = [t for t in group if t in wanted]
         if not group:
             continue
         ready = []
         for t in group:
-            blocked = sorted(p for p in plan.parents(t, hard_only=True) if status.get(p) in ("failed", "skipped"))
+            blocked = sorted(p for p in waits_on(t, hard_only=True) if status.get(p) in ("failed", "skipped"))
             if blocked:
                 status[t] = "skipped"
-                log.warning("  %-40s skipped — parent %s did not load", t, ", ".join(blocked))
+                log.warning("  %-40s skipped — %s %s did not go through", t,
+                            "child" if reverse else "parent", ", ".join(blocked))
             else:
                 ready.append(t)
         log.info("── Tier %d ── %d table(s)%s", n, len(ready),
@@ -673,6 +718,9 @@ def main() -> None:
     src.add_argument("--raw", metavar="NAME", help="The facility's source rows in Snowflake <NAME>_RAW.EVENTS_RAW")
     ap.add_argument("--tables", nargs="+", help="With --raw: only these source tables")
     ap.add_argument("--overrides", type=Path, help='JSON {table: {column: parent table | null}}, "*" for all tables')
+    ap.add_argument("--reverse", action="store_true", help="Children first: the order to delete / roll back in")
+    ap.add_argument("--with-parents", nargs="+", metavar="TABLE", help="Only these tables and all they need first")
+    ap.add_argument("--with-children", nargs="+", metavar="TABLE", help="Only these tables and all that depend on them")
     ap.add_argument("--json", action="store_true", help="Print the plan as JSON")
     args = ap.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(message)s")
@@ -685,12 +733,24 @@ def main() -> None:
             plan = compute_tiers(rows, discover_links(rows=rows, overrides=overrides))
     except TierCycleError as e:
         sys.exit(f"No load order: {e}")
+    for wanted, walk in ((args.with_parents, plan.with_parents), (args.with_children, plan.with_children)):
+        if wanted:
+            unknown = sorted(set(wanted) - set(plan.tiers))
+            if unknown:
+                sys.exit(f"Not in the plan: {unknown}")
+            keep = walk(wanted)
+            plan = TierPlan({t: n for t, n in plan.tiers.items() if t in keep},
+                            [l for l in plan.links if l.table in keep and l.parent in keep],
+                            [l for l in plan.deferred if l.table in keep and l.parent in keep],
+                            {t: c for t, c in plan.unresolved.items() if t in keep},
+                            [r for r in plan.review if r.table in keep])
     if args.json:
-        print(json.dumps({"tiers": plan.tiers, "links": [asdict(l) for l in plan.links],
+        print(json.dumps({"tiers": plan.tiers, "order": plan.order(reverse=args.reverse),
+                          "links": [asdict(l) for l in plan.links],
                           "deferred": [asdict(l) for l in plan.deferred], "unresolved": plan.unresolved,
                           "review": [asdict(r) for r in plan.review]}, indent=2, sort_keys=True))
     else:
-        print(plan.describe())
+        print(plan.describe(reverse=args.reverse))
 
 
 if __name__ == "__main__":

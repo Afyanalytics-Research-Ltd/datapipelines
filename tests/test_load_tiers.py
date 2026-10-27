@@ -319,3 +319,59 @@ class TestRunInTiers:
     def test_subset(self):
         p = plan({"a": [], "b": ["a_id"]})
         assert lt.run_in_tiers(p, lambda t: None, tables=["b"]) == {"b": "done"}
+
+
+class TestBothDirections:
+    """Down the tiers to load, up the tiers to delete / roll back."""
+
+    @pytest.fixture
+    def p(self):
+        return plan({"users": [], "wards": [], "patients": ["created_by"], "visits": ["patient_id"],
+                     "vitals": ["visit_id", "patient_id"], "admissions": ["visit_id", "ward_id"]})
+
+    def test_reverse_order_is_children_first(self, p):
+        assert p.order() == ["users", "wards", "patients", "visits", "admissions", "vitals"]
+        assert p.order(reverse=True) == ["admissions", "vitals", "visits", "patients", "users", "wards"]
+        assert [n for n, _ in p.groups(reverse=True)] == [4, 3, 2, 1]
+
+    def test_parents_and_children(self, p):
+        assert p.parents("vitals") == {"visits", "patients"}
+        assert p.children("visits") == {"vitals", "admissions"}
+        assert p.children("users") == {"patients"}
+        assert p.children("users", hard_only=True) == set()     # created_by is optional
+
+    def test_with_parents_is_what_a_load_needs(self, p):
+        assert p.with_parents(["vitals"]) == {"vitals", "visits", "patients", "users"}
+        assert p.with_parents(["vitals"], hard_only=True) == {"vitals", "visits", "patients"}
+
+    def test_with_children_is_what_a_change_touches(self, p):
+        assert p.with_children(["patients"]) == {"patients", "visits", "vitals", "admissions"}
+        assert p.with_children(["wards"]) == {"wards", "admissions"}
+
+    def test_reverse_run_deletes_children_first(self, p):
+        ran = []
+        status = lt.run_in_tiers(p, ran.append, reverse=True)
+        assert set(status.values()) == {"done"}
+        assert ran.index("vitals") < ran.index("visits") < ran.index("patients")
+        assert ran.index("admissions") < ran.index("wards")
+
+    def test_reverse_run_keeps_parents_whose_children_remain(self, p):
+        """visits can't be deleted → patients (still referenced) must stay;
+        wards only waits on admissions, which went through."""
+        def delete(t):
+            if t == "visits":
+                raise RuntimeError("FK: still referenced")
+        status = lt.run_in_tiers(p, delete, reverse=True)
+        assert status["visits"] == "failed"
+        assert status["patients"] == "skipped"
+        assert status["wards"] == "done"
+        assert status["users"] == "done"          # only an optional link from patients
+
+    def test_both_directions_on_real_mappings(self):
+        p = lt.plan_from_mappings(lt.Path(__file__).resolve().parent.parent / "dags" / "jsons"
+                                  / "wema_medical_data_mappings.json")
+        fwd, back = p.order(), p.order(reverse=True)
+        assert fwd.index("patients") < fwd.index("visits") < fwd.index("inp_notes")
+        assert back.index("inp_notes") < back.index("visits") < back.index("patients")
+        assert "inp_admissions" in p.with_children(["visits"])
+        assert {"visits", "patients"} <= p.with_parents(["inp_notes"])
