@@ -29,8 +29,8 @@ ENV VARS  (put them in a .env file next to this script)
   FACILITY_AFYA_API_AUTH_USERNAME=... FACILITY_AFYA_API_AUTH_PASSWORD=...
 
   # V3 destination credentials
-  AFYA_USERNAME='jovan'
-  AFYA_PASSWORD='Password123'
+  AFYA_USERNAME=...
+  AFYA_PASSWORD=...
 
   # Tuning
   PIPELINE_WORKERS=8    # parallel (facility, namespace) jobs
@@ -57,11 +57,12 @@ import secrets
 import sys
 import threading
 import time
+from  migration_state import StatePaths, get_paths,run_lock, use_state_dir, STATE_ROOT
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
-from migration_state import StatePaths, get_paths, use_state_dir, STATE_ROOT
+
 
 try:
     import fcntl   # state-file locking (see _file_lock); absent on Windows
@@ -169,12 +170,10 @@ _sync_path_globals()
 
 
 
-def use_state_dir(facility: str | None) -> Path:
-    """Point state at this facility's directory (thread-local). Call before loading state."""
+def use_state_dir(facility: str | None, *, process_wide: bool = False) -> Path:
     from migration_state import use_state_dir as _use
-    d = _use(facility)
+    d = _use(facility, process_wide=process_wide)
     _sync_path_globals()
-    # Reset mtime caches so the next load re-reads from the new paths
     global _record_progress_mtime, _id_map_mtime
     _record_progress_mtime = _id_map_mtime = None
     return d
@@ -2522,7 +2521,7 @@ def extract_v2_records(job: dict) -> tuple[list[dict], list[int]]:
     the job fully done (watermark must not advance on incomplete data).
     """
     facility = job["facility"]
-    cfg      = V2_FACILITIES[facility]
+    cfg      = v2_facility_config(facility)
     url      = f"{cfg['base_url'].rstrip('/')}/api/finance/access/data/point"
     session  = _v2_session(facility)
     headers  = {
@@ -3149,24 +3148,77 @@ def post_to_v3(
 
     alias = _v3_alias(v3_namespace)
 
-    # Skip records V3 already has: the uuid comes from V2 and is carried to V3
-    # unchanged, so a uuid already present in V3 means the record is already
-    # there (from an earlier run, a reset progress file, or another loader).
-    # No re-post, no re-insert — just record the V2 id → V3 id mapping.
-    if any(_v2_uuid(r) for r in pending):
+
+    # One V3 uuid scan for this model (used by uncertain reconcile + already-in-V3 skip)
+    existing: dict[str, int] = {}
+    if pending:
         existing = _existing_v3_uuids(alias, org_cfg, service_name=service_override)
-        already, still_pending = [], []
-        for r in pending:
-            u = _v2_uuid(r)
-            (already if u and u in existing else still_pending).append(r)
-        if already:
-            _store_id_mappings(alias, [(r["id"], existing[_v2_uuid(r)]) for r in already if r.get("id") is not None])
-            if job_key:
-                for r in already:
-                    if r.get("id") is not None:
-                        _mark_record_inserted(job_key, r["id"])
-            log.info("  Skipping %d records already in V3 (matched on uuid) — mapped, not re-posted", len(already))
-        pending = still_pending
+
+    # ── Reconcile ::uncertain from earlier timed-out POSTs ─────────────────────
+    if job_key:
+        uncertain_ids = {
+            r["id"] for r in pending
+            if r.get("id") is not None and _record_inserted(uncertain_key, r["id"])
+        }
+        if uncertain_ids:
+            existing = _existing_v3_uuids(alias, org_cfg, service_name=service_override)
+            promoted, retryable, still_blocked = [], [], []
+            still_pending = []
+            for r in pending:
+                rid = r.get("id")
+                if rid is None or rid not in uncertain_ids:
+                    still_pending.append(r)
+                    continue
+                u = _v2_uuid(r)
+                if u and u in existing:
+                    # POST did land — treat as successfully inserted
+                    _store_id_mapping(alias, rid, existing[u])
+                    _mark_record_inserted(job_key, rid)
+                    promoted.append(rid)
+                    # do not add to still_pending (already done)
+                elif u:
+                    # Has uuid but not in V3 — safe to retry
+                    retryable.append(rid)
+                    still_pending.append(r)
+                else:
+                    # No uuid — still must not auto-retry (duplicate risk)
+                    still_blocked.append(rid)
+                    # omit from pending
+            pending = still_pending
+            if promoted:
+                log.info(
+                    "  Uncertain reconcile: %d id(s) found in V3 by uuid — promoted to inserted",
+                    len(promoted),
+                )
+            if retryable:
+                log.info(
+                    "  Uncertain reconcile: %d id(s) not in V3 — will retry POST",
+                    len(retryable),
+                )
+            if still_blocked:
+                log.warning(
+                    "  Uncertain reconcile: %d uuid-less id(s) still blocked under '%s' "
+                    "(verify in V3, then remove from %s to replay)",
+                    len(still_blocked), uncertain_key, RECORD_PROGRESS_FILE.name,
+                )
+        # Skip records V3 already has: the uuid comes from V2 and is carried to V3
+        # unchanged, so a uuid already present in V3 means the record is already
+        # there (from an earlier run, a reset progress file, or another loader).
+        # No re-post, no re-insert — just record the V2 id → V3 id mapping.
+        if any(_v2_uuid(r) for r in pending):
+            existing = _existing_v3_uuids(alias, org_cfg, service_name=service_override)
+            already, still_pending = [], []
+            for r in pending:
+                u = _v2_uuid(r)
+                (already if u and u in existing else still_pending).append(r)
+            if already:
+                _store_id_mappings(alias, [(r["id"], existing[_v2_uuid(r)]) for r in already if r.get("id") is not None])
+                if job_key:
+                    for r in already:
+                        if r.get("id") is not None:
+                            _mark_record_inserted(job_key, r["id"])
+                log.info("  Skipping %d records already in V3 (matched on uuid) — mapped, not re-posted", len(already))
+            pending = still_pending
 
     total = len(pending)
     log.info("  Posting %d new record(s) → %s", total, v3_namespace)
@@ -3202,25 +3254,26 @@ def post_to_v3(
         if n % RECORD_LOG_EVERY == 0 or n == total:
             log.info("  Posted %d / %d → %s", n, total, v3_namespace)
 
-    with ThreadPoolExecutor(max_workers=RECORD_WORKERS) as pool:
-        futures = {pool.submit(_post_one, r): r for r in pending}
-        for fut in as_completed(futures):
-            try:
-                fut.result()
-            except Exception as e:
-                # 403 / exhausted 504 retries / network errors: the record was
-                # NOT inserted and not dead-lettered either. Count it, or the
-                # job gets marked done and these records are never retried.
-                rec = futures[fut]
-                log.error("  Failed record id=%s: %s", rec.get("id"), e)
-                with _record_progress_lock:
-                    dead_letter_count += 1
-
-    # Final flush so no inserted IDs are lost between batch flushes
-    with _record_progress_lock:
-        if _inserted_ids:
-            _flush_record_progress()
-
+    try:
+        with ThreadPoolExecutor(max_workers=RECORD_WORKERS) as pool:
+            futures = {pool.submit(_post_one, r): r for r in pending}
+            for fut in as_completed(futures):
+                try:
+                    fut.result()
+                except Exception as e:
+                    # 403 / exhausted 504 retries / network errors: the record was
+                    # NOT inserted and not dead-lettered either. Count it, or the
+                    # job gets marked done and these records are never retried.
+                    rec = futures[fut]
+                    log.error("  Failed record id=%s: %s", rec.get("id"), e)
+                    with _record_progress_lock:
+                        dead_letter_count += 1
+    finally:
+        # Always flush so inserted IDs are on disk even if the pool raised
+        # or an outer path is about to abort the job.
+        with _record_progress_lock:
+            if _record_progress_unflushed or _inserted_ids:
+                _flush_record_progress()
     if dead_letter_count:
         log.warning("  %d / %d record(s) dead-lettered → %s", dead_letter_count, total, v3_namespace)
     return dead_letter_count
@@ -3232,21 +3285,31 @@ _wm_lock = threading.Lock()
 
 
 def _load_watermarks() -> dict:
-    if WATERMARK_FILE.exists():
-       return {}
+    """Load watermark JSON. Missing → {}; corrupt → bak + {}."""
+    if not WATERMARK_FILE.exists():
+        return {}
+
     try:
-            return json.loads(WATERMARK_FILE.read_text())
+        data = json.loads(WATERMARK_FILE.read_text())
+        if not isinstance(data, dict):
+            raise ValueError(f"expected object, got {type(data).__name__}")
+        return data
     except Exception as e:
-            bak = WATERMARK_FILE.with_suffix(WATERMARK_FILE.suffix + f".bak.{int(time.time())}")
-    try:
-                WATERMARK_FILE.replace(bak)
-                log.warning(
+        bak = WATERMARK_FILE.with_suffix(
+            WATERMARK_FILE.suffix + f".bak.{int(time.time())}"
+        )
+        try:
+            WATERMARK_FILE.replace(bak)
+            log.warning(
                 "Could not parse %s: %s — moved to %s and starting fresh",
                 WATERMARK_FILE.name, e, bak.name,
             )
-    except OSError:
-            log.warning("Could not parse %s: %s — starting fresh", WATERMARK_FILE, e)
-    return {}
+        except OSError:
+            log.warning(
+                "Could not parse %s: %s — starting fresh",
+                WATERMARK_FILE.name, e,
+            )
+        return {}
 
 
 def _get_watermark(facility: str, namespace: str, default: str = "1970-01-01T00:00:00Z") -> str:
@@ -3276,13 +3339,24 @@ _progress_lock = threading.Lock()
 _completed_jobs: set[str] = set()
 
 def _load_progress(run_id: str) -> set[str]:
+    """Load jobs completed in an in-progress migration.
+
+    run_id is used when *writing*; on load we accept any file so a restarted
+    process still skips jobs already finished before the crash. Cross-run
+    skip of fully successful jobs remains DONE_FILE / record progress.
+    """
     if not PROGRESS_FILE.exists():
         return set()
     try:
         data = json.loads(PROGRESS_FILE.read_text())
-        if data.get("run_id") == run_id:
-            return set(data.get("completed", []))
-        return set()
+        completed = set(data.get("completed", []))
+        file_run = data.get("run_id")
+        if file_run and file_run != run_id and completed:
+            log.info(
+                "Loaded %d completed job(s) from progress file (file run_id=%s, this run_id=%s)",
+                len(completed), file_run, run_id,
+            )
+        return completed
     except Exception as e:
         bak = PROGRESS_FILE.with_suffix(PROGRESS_FILE.suffix + f".bak.{int(time.time())}")
         try:
@@ -3306,7 +3380,7 @@ def _mark_done(run_id: str, job_key: str) -> None:
             {"run_id": run_id, "completed": sorted(_completed_jobs)},
             indent=2,
         ))
-    _mark_permanently_done(job_key)
+  
 
 
 # ─── CROSS-RUN DONE TRACKING ─────────────────────────────────────────────────
@@ -3465,7 +3539,7 @@ def _flush_record_progress() -> None:
     — ids are only ever added, and writing just our own view would erase
     theirs, and for records without a uuid an erased id means a duplicate
     insert on the next run."""
-    global _record_progress_mtime, _record_progress_unflushed
+    global _record_progress_mtime, _record_progress_unflushed, _record_last_flush_time
     # mappings first: an id saved as inserted must have its V3 id on disk too
     _flush_id_map()
     _record_progress_unflushed = False
@@ -3532,8 +3606,17 @@ def _record_visit_patient(v2_visit_id: int, v2_patient_id: int) -> None:
     global _visit_patient_dirty
     _visit_patient_map[v2_visit_id] = v2_patient_id
     _visit_patient_dirty += 1
-    if _visit_patient_dirty % 500 == 0:
+    if _visit_patient_dirty % RECORD_FLUSH_EVERY == 0:  # was 500
         _write_int_map(VISIT_PATIENT_FILE, _visit_patient_map)
+        _visit_patient_dirty = 0
+
+def _record_visit_admission(v2_visit_id: int, v2_admission_id: int) -> None:
+    global _visit_admission_dirty
+    _visit_admission_map[v2_visit_id] = v2_admission_id
+    _visit_admission_dirty += 1
+    if _visit_admission_dirty % RECORD_FLUSH_EVERY == 0:  # was 500
+        _write_int_map(VISIT_ADMISSION_FILE, _visit_admission_map)
+        _visit_admission_dirty = 0
 
 
 # Secondary lookup: V2 visit_id → V2 admission_id.
@@ -3559,12 +3642,6 @@ def _load_visit_admission_map() -> None:
         _visit_admission_map = {}
 
 
-def _record_visit_admission(v2_visit_id: int, v2_admission_id: int) -> None:
-    global _visit_admission_dirty
-    _visit_admission_map[v2_visit_id] = v2_admission_id
-    _visit_admission_dirty += 1
-    if _visit_admission_dirty % 500 == 0:
-        _write_int_map(VISIT_ADMISSION_FILE, _visit_admission_map)
 
 
 def _write_int_map(path: Path, mapping: dict) -> None:
@@ -3578,8 +3655,16 @@ def _write_int_map(path: Path, mapping: dict) -> None:
         except (OSError, ValueError):
             pass
         _atomic_write(path, json.dumps(mapping))
-
-
+        
+def _flush_visit_maps() -> None:
+    """Write dirty visit→patient / visit→admission maps to disk."""
+    global _visit_patient_dirty, _visit_admission_dirty
+    if _visit_patient_dirty:
+        _write_int_map(VISIT_PATIENT_FILE, _visit_patient_map)
+        _visit_patient_dirty = 0
+    if _visit_admission_dirty:
+        _write_int_map(VISIT_ADMISSION_FILE, _visit_admission_map)
+        _visit_admission_dirty = 0
 # Which FK fields to remap, and which model alias holds their ID map.
 _FK_REMAP: dict[str, dict[str, str]] = {
     # insurance_schemes.company_id → the insurance company's V3 id. Companies
@@ -3932,8 +4017,12 @@ def _flush_state_at_exit() -> None:
                 _flush_record_progress()   # writes the id map first
         else:
             _flush_id_map()
+        _flush_visit_maps()                # always — independent of record progress
     except Exception as e:
         log.warning("State flush at exit failed: %s", e)
+
+
+atexit.register(_flush_state_at_exit)
         
 def _on_terminate(signum, frame) -> None:
     """Airflow / K8s / systemd send SIGTERM before kill. Flush progress so a
@@ -3943,7 +4032,7 @@ def _on_terminate(signum, frame) -> None:
     # Restore default and re-raise so the process still exits
     signal.signal(signum, signal.SIG_DFL)
     os.kill(os.getpid(), signum)
-atexit.register(_flush_state_at_exit)
+
 for _sig in (signal.SIGTERM, signal.SIGINT):
     try:
         signal.signal(_sig, _on_terminate)
@@ -4466,9 +4555,8 @@ def _run_vitals_split_job(
 def run_job(job: dict, run_id: str, batch_size: int, dry_run: bool) -> bool:
     """Extract from V2, transform, POST to V3. Returns True on success."""
     facility  = job["facility"]
-    use_state_dir(facility)   #if that function can be entered without going through the same first lines (it receives job, so same pattern)
+    use_state_dir(facility)   
     namespace = job["namespace"]
-    use_state_dir(facility)   #before any state load/write for this job
     mapping   = NAMESPACE_MAP.get(namespace)
     if mapping is None:
         log.warning("No NAMESPACE_MAP entry for %s — skipping", namespace)
@@ -4603,7 +4691,26 @@ def run_migration(
     dry_run: bool,
     max_pages: int | None = None,
 ) -> None:
-    run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    _started = datetime.now(timezone.utc)                      # CHANGED: keep the start time
+    run_id = _started.strftime("%Y%m%dT%H%M%SZ")
+
+    # NEW: several facilities -> one process each (state lives in module globals)
+    if len(facilities) > 1:
+        from concurrent.futures import ProcessPoolExecutor
+        import multiprocessing as mp
+        kw = dict(namespaces=namespaces, since=since, workers=workers,
+                  batch_size=batch_size, dry_run=dry_run, max_pages=max_pages)
+        with ProcessPoolExecutor(max_workers=min(len(facilities), 4),
+                                 mp_context=mp.get_context("spawn")) as pool:
+            futs = {f: pool.submit(run_migration, [f], **kw) for f in facilities}
+            for f, fut in futs.items():
+                try:
+                    fut.result()
+                except BaseException as e:      # a facility failing must not hide the others
+                    log.error("Facility %s failed: %s", f, e)
+        return
+
+    _claim_state(facilities[0])                                # CHANGED: replaces use_state_dir(...)
     global _completed_jobs
     _completed_jobs = _load_progress(run_id)
     _load_record_progress()
@@ -4734,7 +4841,6 @@ def run_migration(
                     failures.append(_job_key(job["facility"], job["namespace"]))
         else:
             with ThreadPoolExecutor(max_workers=workers) as pool:
-                print(job['facility'])
                 future_to_job = {
                     pool.submit(run_job, job, run_id, batch_size, dry_run): job
                     for job in tier_jobs
@@ -4791,14 +4897,11 @@ def run_migration(
     log.info("\n".join(summary_lines))
 
     # Flush any unsaved visit→patient / visit→admission map entries
-    if _visit_patient_dirty:
-        VISIT_PATIENT_FILE.write_text(json.dumps(_visit_patient_map))
-    if _visit_admission_dirty:
-        VISIT_ADMISSION_FILE.write_text(json.dumps(_visit_admission_map))
+    _flush_visit_maps()                                        # CHANGED: merge-safe + atomic
 
     # Advance watermarks only if zero failures
     if not failures and not dry_run:
-        now_iso = datetime.now(timezone.utc).isoformat()
+        now_iso = _started.isoformat()                         # CHANGED: run START, not run end
         wm = _load_watermarks()
         for facility in facilities:
             for ns in all_namespaces:
