@@ -12,7 +12,7 @@ run() {   # run <tag> <steps…>
     python eagle_to_v3.py --target "$target" --only-missing --workers "${WORKERS:-12}" --steps "$@" > "logs/eagle_full_${target}_${tag}.log" 2>&1
   echo "$(date '+%F %T') done  $tag (exit $?)"
 }
-run base users user_profiles insurance patients patient_insurance visits wards admissions ward_stays discharges \
+[ -n "${SKIP_BASE:-}" ] || run base users user_profiles insurance patients patient_insurance visits wards admissions ward_stays discharges \
          inpatient_notes catalogue procedure_prices stores products suppliers
 run clinical vitals doctor_notes diagnoses &
 run orders investigations lab_results &

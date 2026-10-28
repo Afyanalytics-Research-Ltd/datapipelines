@@ -537,7 +537,7 @@ class Run:
         import snowflake_to_v3_migration as s2v3
         self.target, self.dry_run, self.limit, self.workers, self.only_missing = target, dry_run, limit, workers, only_missing
         self.c = V3Client(target)
-        self.c.login()
+        self.c._token = (self.c.login(), time.time())    # kept: token() would otherwise log in a second time
         self.sf = s2v3._snowflake_connect()
         self.today = date.today().isoformat()
         self._cache: dict = {}
@@ -563,13 +563,17 @@ class Run:
             from v3_to_v3_client import V3Client
             c = V3Client(self.target, facility_id=fac)
             c.send_facility_header = True
-            c.login()
+            c._token = (c.login(), time.time())        # one login per facility (V3 locks out bursts of sign-ins)
             if c.facility_id != fac:
                 raise RuntimeError(f"{self.target}: login landed in facility {c.facility_id}, not {fac}")
             # an account offered one facility logs in without choosing, so access to `fac` only shows on first use
             try:
                 c.read_page("core", "departments", 1, per_page=1)
             except Exception as e:
+                if "login" in str(e).lower() or "sign-in" in str(e).lower():
+                    raise RuntimeError(f"{self.target}: V3 refused {c.username}'s login (facility {fac}) — check the "
+                                       f"password on connection afya_v3_{self.target} / .env; after failed tries V3 locks "
+                                       f"the account for a few minutes ({str(e)[:200]})") from e
                 raise RuntimeError(f"{self.target}: {c.username} can't work in facility {fac} — give the account access "
                                    f"to it in V3 ({str(e)[:150]})") from e
             self.clients[fac] = c
