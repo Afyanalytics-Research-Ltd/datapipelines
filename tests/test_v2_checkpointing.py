@@ -77,5 +77,5 @@ def test_flush_visit_maps(facility_state):
     m._record_visit_patient(10, 20)
     m._visit_patient_dirty = 1  # ensure dirty if record already flushed by counter
     m._flush_visit_maps()
-    raw = json.loads(facility_state.visit_patient.read_text())
+    raw = json.loads(facility_state.file("visit_patient").read_text())
     assert raw.get("10") == 20 or raw.get(10) == 20

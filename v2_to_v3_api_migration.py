@@ -57,7 +57,7 @@ import secrets
 import sys
 import threading
 import time
-from  migration_state import StatePaths, get_paths,run_lock, use_state_dir, STATE_ROOT
+from  migration_state import StatePaths, get_paths, run_lock, use_state_dir, STATE_ROOT
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
@@ -132,8 +132,6 @@ V3_GATEWAY_RETRIES = int(os.getenv("V3_GATEWAY_RETRIES", "5"))    # retries on 5
 PROGRESS_FILE = None
 RECORD_PROGRESS_FILE = None
 ID_MAP_FILE = None
-VISIT_PATIENT_FILE = None
-VISIT_ADMISSION_FILE = None
 DONE_FILE = None
 WATERMARK_FILE = None
 DEAD_LETTER_FILE = None
@@ -141,23 +139,20 @@ DEAD_LETTER_FILE = None
 
 
 def _sync_path_globals() -> None:
-    """Back-compat: code that still reads PROGRESS_FILE etc. sees the current thread's paths.
-    Prefer get_paths().progress in new/edited code."""
+    """Temporary back-compat layer.
+    Prefer get_paths().file("...") in all new code.
+    """
     p = get_paths()
     global PROGRESS_FILE, RECORD_PROGRESS_FILE, ID_MAP_FILE
-    global VISIT_PATIENT_FILE, VISIT_ADMISSION_FILE, DONE_FILE
-    global WATERMARK_FILE, DEAD_LETTER_FILE
-    PROGRESS_FILE = p.progress
-    RECORD_PROGRESS_FILE = p.record_progress
-    ID_MAP_FILE = p.file("id_map")
-    VISIT_PATIENT_FILE = p.file("visit_patient")
-    VISIT_ADMISSION_FILE = p.file("visit_admission")
-    DONE_FILE = p.done
-    WATERMARK_FILE = p.watermark
-    DEAD_LETTER_FILE = p.dead_letter
+    global DONE_FILE,DEAD_LETTER_FILE,WATERMARK_FILE
+    PROGRESS_FILE        = p.file("progress")
+    RECORD_PROGRESS_FILE = p.file("record_progress")
+    ID_MAP_FILE          = p.file("id_map")
+    DONE_FILE            = p.file("done")
+    WATERMARK_FILE       = p.watermark          # still shared at env level
+    DEAD_LETTER_FILE     = p.file("dead_letter", ext="jsonl")
+       
    
-
-
 # Initialize defaults (repo root, no facility) so early imports/calls have real Paths
 _sync_path_globals()
 
@@ -170,14 +165,19 @@ _sync_path_globals()
 
 
 
-def use_state_dir(facility: str | None, *, process_wide: bool = False) -> Path:
+def use_state_dir(
+    facility: str | None,
+    pipeline: str = "v2_to_v3",
+    *,
+    process_wide: bool = False,
+) -> Path:
+    """Switch state directory for this facility + pipeline and refresh globals."""
     from migration_state import use_state_dir as _use
-    d = _use(facility, process_wide=process_wide)
+    d = _use(facility, pipeline=pipeline, process_wide=process_wide)
     _sync_path_globals()
     global _record_progress_mtime, _id_map_mtime
     _record_progress_mtime = _id_map_mtime = None
     return d
-
 
 def v2_facility_config(facility: str) -> dict:
     """V2_FACILITIES[facility] with base_url/db overridable by
@@ -965,9 +965,7 @@ _PER_KEY_DROP_FIELDS: dict[str, list] = {
 # in transform_record's step 4c (hash it, don't null it — see
 # _hash_corrupted_value). A record with a clean value for one of these
 # fields keeps it; only the broken ones get hashed, and every replacement is
-# logged to PII_CORRUPTION_LOG (not silently discarded) so affected patients
 # can be identified and backfilled once V2 fixes the decryption.
-#
 # first_name/last_name are the SAME kind of corrupted ciphertext-as-text and
 # ARE included here even though isolated A/B testing confirmed V3 requires
 # them non-null (dropping either one alone causes an opaque 500) — that
@@ -2123,7 +2121,6 @@ def transform_record(record: dict, transform_key: str, org_cfg: dict, facility: 
     for field in _PER_KEY_CORRUPTION_WATCH.get(tk, []):
         v = out.get(field)
         if isinstance(v, str) and "�" in v:
-            _record_pii_corruption(facility, tk, record, field, v)
             if ENCODE_CORRUPTED_PII:
                 out[field] = _encode_corrupted_value(v)
             else:
@@ -2729,7 +2726,6 @@ def _v3_alias(v3_namespace: str) -> str:
 # ─── DEAD-LETTER ─────────────────────────────────────────────────────────────
 
 _dead_letter_lock = threading.Lock()
-_pii_corruption_lock = threading.Lock()
 
 
 def _encode_corrupted_value(value: str) -> str:
@@ -2744,34 +2740,6 @@ def _encode_corrupted_value(value: str) -> str:
     useful free signal when investigating the encryption bug on the V2 side.
     """
     return base64.b64encode(value.encode("utf-8")).decode("ascii")
-
-
-def _record_pii_corruption(facility: str, transform_key: str, record: dict, field: str, value: str) -> None:
-    """Append one corrupted field to a JSONL audit trail before it's replaced
-    with a base64 placeholder (see _encode_corrupted_value).
-
-    This is the difference between silently losing data and having an
-    actionable backlog: every time a watched field is visibly corrupted
-    (U+FFFD from V2 returning undecrypted ciphertext as UTF-8 text — see
-    _PER_KEY_CORRUPTION_WATCH), the record's identity, which field was
-    affected, and the value it was replaced with are logged here. Once V2
-    fixes the decryption, this file tells you exactly which patients (by
-    uuid) need a backfill — nothing has to be guessed or re-derived from
-    scratch.
-    """
-    entry = {
-        "ts":            datetime.now(timezone.utc).isoformat(),
-        "facility":      facility,
-        "transform_key": transform_key,
-        "record_id":     record.get("id"),
-        "uuid":          record.get("uuid"),
-        "field":         field,
-        "sample":        value[:80],
-        "encoded":       _encode_corrupted_value(value),
-    }
-    with _pii_corruption_lock:
-        with PII_CORRUPTION_LOG.open("a") as fh:
-            fh.write(_dumps(entry) + "\n")
 
 
 class RecordDeadLettered(Exception):
@@ -3582,7 +3550,7 @@ _id_map: dict[str, dict] = {}      # alias → {v2_id: v3_id}
 _id_map_lock = threading.Lock()
 
 # Secondary lookup: V2 visit_id → V2 patient_id.
-# Persisted to VISIT_PATIENT_FILE so it survives across interrupted/resumed runs.
+# Persisted so it survives across interrupted/resumed runs.
 # Populated when reception_visit records are transformed; used by DoctorNote inject.
 _visit_patient_map: dict[int, int] = {}
 _visit_patient_dirty: int = 0
@@ -3590,9 +3558,10 @@ _visit_patient_dirty: int = 0
 
 def _load_visit_patient_map() -> None:
     global _visit_patient_map
-    if VISIT_PATIENT_FILE.exists():
+    path = get_paths().file("visit_patient")
+    if path.exists():
         try:
-            raw = json.loads(VISIT_PATIENT_FILE.read_text())
+            raw = json.loads(path.read_text())
             _visit_patient_map = {int(k): int(v) for k, v in raw.items() if v is not None}
             log.info("Visit→patient map loaded — %d entries", len(_visit_patient_map))
         except Exception as e:
@@ -3601,13 +3570,12 @@ def _load_visit_patient_map() -> None:
     else:
         _visit_patient_map = {}
 
-
 def _record_visit_patient(v2_visit_id: int, v2_patient_id: int) -> None:
     global _visit_patient_dirty
     _visit_patient_map[v2_visit_id] = v2_patient_id
     _visit_patient_dirty += 1
     if _visit_patient_dirty % RECORD_FLUSH_EVERY == 0:  # was 500
-        _write_int_map(VISIT_PATIENT_FILE, _visit_patient_map)
+        _write_int_map(get_paths().file("visit_patient"), _visit_patient_map)
         _visit_patient_dirty = 0
 
 def _record_visit_admission(v2_visit_id: int, v2_admission_id: int) -> None:
@@ -3615,12 +3583,12 @@ def _record_visit_admission(v2_visit_id: int, v2_admission_id: int) -> None:
     _visit_admission_map[v2_visit_id] = v2_admission_id
     _visit_admission_dirty += 1
     if _visit_admission_dirty % RECORD_FLUSH_EVERY == 0:  # was 500
-        _write_int_map(VISIT_ADMISSION_FILE, _visit_admission_map)
+        _write_int_map(get_paths().file("visit_admission"), _visit_admission_map)
         _visit_admission_dirty = 0
 
 
 # Secondary lookup: V2 visit_id → V2 admission_id.
-# Persisted to VISIT_ADMISSION_FILE. Populated when Admission records are
+# Persisted when Admission records are migrated.
 # transformed. Used to split V2 Vitals into inpatient (has an admission)
 # vs outpatient (visit only, no admission) before posting — V3 has two
 # separate vitals tables (inp_vitals vs patient-evaluation vitals).
@@ -3630,9 +3598,10 @@ _visit_admission_dirty: int = 0
 
 def _load_visit_admission_map() -> None:
     global _visit_admission_map
-    if VISIT_ADMISSION_FILE.exists():
+    path = get_paths().file("visit_admission")
+    if path.exists():
         try:
-            raw = json.loads(VISIT_ADMISSION_FILE.read_text())
+            raw = json.loads(path.read_text())
             _visit_admission_map = {int(k): int(v) for k, v in raw.items() if v is not None}
             log.info("Visit→admission map loaded — %d entries", len(_visit_admission_map))
         except Exception as e:
@@ -3640,7 +3609,6 @@ def _load_visit_admission_map() -> None:
             _visit_admission_map = {}
     else:
         _visit_admission_map = {}
-
 
 
 
@@ -3660,10 +3628,10 @@ def _flush_visit_maps() -> None:
     """Write dirty visit→patient / visit→admission maps to disk."""
     global _visit_patient_dirty, _visit_admission_dirty
     if _visit_patient_dirty:
-        _write_int_map(VISIT_PATIENT_FILE, _visit_patient_map)
-        _visit_patient_dirty = 0
+       _write_int_map(get_paths().file("visit_patient"), _visit_patient_map)
+    _visit_patient_dirty = 0
     if _visit_admission_dirty:
-        _write_int_map(VISIT_ADMISSION_FILE, _visit_admission_map)
+        _write_int_map(get_paths().file("visit_admission"), _visit_admission_map)
         _visit_admission_dirty = 0
 # Which FK fields to remap, and which model alias holds their ID map.
 _FK_REMAP: dict[str, dict[str, str]] = {
@@ -4555,7 +4523,7 @@ def _run_vitals_split_job(
 def run_job(job: dict, run_id: str, batch_size: int, dry_run: bool) -> bool:
     """Extract from V2, transform, POST to V3. Returns True on success."""
     facility  = job["facility"]
-    use_state_dir(facility)   
+    use_state_dir(facility, pipeline="v2_to_v3")   
     namespace = job["namespace"]
     mapping   = NAMESPACE_MAP.get(namespace)
     if mapping is None:
@@ -4710,7 +4678,7 @@ def run_migration(
                     log.error("Facility %s failed: %s", f, e)
         return
 
-    _claim_state(facilities[0])                                # CHANGED: replaces use_state_dir(...)
+    use_state_dir(facilities[0], pipeline="v2_to_v3", process_wide=True)                             
     global _completed_jobs
     _completed_jobs = _load_progress(run_id)
     _load_record_progress()
