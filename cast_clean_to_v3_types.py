@@ -3,7 +3,8 @@
 cast_clean_to_v3_types.py - standardise, cast and check columns against V3's types.
 
 It is meant to be called while <FACILITY>_CLEAN is being built (by the flatten step), so CLEAN holds the
-final, V3-typed data. It creates NO new schema, view or table. It only reads, checks, reports and FAILS.
+final, V3-typed data. It changes nothing in CLEAN itself: it reads, checks, reports and FAILS. What it reports
+(and the state of a run) is stored in Snowflake, in HOSPITALS.V3_CAST_AUDIT (see AUDIT STORE below).
 Today it reads the existing CLEAN tables so it can be tested before it is hooked into the flatten step.
 
 The plan (in order):
@@ -24,11 +25,17 @@ USAGE
   # just see the SQL it would run:
   python cast_clean_to_v3_types.py --facility WEMA_MEDICAL --table vitals --print-sql
 
-OUTPUT in output/typing/ (all start with <FACILITY>_<time>):
-  .csv           one row per column: what was converted, defaulted, filled, failed
-  _errors.csv    records with errors: table, record id, why, original values. A table with errors makes the script fail.
-  _changes.csv   audit list: every value changed or left empty, and every record skipped (a record it points to is
+OUTPUT, in Snowflake, schema HOSPITALS.V3_CAST_AUDIT (created on first use; set V3_AUDIT_SCHEMA to use another):
+  RUNS           one row per run: facility, schema pair, start/finish, status, RAW row count, dedup status
+  TABLE_STATE    one row per table per run: ok / failed / running / pending, the reason, the object built
+  COLUMN_REPORT  one row per column: what was converted, defaulted, filled, failed
+  ERRORS         records with errors: table, record id, why, original values. A table with errors makes the script fail.
+  CHANGES        audit list: every value changed or left empty, and every record skipped (a record it points to is
                  missing), with the original, the new value and what happened
+  LOG            what the run printed, line by line
+Every row has the RUN_ID. ERRORS, CHANGES, COLUMN_REPORT and LOG hold the original values of real records, so they are
+deleted after V3_AUDIT_KEEP_DAYS (default 90). No files are written. Needs a role that can CREATE SCHEMA in HOSPITALS
+(or an existing schema it can write to).
 
 V3 STRUCTURE: dags/jsons/v3-schema.json (or --structure <path>), the AI-mapper export (tables, defaults, models.required).
 It knows each table's service, nullability, defaults, enum values and required columns.
@@ -48,13 +55,14 @@ ENV: SNOWFLAKE_USER, SNOWFLAKE_ACCOUNT, SNOWFLAKE_WAREHOUSE, SNOWFLAKE_DATABASE,
 from __future__ import annotations
 
 import argparse
-import csv
+import contextlib
 import json
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 import os
 import re
 import sys
 import time
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -107,6 +115,16 @@ def _two_words(x: str) -> str:
     return f"REGEXP_COUNT(TRIM({x}), '[^ ]+') >= 2"
 
 
+# How a facility's staff type slash dates (3/12/24). Used ONLY for a date column whose own values do not prove the order
+# (no slash date with a part above 12). A column whose values prove an order, or mix both, keeps what its data shows.
+# FACILITY_DATE_ORDER: one convention for every date column of a facility. COLUMN_DATE_ORDER: one column; it wins over the facility.
+# Every entry is an ASSUMPTION until someone at the facility or the team confirms it. Each use is printed and shows in the report as "DMY (assumed)".
+FACILITY_DATE_ORDER = {
+    "WEMA_MEDICAL": "DMY",   # PENDING CONFIRMATION: Kenyan day-first convention; first seen on vitals.LMP "3/12/24"
+}
+COLUMN_DATE_ORDER: dict[tuple[str, str, str], str] = {}   # e.g. {("WEMA_MEDICAL", "vitals", "lmp"): "DMY"}
+
+
 # Fill an empty value from other columns of the same record. (table, column) -> (columns the rule uses, SQL builder).
 # patients: the old system left one name field empty and put the full name in another one.
 FALLBACK_RULES = {
@@ -133,7 +151,48 @@ FALLBACK_RULES = {
 # Names that other records link to by id (and patient names). An empty one gets a label so the record, and the links to it, survive.
 TABLE_DEFAULTS = {("core_departments", "name"): "Not given", ("inp_wards", "name"): "Not given",
                   ("procedures", "name"): "Not given", ("inv_products", "generic_name"): "Not given",
-                  ("patients", "first_name"): "Not given", ("patients", "last_name"): "Not given"}
+                  ("patients", "first_name"): "Not given", ("patients", "last_name"): "Not given",
+                  ("user_profiles", "last_name"): "Not given",        # e.g. the "Administrator" account: one word, no last name
+                  # Allergy and diagnosis: kept with an honest "Not specified" instead of losing the record (losing an allergy is worse
+                  # than a vague entry). A column listed here is allowed a default even though its name looks medical (see NEVER_DEFAULT_RE).
+                  # PENDING CONFIRMATION from the V3 owner: that nothing in V3 (alerts, filters by status) treats this text as a real value.
+                  ("evaluation_allergies", "allergen_text"): "Not specified",
+                  ("evaluation_diagnosis", "status"): "Not specified"}
+
+# Tables the type check leaves alone: they are built as before (not checked, not rebuilt as typed tables). Not migrated.
+# PENDING CONFIRMATION from the V3 owner: the organization and facility already exist in V3 (every V3 table carries
+# organization_id / facility_id). This does not stop snowflake_to_v3_migration from sending them; that is decided there.
+NOT_TYPE_CHECKED = {"core_organizations", "core_facilities"}
+
+# A record with an empty value here is left out and listed (a skip), not an error: V3 needs the value, nothing can fill it, and
+# the original record (notes included) stays in the changes list. (table, column)
+SKIP_WHEN_EMPTY = {("evaluation_visit_consultants", "consultant_id")}
+
+# A user column ("created_by", "user"...) may hold the person's username instead of an id. It is replaced by the id of the user
+# with that username (RAW's users table), and the username is kept in a new column <COLUMN>_NAME. No user, or several
+# users, with that username is an error: it is never guessed.
+USER_COLUMN_RE = re.compile(r"(_by|^user)$", re.I)
+
+# An allowed-word column whose value is not one of V3's words can be worked out from other columns of the record:
+# (table, column) -> (columns the rule needs, builder). The original is kept in <COLUMN>_NAME. Nothing worked out = an error.
+STORE_TYPE_WORDS = (("pharmacy", ("pharm", "dispens")), ("laboratory", ("lab",)), ("ward", ("ward",)),
+                    ("theater", ("theat", "operating")), ("consumable", ("consum",)), ("main", ("main",)),
+                    ("department", ("consult", "psych", "dental", "nurs", "opd", "clinic", "department")))
+
+
+def _store_type_sql(c: dict, spelled: str, allowed: str) -> str:
+    """inv_stores.type from the store's name (Silverwood stores 1 in the type column and the real information in the name), then is_main_store."""
+    t, n = f"LOWER(TRIM({c['type']}))", f"LOWER(TRIM({c['name']}))"
+    whens = [f"WHEN {t} IN ({allowed}) THEN {spelled}"]
+    for word, keys in STORE_TYPE_WORDS:
+        test = " OR ".join(f"{n} RLIKE {lit('(.*[^a-z])?' + k + '.*')}" for k in keys)
+        whens.append(f"WHEN {test} THEN {lit(word)}")
+    if "is_main_store" in c:
+        whens.append(f"WHEN LOWER(TRIM({c['is_main_store']})) IN ('1', 'true', 'yes', 'y') THEN 'main'")
+    return "CASE " + " ".join(whens) + " ELSE NULL END"
+
+
+DERIVED_ENUMS = {("inv_stores", "type"): (("name",), _store_type_sql)}
 
 # A "<something>_by" user column that V3 cannot leave empty gets user 1. One V3 allows to be empty stays empty
 # (approved_by, cancelled_by, deleted_by... being empty means it did not happen).
@@ -624,6 +683,7 @@ class ColPlan:
     own: str = ""                      # the tidied value before anything is filled in from a parent
     day_first: bool = True             # how this date column's 12/03/2024 is read when its order is proven month-first or day-first
     date_order: str = ""               # "DMY", "MDY", "MIXED", or "EXCEL" / "EPOCH" (the column has numbers of that kind and no other date format) when the column's own values show it
+    date_assumed: bool = False         # the order comes from FACILITY_DATE_ORDER / COLUMN_DATE_ORDER, not from the column's own values
     strict: bool = False               # a date is read by its own proof; a date that could be either order is an error (columns that mix both orders, or prove neither)
     zero_default: bool = False         # the default is the general 0 for numbers, not a listed default
     garbage_only: bool = False         # column may be empty in V3: only a value that cannot be read gets the listed default
@@ -633,6 +693,10 @@ class ColPlan:
     empty_if_unfit: bool = False       # a value that cannot be converted is left empty and listed instead of failing the table
     link: dict | None = None           # the parent table this column points to; a record whose parent is missing is skipped
     spelled: bool = False              # allowed-word column: a word differing only in capitals is written as V3 spells it
+    derived: bool = False              # allowed-word column worked out from other columns when its own value is not an allowed word
+    change_label: str = ""             # what the changes list says for a value this rule changed
+    user_lookup: dict | None = None    # a user column: text is replaced by the id of the user with that username
+    skip_if_empty: bool = False        # an empty value leaves the record out (SKIP_WHEN_EMPTY)
 
 
 def _parent_sql(name: str, ptr: str, info: dict) -> dict:
@@ -646,9 +710,9 @@ def _parent_sql(name: str, ptr: str, info: dict) -> dict:
 
 def plan_columns(table: str, columns: list[dict], structure: V3Structure, service: str | None = None,
                  parents: dict | None = None, date_orders: dict | None = None,
-                 links: dict | None = None) -> list[ColPlan]:
+                 links: dict | None = None, users: dict | None = None) -> list[ColPlan]:
     """Builds one ColPlan per column of a table: finds its V3 type, then sets up the conversion, 
-    length check, allowed-words check, default and parent checks."""
+    length check, allowed-words check, default and parent checks. users = {"table", "id", "username"} (SQL names): where a user column's text is looked up."""
     plans: list[ColPlan] = []
     must_have = structure.required_set(table, service)
     quoted = {c["name"].lower(): q(c["name"]) for c in columns}
@@ -662,7 +726,8 @@ def plan_columns(table: str, columns: list[dict], structure: V3Structure, servic
             else:                                                     # table unknown: 2. general name rule, 3. guess
                 tgt = (structure.name_rule(name) if structure else None) or guess_target(name)
         p = ColPlan(name=name, src_type=src, target=tgt, final=q(name))
-        p.protected = bool(NEVER_DEFAULT_RE.search(name)) or name.lower() == "payment_method"
+        p.protected = ((bool(NEVER_DEFAULT_RE.search(name)) or name.lower() == "payment_method")
+                       and (table.lower(), name.lower()) not in TABLE_DEFAULTS)
         p.required = tgt.source == "v3" and name.lower() in must_have
         p.typed = (src not in TEXT_TYPES and src in TYPED_OK and tgt.kind in ("int", "decimal", "float", "flag", "date", "timestamp"))
         is_text = src in TEXT_TYPES or p.typed
@@ -670,6 +735,11 @@ def plan_columns(table: str, columns: list[dict], structure: V3Structure, servic
             p.enum_values = tgt.enum_values
             words = " ".join(f"WHEN {lit(v.lower())} THEN {lit(v)}" for v in tgt.enum_values)
             p.final, p.spelled = f"CASE LOWER(TRIM({q(name)})) {words} ELSE {q(name)} END", True
+            drv = DERIVED_ENUMS.get((table.lower(), name.lower()))
+            if drv and all(n in quoted for n in drv[0]):
+                allowed_words = ", ".join(lit(v.lower()) for v in tgt.enum_values)
+                p.final, p.derived, p.fallback = drv[1](quoted, p.final, allowed_words), True, True
+                p.fill_test, p.change_label = f"({p.final}) IS DISTINCT FROM {q(name)}", "worked out from the other columns of the record"
         if links and tgt.source == "v3" and name.lower() in links:
             p.link = links[name.lower()]
         if is_text and tgt.kind in ("int", "decimal", "float", "flag", "date", "timestamp"):
@@ -683,6 +753,16 @@ def plan_columns(table: str, columns: list[dict], structure: V3Structure, servic
                 p.date_order = (date_orders or {}).get(name.lower(), "")
                 p.day_first = p.date_order != "MDY"
                 p.strict = p.date_order in ("MIXED", "")
+            if (users and tgt.kind == "int" and tgt.source == "v3" and USER_COLUMN_RE.search(name) and table.lower() != "users"):
+                raw = f"TRIM(t.{q(name)})"
+                # one object {username: id} built once (it does not refer to the row being read, which Snowflake needs here);
+                # a username shared by two different users is left out, so it stays an error instead of being guessed
+                umap = (f"(SELECT OBJECT_AGG(k, v) FROM (SELECT LOWER(TRIM(x.{users['username']})) AS k, TO_VARIANT(MAX(TRIM(x.{users['id']}))) AS v "
+                        f"FROM {users['table']} x WHERE TRIM(x.{users['username']}) <> '' AND TRIM(x.{users['id']}) <> '' "
+                        f"GROUP BY 1 HAVING COUNT(DISTINCT TRIM(x.{users['id']})) = 1))")
+                raw = f"TRIM(t.{q(name)})"
+                lookup = f"IFF({raw} <> '' AND TRY_TO_NUMBER({raw}, 38, 0) IS NULL, GET({umap}, LOWER({raw}))::STRING, NULL)"
+                p.own, p.clean, p.user_lookup = clean_sql(name), f"COALESCE({lookup}, {p.clean})", users     # own = the text as typed (not upper-cased)
             if parents and name.lower() == "patient_id" and tgt.kind == "int":
                 for ptr, ptable in PARENTS:        # the patient is also known from the visit or invoice this record belongs to
                     if ptr in quoted and ptable != table.lower() and ptable in parents:
@@ -725,6 +805,9 @@ def plan_columns(table: str, columns: list[dict], structure: V3Structure, servic
         p.empty_if_unfit = p.converted and (table.lower(), name.lower()) in EMPTY_WHEN_UNFIT and tgt.nullable is not False
         p.fail_is_error = (p.converted and not p.empty_if_unfit
                            and not (p.default is not None and not p.zero_default))
+        if p.user_lookup:
+            p.fail_is_error = True        # a username nobody has is an error, never replaced by user 1
+        p.skip_if_empty = (table.lower(), name.lower()) in SKIP_WHEN_EMPTY and tgt.source == "v3"
         plans.append(p)
     return plans
 
@@ -732,11 +815,15 @@ def plan_columns(table: str, columns: list[dict], structure: V3Structure, servic
 def _enum_bad(p: ColPlan, allowed: str) -> str:
     """SQL test: a value is present but is not one of the words V3 allows (capital letters ignored)."""
     c = q(p.name)
+    if p.derived:
+        return f"{c} IS NOT NULL AND TRIM({c}) <> '' AND ({p.final}) IS NULL"
     return f"{c} IS NOT NULL AND TRIM({c}) <> '' AND LOWER(TRIM({c})) NOT IN ({allowed})"
 
 
 def _missing_test(p: ColPlan) -> str:
     """SQL test: the value is empty (NULL or blank)."""
+    if p.derived:
+        return f"{_blank(q(p.name))} AND ({p.final}) IS NULL"
     if p.converted:
         return f"{q(p.name + '__C')} IS NULL"
     return _blank(f"TO_VARCHAR({p.final})")
@@ -757,6 +844,9 @@ def _cast_failed_reason(p: ColPlan) -> str:
     note = (" (this column has both day-first and month-first dates)" if p.strict and p.date_order == "MIXED" else
             " (no date in this column shows whether it is day-first or month-first)" if p.strict and p.target.kind in ("date", "timestamp") else "")
     tail = lit(label + note)
+    if p.user_lookup:
+        verb = f"IFF(TRY_TO_NUMBER({helper}, 38, 0) IS NULL, ' is not a user id, and no single user has that username', {verb})"
+        tail = f"IFF(TRY_TO_NUMBER({helper}, 38, 0) IS NULL, '', {lit(label)})"
     if p.target.kind in ("date", "timestamp") and p.date_order in _NUMBER_KINDS:
         tail = (f"{lit(label + note)} || IFF({helper} RLIKE '{_NUMBER_KINDS[p.date_order]}', "
                 f"{lit(' (a number is read as a date only in the years %d to %d)' % NUMBER_DATE_YEARS)}, '')")
@@ -797,7 +887,9 @@ def error_reason_sql(plans: list[ColPlan]) -> str | None:
             parts.append(f"IFF(LENGTH({q(p.name)}) > {p.target.length}, {lit(p.name + ' (too long, max ' + str(p.target.length) + ')')}, NULL)")
         if p.enum_values:
             allowed = ", ".join(lit(v.lower()) for v in p.enum_values)
-            parts.append(f"IFF({_enum_bad(p, allowed)}, {lit(p.name + ' (not an allowed value)')}, NULL)")
+            hint = " and the other columns did not show one" if p.derived else ""
+            parts.append(f"IFF({_enum_bad(p, allowed)}, {lit(p.name + ': ')} || '\"' || TRIM({q(p.name)}) || '\"' || "
+                         f"{lit(' is not an allowed value' + hint + ' (allowed: ' + ', '.join(p.enum_values) + ')')}, NULL)")
         if p.fail_is_error:
             parts.append(_cast_failed_reason(p))
         if p.strict and p.target.kind in ("date", "timestamp"):
@@ -816,6 +908,8 @@ def skip_reason_sql(plans: list[ColPlan]) -> str | None:
         if p.id_required:
             empty = f"{q(p.name + '__C')} IS NULL" if p.converted else _blank(q(p.name))
             parts.append(f"IFF({empty}, 'id is empty and cannot be filled', NULL)")
+        if p.skip_if_empty:
+            parts.append(f"IFF({_missing_test(p)}, {lit(p.name + ' is empty, and V3 needs it')}, NULL)")
         if p.link:
             value = q(p.name)
             why = f"{p.link['table']}{' (or that record was skipped)' if p.link.get('excluded') else ''}"
@@ -836,6 +930,8 @@ def _source_cte(facility: str, table: str, plans: list[ColPlan]) -> str:
         if p.converted and p.target.kind == "timestamp":
             items += [f"{_date_text(p.clean)} AS {q(p.name + '__D')}", f"{_time_text(p.clean)} AS {q(p.name + '__T')}"]
     for p in plans:
+        if p.user_lookup and not p.parents:
+            items.append(f"{p.own} AS {q(p.name + '__O')}")
         if p.parents:
             items.append(f"{p.own} AS {q(p.name + '__O')}")
             for i, pa in enumerate(p.parents):
@@ -865,9 +961,27 @@ def _record_id(plans: list[ColPlan]) -> str:
     return f"TO_VARCHAR({q(id_col)})" if id_col else "NULL"
 
 
+def original_text_columns(plans: list[ColPlan]) -> list[str]:
+    """Extra columns <COLUMN>_NAME that keep the text a value was worked out from (a username, a store type), empty when the
+    value was already right. Not made when the table already has a column of that name."""
+    have, out = {p.name.lower() for p in plans}, []
+    for p in plans:
+        name = p.name + ("_NAME" if p.name.isupper() else "_name")
+        if name.lower() in have:
+            continue
+        if p.user_lookup:
+            o = q(p.name + "__O")
+            out.append(f"IFF({o} IS NOT NULL AND TRY_TO_NUMBER({o}, 38, 0) IS NULL, {o}, NULL) AS {q(name)}")
+        elif p.derived:
+            o = f"TRIM({q(p.name)})"
+            out.append(f"IFF({o} <> '' AND LOWER({o}) <> LOWER({p.final}), {o}, NULL) AS {q(name)}")
+    return out
+
+
 def typed_select_sql(facility: str, table: str, plans: list[ColPlan]) -> str:
     """SQL for the finished data of one table: every column converted to its V3 type, defaults filled in, skipped records left out."""
     items = [f"{p.final} AS {q(p.name)}" if p.final != q(p.name) else q(p.name) for p in plans]
+    items += original_text_columns(plans)
     skip = skip_reason_sql(plans)
     where = f"\nWHERE ({skip}) IS NULL" if skip else ""
     return f"{_source_cte(facility, table, plans)}\nSELECT {', '.join(items)}\nFROM s{where}"
@@ -918,7 +1032,11 @@ def change_sql(facility: str, table: str, plans: list[ColPlan], limit: int) -> s
             label = "date written in another format"
         else:
             differs, label = f"{new} IS DISTINCT FROM {orig}", "changed"
-        if p.fallback:
+        if p.change_label:
+            label = p.change_label
+        elif p.user_lookup:
+            label = "username replaced by the user's id"
+        elif p.fallback:
             label = "rearranged from other columns"
         elif p.spelled:
             label = "spelling changed to the word V3 allows"
@@ -1032,7 +1150,7 @@ def verify(cur, facility: str, table: str, plans: list[ColPlan], route: str = "u
                        "to": p.target.label() if not p.enum_values or p.converted or p.limited else "enum", "type_source": p.target.source, "rows": rows_n,
                        "values_before": before, "converted": converted, "failed": failed,
                        "defaulted": defaulted, "filled_from_other_columns": filled, "rounded": rounded,
-                       "too_long": too_long, "date_order": p.date_order,
+                       "too_long": too_long, "date_order": p.date_order + (" (assumed)" if p.date_assumed else ""),
                        "records_with_errors": held, "records_skipped": skipped, "failed_examples": examples,
                        "status": status})
     if not report and (held or skipped):
@@ -1073,7 +1191,7 @@ def print_report(rows: list[dict]) -> None:
         print(f"  records with errors: {held} of {rows[0]['rows']}")
     skipped = max((r.get("records_skipped") or 0) for r in rows)
     if skipped:
-        print(f"  records skipped (a record they point to is missing): {skipped} of {rows[0]['rows']}")
+        print(f"  records skipped (left out of the migration): {skipped} of {rows[0]['rows']}")
 
 
 # ── the run ──────────────────────────────────────────────────────────────────
@@ -1108,6 +1226,21 @@ def find_parents(cur, facility: str) -> dict:
             out[key] = {"table": f"{sf_schema(facility, CLEAN_SUFFIX)}.{q(info['name'])}",
                         "id": q(info["cols"]["id"]), "value": q(patient)}
     return out
+
+
+def find_users(all_cols: dict, facility: str) -> dict | None:
+    """The CLEAN users table with its id and username columns, for looking up a user column's text; None when there is no such table."""
+    for table, cols in all_cols.items():
+        if table.lower() == "users":
+            names = {c["name"].lower(): c["name"] for c in cols}
+            if "id" in names and "username" in names:
+                return {"table": f"{sf_schema(facility, CLEAN_SUFFIX)}.{q(table)}", "id": q(names["id"]), "username": q(names["username"])}
+    return None
+
+
+def is_user_column(name: str) -> bool:
+    """True for a column that holds a user: created_by, recorded_by, user..."""
+    return bool(USER_COLUMN_RE.search(name))
 
 
 def link_candidates(structure: V3Structure, table: str, service: str | None, columns: list[dict], derived: set) -> dict[str, str]:
@@ -1165,21 +1298,47 @@ def detect_date_orders(cur, facility: str, table: str, plans: list[ColPlan]) -> 
     return out
 
 
+def apply_date_conventions(facility: str, table: str, plans: list[ColPlan], orders: dict) -> tuple[dict, dict]:
+    """Fills the date columns whose order the data does not prove from COLUMN_DATE_ORDER, then FACILITY_DATE_ORDER.
+    Returns (orders, assumed) where assumed = {column: order}. The data always wins: a column that proves an order or mixes both is left alone."""
+    fac, out, assumed = facility.upper(), dict(orders), {}
+    for p in plans:
+        if not (p.converted and p.target.kind in ("date", "timestamp")):
+            continue
+        n = p.name.lower()
+        want = COLUMN_DATE_ORDER.get((fac, table.lower(), n)) or FACILITY_DATE_ORDER.get(fac)
+        if not want:
+            continue
+        found = out.get(n, "")
+        if not found:
+            out[n], assumed[n] = want, want
+        elif found in ("DMY", "MDY", "MIXED") and found != want:
+            print(f"   {n}: the column's own dates show {found}; the {fac} convention ({want}) is not used for it")
+    return out, assumed
+
+
 def compare_and_cast(cur, facility: str, table: str, columns: list[dict], structure: V3Structure,
                      *, print_sql: bool, route: str, service: str | None = None,
                      parents: dict | None = None, links: dict | None = None,
-                     skipped_out: dict | None = None, plans_out: list | None = None) -> tuple[list[dict], list[dict], list[dict]]:
+                     skipped_out: dict | None = None, plans_out: list | None = None,
+                     users: dict | None = None) -> tuple[list[dict], list[dict], list[dict]]:
     """Checks one table: plans it, counts what converts and what fails, and lists the errors and, for the audit, every changed value and skipped record. Creates nothing in Snowflake."""
     if structure and structure.key(table, service) is None:
         print(f"\n>> {table}: not found in the V3 structure, or the name exists in several V3 services "
               f"and the mapping file does not say which - using GUESSED types for this table")
-    plans = plan_columns(table, columns, structure, service, parents, None, links)
+    plans = plan_columns(table, columns, structure, service, parents, None, links, users)
     if not print_sql:
         orders = detect_date_orders(cur, facility, table, plans)
+        orders, assumed = apply_date_conventions(facility, table, plans, orders)
         if any(orders.values()):
-            plans = plan_columns(table, columns, structure, service, parents, orders, links)
+            plans = plan_columns(table, columns, structure, service, parents, orders, links, users)
+            for p in plans:
+                p.date_assumed = p.name.lower() in assumed
             for name, order in orders.items():
-                if order:
+                if order in ("DMY", "MDY") and name in assumed:
+                    print(f"   {name}: dates are read {'day-first' if order == 'DMY' else 'month-first'} by the {facility.upper()} convention "
+                          f"(ASSUMED - no date in this column proves it)")
+                elif order:
                     print(f"   {name}: " + {"DMY": "dates are read day-first", "MDY": "dates are read month-first", "EXCEL": "numbers are read as Excel day numbers",
                                  "EPOCH": "numbers are read as Unix time (UTC)"}.get(order, "the column MIXES both orders: each date is read by its own proof, and a date that could be either is an error"))
     if plans_out is not None:
@@ -1223,6 +1382,14 @@ def compare_and_cast(cur, facility: str, table: str, columns: list[dict], struct
         cur.execute(skipped_sample_sql(facility, table, plans, ERROR_SAMPLE_LIMIT))
         changes = [{"table": table, "record_id": rid, "column": "(whole record)", "original": row,
                     "new_value": "skipped, not migrated", "what_happened": why} for rid, why, row in cur.fetchall()]
+        groups: dict[str, int] = {}
+        for c in changes:           # why records were skipped, grouped (ids and values taken out), biggest first
+            key = re.sub(r"\b\d+\b", "#", re.sub(r'"[^"]*"', '"..."', c["what_happened"]))
+            groups[key] = groups.get(key, 0) + 1
+        print("  skipped because:")
+        for key, n in sorted(groups.items(), key=lambda kv: -kv[1])[:6]:
+            print(f"    {n:>6}  {key}")
+        print(f"    (every skipped record, with its original values, is in the audit CHANGES list: what_happened / new_value = 'skipped, not migrated')")
         total = max(int(r.get("records_skipped") or 0) for r in report)
         if total > len(changes):
             changes.append({"table": table, "record_id": "(LIST CUT OFF)", "column": "(whole record)", "original": "",
@@ -1263,30 +1430,285 @@ def parents_first(tables: list[str], links: dict) -> list[str]:
     return out
 
 
-def write_reports(facility: str, rows: list[dict], errors: list[dict], changes: list[dict], report_dir: str | None = None) -> None:
-    """Saves the report, the errors and the changes as CSV files in output/typing (or report_dir); an empty list writes no file."""
-    stamp = time.strftime('%Y%m%dT%H%M%S')
-    out_dir = Path(report_dir) if report_dir else Path(__file__).resolve().parent / "output" / "typing"
-    for name, data in ((f"{facility.upper()}_{stamp}.csv", rows), (f"{facility.upper()}_{stamp}_errors.csv", errors),
-                       (f"{facility.upper()}_{stamp}_changes.csv", changes)):
-        if data:
-            out_dir.mkdir(parents=True, exist_ok=True)
-            with open(out_dir / name, "w", newline="", encoding="utf-8") as fh:
-                w = csv.DictWriter(fh, fieldnames=list(data[0].keys()))
-                w.writeheader()
-                w.writerows(data)
-            kind = "Errors" if "_errors" in name else "Changes and skipped records" if "_changes" in name else "Report"
-            print(f"{kind} saved: {out_dir / name}")
+# AUDIT STORE (Snowflake)
+#
+# Everything a run reports is stored in AUDIT_SCHEMA instead of files (files vanish with an Airflow container, and are hard to
+# search). Tables, all keyed by RUN_ID (+ FACILITY):
+#   RUNS, TABLE_STATE   the run and the state of each table (this is what --retry-failed reads)
+#   COLUMN_REPORT, ERRORS, CHANGES, LOG   what the check found / did / printed
+# A write that fails stops the run with a clear message, before the table is built (the LOG alone is best effort).
+# The rows that hold real values (all but RUNS and TABLE_STATE) are deleted after V3_AUDIT_KEEP_DAYS; RUNS and TABLE_STATE
+# rows older than that go too, except the latest run of each schema (a retry needs it).
+AUDIT_SCHEMA_ENV = "V3_AUDIT_SCHEMA"
+DEFAULT_AUDIT_SCHEMA = "HOSPITALS.V3_CAST_AUDIT"
+AUDIT_KEEP_DAYS_ENV = "V3_AUDIT_KEEP_DAYS"
+DEFAULT_AUDIT_KEEP_DAYS = 90
+_AUDIT_TABLES = {
+    "RUNS": "RUN_ID STRING, FACILITY STRING, RAW_SCHEMA STRING, CLEAN_SCHEMA STRING, SOURCE STRING, STARTED_AT TIMESTAMP_TZ, "
+            "FINISHED_AT TIMESTAMP_TZ, STATUS STRING, RAW_ROWS NUMBER, DEDUP_STATUS STRING",
+    "TABLE_STATE": "RUN_ID STRING, FACILITY STRING, TABLE_NAME STRING, STATUS STRING, OBJECT_TYPE STRING, ERROR STRING, UPDATED_AT TIMESTAMP_TZ",
+    "COLUMN_REPORT": "RUN_ID STRING, FACILITY STRING, TABLE_NAME STRING, ROUTE STRING, COLUMN_NAME STRING, SOURCE_TYPE STRING, TARGET_TYPE STRING, "
+                     "TYPE_SOURCE STRING, ROWS_IN NUMBER, VALUES_BEFORE NUMBER, CONVERTED NUMBER, FAILED NUMBER, DEFAULTED NUMBER, "
+                     "FILLED_FROM_OTHER_COLUMNS NUMBER, ROUNDED NUMBER, TOO_LONG NUMBER, DATE_ORDER STRING, RECORDS_WITH_ERRORS NUMBER, "
+                     "RECORDS_SKIPPED NUMBER, FAILED_EXAMPLES STRING, STATUS STRING, LOGGED_AT TIMESTAMP_TZ",
+    "ERRORS": "RUN_ID STRING, FACILITY STRING, TABLE_NAME STRING, RECORD_ID STRING, ERROR STRING, ORIGINAL_VALUES STRING, LOGGED_AT TIMESTAMP_TZ",
+    "CHANGES": "RUN_ID STRING, FACILITY STRING, TABLE_NAME STRING, RECORD_ID STRING, COLUMN_NAME STRING, ORIGINAL STRING, NEW_VALUE STRING, "
+               "WHAT_HAPPENED STRING, LOGGED_AT TIMESTAMP_TZ",
+    "LOG": "RUN_ID STRING, FACILITY STRING, TABLE_NAME STRING, LOGGED_AT TIMESTAMP_TZ, LINE STRING",
+}
+_AUDIT_READY: set[str] = set()
+_INSERT_CHUNK = 2000
+
+
+def audit_schema() -> str:
+    """The schema the audit tables live in: $V3_AUDIT_SCHEMA, else HOSPITALS.V3_CAST_AUDIT."""
+    return (os.getenv(AUDIT_SCHEMA_ENV, "").strip() or DEFAULT_AUDIT_SCHEMA).upper()
+
+
+def audit_keep_days() -> int:
+    """How many days the rows with real values are kept (0 = never delete)."""
+    try:
+        return max(0, int(os.getenv(AUDIT_KEEP_DAYS_ENV, "").strip() or DEFAULT_AUDIT_KEEP_DAYS))
+    except ValueError:
+        raise ValueError(f"{AUDIT_KEEP_DAYS_ENV} must be a whole number of days") from None
+
+
+def _now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _num(v):
+    """A report number for the NUMBER columns ('' or None -> NULL)."""
+    if v is None or v == "":
+        return None
+    try:
+        return int(float(v))
+    except (TypeError, ValueError):
+        return None
+
+
+class _Tee:
+    """Passes everything printed on to the real stdout and keeps the finished lines for Audit.flush_log()."""
+
+    def __init__(self, real, audit):
+        self.real, self.audit, self.partial = real, audit, ""
+
+    def write(self, text):
+        self.real.write(text)
+        self.partial += text
+        *lines, self.partial = self.partial.split("\n")
+        for line in lines:
+            self.audit.log_line(line)
+        return len(text)
+
+    def flush(self):
+        self.real.flush()
+
+    def __getattr__(self, name):
+        return getattr(self.real, name)
+
+
+class Audit:
+    """One run's connection to the audit tables: stores the reports, the state and the log. `source` is 'manual' (python flatten_jsons_schemas.py),
+    'airflow' (a single table run by the DAG) or 'standalone' (this script on its own)."""
+
+    def __init__(self, cur, facility: str, raw_schema: str | None = None, clean_schema: str | None = None,
+                 run_id: str | None = None, source: str = "manual", schema: str | None = None):
+        self.cur, self.facility, self.raw_schema, self.clean_schema = cur, facility.upper(), raw_schema, clean_schema
+        self.source = source
+        self.schema = (schema or audit_schema()).upper()
+        self.run_id = run_id or _now().strftime("%Y%m%dT%H%M%S") + ("" if source == "manual" else "-" + uuid.uuid4().hex[:4])
+        self.started_at = _now()
+        self.current_table: str | None = None
+        self._lines: list[tuple] = []
+
+    # setup
+    def ensure(self) -> None:
+        """Creates the schema and tables the first time (once per process)."""
+        if self.schema in _AUDIT_READY:
+            return
+        try:
+            self.cur.execute(f"CREATE SCHEMA IF NOT EXISTS {self.schema}")
+            for name, cols in _AUDIT_TABLES.items():
+                self.cur.execute(f"CREATE TABLE IF NOT EXISTS {self.schema}.{name} ({cols})")
+        except Exception as e:                 # noqa: BLE001
+            raise RuntimeError(f"Cannot create or use the audit schema {self.schema}: {e}. The role needs CREATE SCHEMA on the database "
+                               f"(or an existing schema it can write to; set {AUDIT_SCHEMA_ENV}). Nothing was changed in CLEAN.") from e
+        _AUDIT_READY.add(self.schema)
+
+    def _write(self, statements: list[tuple]) -> None:
+        """Runs the statements as one transaction: all or nothing."""
+        self.ensure()
+        self.cur.execute("BEGIN")
+        try:
+            for sql, params in statements:
+                if isinstance(params, list):
+                    for i in range(0, len(params), _INSERT_CHUNK):
+                        self.cur.executemany(sql, params[i:i + _INSERT_CHUNK])
+                else:
+                    self.cur.execute(sql, params)
+            self.cur.execute("COMMIT")
+        except Exception as e:                 # noqa: BLE001
+            try:
+                self.cur.execute("ROLLBACK")
+            except Exception:                  # noqa: BLE001
+                pass
+            raise RuntimeError(f"Could not write to the audit schema {self.schema}: {e}. Nothing was changed in CLEAN.") from e
+
+    # runs and table state
+    def save_run(self, status: str = "running", raw_rows: int | None = None, dedup: str = "pending", finished: bool = False) -> None:
+        """Writes (replaces) this run's row in RUNS."""
+        t = f"{self.schema}.RUNS"
+        self._write([
+            (f"DELETE FROM {t} WHERE RUN_ID = %s AND FACILITY = %s", (self.run_id, self.facility)),
+            (f"INSERT INTO {t} (RUN_ID, FACILITY, RAW_SCHEMA, CLEAN_SCHEMA, SOURCE, STARTED_AT, FINISHED_AT, STATUS, RAW_ROWS, DEDUP_STATUS) "
+             f"VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+             (self.run_id, self.facility, self.raw_schema, self.clean_schema, self.source, self.started_at, _now() if finished else None,
+              status, raw_rows, dedup))])
+
+    def save_table(self, table: str, status: str, object_type: str | None = None, error: str | None = None) -> None:
+        """Writes (replaces) one table's row in TABLE_STATE."""
+        t = f"{self.schema}.TABLE_STATE"
+        self._write([
+            (f"DELETE FROM {t} WHERE RUN_ID = %s AND FACILITY = %s AND TABLE_NAME = %s", (self.run_id, self.facility, table)),
+            (f"INSERT INTO {t} (RUN_ID, FACILITY, TABLE_NAME, STATUS, OBJECT_TYPE, ERROR, UPDATED_AT) VALUES (%s, %s, %s, %s, %s, %s, %s)",
+             (self.run_id, self.facility, table, status, object_type, error, _now()))])
+
+    def save_pending(self, tables: list[str]) -> None:
+        """Writes a `pending` row for each table not yet in TABLE_STATE for this run (one transaction)."""
+        if not tables:
+            return
+        t = f"{self.schema}.TABLE_STATE"
+        now = _now()
+        self._write([
+            (f"DELETE FROM {t} WHERE RUN_ID = %s AND FACILITY = %s AND STATUS = 'pending'", (self.run_id, self.facility)),
+            (f"INSERT INTO {t} (RUN_ID, FACILITY, TABLE_NAME, STATUS, OBJECT_TYPE, ERROR, UPDATED_AT) VALUES (%s, %s, %s, %s, %s, %s, %s)",
+             [(self.run_id, self.facility, x, "pending", None, None, now) for x in tables])])
+
+    def load_latest(self) -> dict | None:
+        """The state of the latest run by hand of this RAW schema, shaped like the in-memory run state, or None when there is none."""
+        self.ensure()
+        self.cur.execute(f"SELECT RUN_ID, STARTED_AT, RAW_ROWS, DEDUP_STATUS FROM {self.schema}.RUNS "
+                         f"WHERE RAW_SCHEMA = %s AND SOURCE = 'manual' ORDER BY STARTED_AT DESC LIMIT 1", (self.raw_schema,))
+        row = self.cur.fetchone()
+        if not row:
+            return None
+        run_id, started, raw_rows, dedup = row
+        self.cur.execute(f"SELECT TABLE_NAME, STATUS, OBJECT_TYPE, ERROR, UPDATED_AT FROM {self.schema}.TABLE_STATE "
+                         f"WHERE RUN_ID = %s AND FACILITY = %s", (run_id, self.facility))
+        tables = {}
+        for name, status, obj, error, updated in self.cur.fetchall():
+            info = {"status": status}
+            if updated:
+                info["updated_at"] = updated.isoformat(timespec="seconds") if hasattr(updated, "isoformat") else str(updated)
+            if obj:
+                info["object"] = obj
+            if error:
+                info["error"] = error
+            tables[name] = info
+        self.run_id = run_id
+        if isinstance(started, datetime):
+            self.started_at = started
+        return {"version": 2, "raw_schema": self.raw_schema, "run_id": run_id,
+                "started_at": started.isoformat(timespec="seconds") if hasattr(started, "isoformat") else str(started),
+                "raw_rows": raw_rows, "dedup": dedup or "pending", "tables": tables}
+
+    # what the check found
+    def save_reports(self, rows: list[dict], errors: list[dict], changes: list[dict]) -> dict:
+        """Stores the column report, the errors and the changes of the tables in them. A table checked again in the same run
+        replaces its own earlier rows. Returns how many rows went where."""
+        tables = sorted({r["table"] for r in rows} | {e["table"] for e in errors} | {c["table"] for c in changes})
+        now, rid, fac, sch = _now(), self.run_id, self.facility, self.schema
+        statements = []
+        for name in ("COLUMN_REPORT", "ERRORS", "CHANGES"):
+            for t in tables:
+                statements.append((f"DELETE FROM {sch}.{name} WHERE RUN_ID = %s AND FACILITY = %s AND TABLE_NAME = %s", (rid, fac, t)))
+        if rows:
+            statements.append((
+                f"INSERT INTO {sch}.COLUMN_REPORT (RUN_ID, FACILITY, TABLE_NAME, ROUTE, COLUMN_NAME, SOURCE_TYPE, TARGET_TYPE, TYPE_SOURCE, ROWS_IN, "
+                f"VALUES_BEFORE, CONVERTED, FAILED, DEFAULTED, FILLED_FROM_OTHER_COLUMNS, ROUNDED, TOO_LONG, DATE_ORDER, RECORDS_WITH_ERRORS, "
+                f"RECORDS_SKIPPED, FAILED_EXAMPLES, STATUS, LOGGED_AT) VALUES ({', '.join(['%s'] * 22)})",
+                [(rid, fac, r["table"], r.get("route"), r.get("column"), r.get("from"), r.get("to"), r.get("type_source"), _num(r.get("rows")),
+                  _num(r.get("values_before")), _num(r.get("converted")), _num(r.get("failed")), _num(r.get("defaulted")),
+                  _num(r.get("filled_from_other_columns")), _num(r.get("rounded")), _num(r.get("too_long")), r.get("date_order"),
+                  _num(r.get("records_with_errors")), _num(r.get("records_skipped")), r.get("failed_examples"), r.get("status"), now)
+                 for r in rows]))
+        if errors:
+            statements.append((f"INSERT INTO {sch}.ERRORS (RUN_ID, FACILITY, TABLE_NAME, RECORD_ID, ERROR, ORIGINAL_VALUES, LOGGED_AT) "
+                               f"VALUES (%s, %s, %s, %s, %s, %s, %s)",
+                               [(rid, fac, e["table"], str(e.get("record_id")), e.get("error"), e.get("original_values"), now) for e in errors]))
+        if changes:
+            statements.append((f"INSERT INTO {sch}.CHANGES (RUN_ID, FACILITY, TABLE_NAME, RECORD_ID, COLUMN_NAME, ORIGINAL, NEW_VALUE, WHAT_HAPPENED, LOGGED_AT) "
+                               f"VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                               [(rid, fac, c["table"], str(c.get("record_id")), c.get("column"), c.get("original"), c.get("new_value"),
+                                 c.get("what_happened"), now) for c in changes]))
+        if statements:
+            self._write(statements)
+        out = {"report": len(rows), "errors": len(errors), "changes": len(changes)}
+        print(f"Stored in {self.schema} (run {rid}): {out['report']} report rows, {out['errors']} errors, {out['changes']} changes/skips")
+        if any(c.get("new_value") == "skipped, not migrated" for c in changes):
+            print(f"  Why records were skipped: SELECT * FROM {sch}.CHANGES WHERE RUN_ID = '{rid}' AND FACILITY = '{fac}' "
+                  f"AND NEW_VALUE = 'skipped, not migrated'")
+        return out
+
+    # the log
+    def log_line(self, line: str) -> None:
+        if line.strip():
+            self._lines.append((self.run_id, self.facility, self.current_table, _now(), line[:4000]))
+
+    def flush_log(self) -> None:
+        """Writes the printed lines kept so far. Best effort: a failure here is only a warning (the lines are still on the console)."""
+        lines, self._lines = self._lines, []
+        if not lines:
+            return
+        try:
+            self._write([(f"INSERT INTO {self.schema}.LOG (RUN_ID, FACILITY, TABLE_NAME, LOGGED_AT, LINE) VALUES (%s, %s, %s, %s, %s)", lines)])
+        except Exception as e:                 # noqa: BLE001
+            sys.__stderr__.write(f"WARNING: the log could not be stored in {self.schema}.LOG: {e}\n")
+
+    @contextlib.contextmanager
+    def capture_log(self):
+        """Keeps what is printed inside the block (and still prints it); call flush_log() to store it."""
+        real = sys.stdout
+        tee = _Tee(real, self)
+        sys.stdout = tee
+        try:
+            yield self
+        finally:
+            sys.stdout = real
+            if tee.partial:
+                self.log_line(tee.partial)
+            self.flush_log()
+
+    # clean-up
+    def prune(self, days: int | None = None) -> None:
+        """Deletes rows older than the keep period (see AUDIT STORE). Best effort: a failure is only a warning."""
+        days = audit_keep_days() if days is None else days
+        if not days:
+            return
+        sch, cutoff = self.schema, _now() - timedelta(days=days)
+        old_runs = (f"SELECT RUN_ID, FACILITY FROM {sch}.RUNS WHERE STARTED_AT < %s AND (RUN_ID, FACILITY) NOT IN "
+                    f"(SELECT MAX_BY(RUN_ID, STARTED_AT), FACILITY FROM {sch}.RUNS GROUP BY COALESCE(RAW_SCHEMA, FACILITY), FACILITY)")
+        try:
+            stmts = [(f"DELETE FROM {sch}.{name} WHERE LOGGED_AT < %s", (cutoff,)) for name in ("COLUMN_REPORT", "ERRORS", "CHANGES", "LOG")]
+            stmts.append((f"DELETE FROM {sch}.TABLE_STATE WHERE (RUN_ID, FACILITY) IN ({old_runs})", (cutoff,)))
+            stmts.append((f"DELETE FROM {sch}.RUNS WHERE STARTED_AT < %s AND (RUN_ID, FACILITY) NOT IN "
+                          f"(SELECT MAX_BY(RUN_ID, STARTED_AT), FACILITY FROM {sch}.RUNS GROUP BY COALESCE(RAW_SCHEMA, FACILITY), FACILITY)", (cutoff,)))
+            self._write(stmts)
+        except Exception as e:                 # noqa: BLE001
+            print(f"WARNING: old audit rows were not cleaned up: {e}")
 
 
 def check_table_for_flatten(cur, facility: str, table: str, source: str, columns: list[dict], service: str, *,
                             structure: V3Structure, derived: set | frozenset = frozenset(), raw_parents: dict | None = None,
-                            report_dir: str | None = None) -> dict:
+                            audit: Audit | None = None, users: dict | None = None) -> dict:
     """Used by the flatten step. Checks one table that has been read, as text, into the temporary table `source`
     (columns = its names and types: TEXT, or VARIANT for nested values). Reads only; creates nothing.
     raw_parents = {parent table (lower case): {"table": SQL name, "id": quoted id column, "value": quoted patient column or None}}.
+    users = {"table": SQL name, "id": quoted id column, "username": quoted username column}: where a user column's text (created_by = 'admin') is looked up.
     Returns {"ok", "select_sql" (the finished typed SELECT, set only when ok), "failed_records", "skipped_records", "errors", "changes"}.
-    The report CSV files are saved as well."""
+    The report, errors and changes are stored in the audit schema first (`audit`; a single-table Audit is made when none is given),
+    so a table is never built unless its findings are on record."""
     raw_parents = raw_parents or {}
     parents = {t: {k: v for k, v in info.items() if k in ("table", "id", "value")}
                for t, info in raw_parents.items() if info.get("value") and t in {p for _, p in PARENTS}}
@@ -1297,21 +1719,25 @@ def check_table_for_flatten(cur, facility: str, table: str, source: str, columns
     plans: list[ColPlan] = []
     try:
         rows, errors, changes = compare_and_cast(cur, facility, table, columns, structure, print_sql=False, route="mapping",
-                                                 service=service, parents=parents, links=links, plans_out=plans)
+                                                 service=service, parents=parents, links=links, plans_out=plans, users=users)
         failed = max([int(r.get("records_with_errors") or 0) for r in rows] or [0])
         skipped = max([int(r.get("records_skipped") or 0) for r in rows] or [0])
         select_sql = None if failed else typed_select_sql(facility, table, plans)
     finally:
         SOURCE_OVERRIDE.pop((facility.upper(), table.lower()), None)
-    write_reports(facility, rows, errors, changes, report_dir)
+    if audit is None:
+        audit = Audit(cur, facility, source="standalone")
+        audit.save_run("single table", finished=True)
+    audit.save_reports(rows, errors, changes)
     return {"ok": not failed, "select_sql": select_sql, "failed_records": failed, "skipped_records": skipped,
             "errors": errors, "changes": changes}
 
 
 def run(facility: str, tables: list[str] | None = None, conf: dict | None = None,
         structure_path: str | None = None, skip: list[str] | None = None,
-        mapping_path: str | None = None, print_sql: bool = False, report_dir: str | None = None) -> list[dict]:
-    """Entry point for the command line and the flatten step: checks every table given, then raises TypingErrors if any has errors."""
+        mapping_path: str | None = None, print_sql: bool = False) -> list[dict]:
+    """Entry point for the command line and the flatten step: checks every table given, stores what it found in the audit
+    schema (nothing is stored with print_sql), then raises TypingErrors if any has errors."""
     structure = get_v3_structure(structure_path)
     print(f"V3 structure: {len(structure.cols)} tables loaded from {structure.source}" if structure else
           "V3 structure: NOT FOUND - target types are GUESSES from column names (verified = false)")
@@ -1322,34 +1748,52 @@ def run(facility: str, tables: list[str] | None = None, conf: dict | None = None
     all_changes: list[dict] = []
     try:
         cur = conn.cursor()
-        chosen = choose_tables(cur, facility, tables, conf, skip)
-        if not chosen:
-            print("No tables to process.")
-            return []
-        all_cols = read_columns(cur, facility)
-        cols = {t: all_cols[t] for t in chosen if t in all_cols}
-        parents = find_parents(cur, facility)
-        links_by = {t: find_links(structure, t, mapped.get(t.lower()), cols[t], all_cols, facility, derived) for t in chosen if t in cols}
-        skipped: dict[str, list] = {}
-        for table in parents_first(list(links_by), links_by):
-            service = mapped.get(table.lower())               # the mapping file names the V3 table and service
-            links = {c: {**l, "excluded": skipped.get(l["table"], [])} for c, l in links_by[table].items()}
-            rows, errors, changes = compare_and_cast(
-                cur, facility, table, cols[table], structure, print_sql=print_sql,
-                route="mapping" if service else "not in mapping", service=service, parents=parents,
-                links=links, skipped_out=skipped)
-            all_rows += rows
-            all_errors += errors
-            all_changes += changes
+        audit = None if print_sql else Audit(cur, facility, source="standalone")
+        if audit:
+            audit.save_run()
+        with audit.capture_log() if audit else contextlib.nullcontext():
+            chosen = choose_tables(cur, facility, tables, conf, skip)
+            left_out = [t for t in chosen if t.lower() in NOT_TYPE_CHECKED]
+            if left_out:
+                print(f"  left out of the type check (not migrated): {', '.join(left_out)}")
+            chosen = [t for t in chosen if t.lower() not in NOT_TYPE_CHECKED]
+            if not chosen:
+                print("No tables to process.")
+                if audit:
+                    audit.save_run("nothing to do", finished=True)
+                return []
+            all_cols = read_columns(cur, facility)
+            cols = {t: all_cols[t] for t in chosen if t in all_cols}
+            parents = find_parents(cur, facility)
+            users = find_users(all_cols, facility)
+            links_by = {t: find_links(structure, t, mapped.get(t.lower()), cols[t], all_cols, facility, derived) for t in chosen if t in cols}
+            skipped: dict[str, list] = {}
+            for table in parents_first(list(links_by), links_by):
+                if audit:
+                    audit.current_table = table
+                service = mapped.get(table.lower())               # the mapping file names the V3 table and service
+                links = {c: {**l, "excluded": skipped.get(l["table"], [])} for c, l in links_by[table].items()}
+                rows, errors, changes = compare_and_cast(
+                    cur, facility, table, cols[table], structure, print_sql=print_sql,
+                    route="mapping" if service else "not in mapping", service=service, parents=parents,
+                    links=links, skipped_out=skipped, users=users)
+                all_rows += rows
+                all_errors += errors
+                all_changes += changes
+            if audit:
+                audit.current_table = None
+                audit.save_reports(all_rows, all_errors, all_changes)
+        # a table with even one error FAILS: it must not be migrated. Other tables are not affected.
+        failed: dict[str, int] = {}
+        for r in all_rows:
+            if r.get("records_with_errors"):
+                failed[r["table"]] = max(failed.get(r["table"], 0), int(r["records_with_errors"]))
+        if audit:
+            audit.save_run(f"failed: {len(failed)} table(s)" if failed else "ok", finished=True)
+            audit.prune()
         cur.close()
     finally:
         conn.close()
-    write_reports(facility, all_rows, all_errors, all_changes, report_dir)
-    # a table with even one error FAILS: it must not be migrated. Other tables are not affected.
-    failed: dict[str, int] = {}
-    for r in all_rows:
-        if r.get("records_with_errors"):
-            failed[r["table"]] = max(failed.get(r["table"], 0), int(r["records_with_errors"]))
     if failed:
         listing = ", ".join(f"{t} ({n} record{'s' if n != 1 else ''})" for t, n in failed.items())
         raise TypingErrors(f"{len(failed)} table(s) have errors and must not be migrated: {listing}", failed)
@@ -1369,11 +1813,10 @@ def main() -> None:
     ap.add_argument("--structure", help="V3's structure (default: dags/jsons/v3-schema.json)")
     ap.add_argument("--mapping", help="the mapping JSON (default: dags/jsons/<facility>_data_mappings.json)")
     ap.add_argument("--print-sql", action="store_true", help="print the SQL and stop (reads column names only)")
-    ap.add_argument("--report-dir", help="where to save the CSV report (default: output/typing)")
     a = ap.parse_args()
     try:
         run(a.facility, tables=a.table, structure_path=a.structure, skip=a.skip,
-            mapping_path=a.mapping, print_sql=a.print_sql, report_dir=a.report_dir)
+            mapping_path=a.mapping, print_sql=a.print_sql)
     except TypingErrors as e:
         print(f"\nFAILED: {e}")
         sys.exit(1)

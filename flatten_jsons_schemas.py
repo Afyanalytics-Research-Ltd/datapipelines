@@ -1,7 +1,9 @@
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
+import argparse
 import os
 import re
+import sys
 from pathlib import Path
 
 import snowflake.connector
@@ -19,6 +21,7 @@ SCHEMA_PAIRS = [
     # ("AFYA_API_AUTH_RAW", "AFYA_API_AUTH_CLEAN"),
     # ("KISUMU_V3_RAW", "KISUMU_V3_CLEAN"),
     ("SILVERWOOD_RAW", "SILVERWOOD_CLEAN"),
+ 
 ]
 
 # SNOWFLAKE CONNECTION
@@ -396,14 +399,35 @@ def _raw_parents(cursor, raw_schema: str, clean_schema: str, cast, table: str, s
     return out, made
 
 
+def _raw_users(cursor, raw_schema: str, clean_schema: str, cast, table: str, columns) -> tuple[dict | None, list]:
+    """For tables with user columns (created_by, recorded_by, user...): copies the id and username of every user in RAW into a
+    temporary table, so a column that holds a username ('admin') is replaced by that user's id. Returns the names for
+    check_table_for_flatten (None when there is nothing to look up or RAW has no users), and the temporary table made (to drop)."""
+    if table.lower() == "users" or not any(cast.is_user_column(c["name"]) for c in columns):
+        return None, []
+    cursor.execute(f"""SELECT COUNT(payload:"id"), COUNT(payload:"username") FROM {raw_schema}.EVENTS_RAW
+                       WHERE source_table = 'users' AND IS_OBJECT(payload)""")
+    n_id, n_name = cursor.fetchone()
+    if not n_id or not n_name:
+        return None, []
+    tmp = f"{clean_schema}.V3CHK_P_USERNAMES"
+    cursor.execute(f"""CREATE OR REPLACE TEMPORARY TABLE {tmp} AS
+                       SELECT DISTINCT payload:"id"::STRING AS "ID", payload:"username"::STRING AS "USERNAME"
+                       FROM {raw_schema}.EVENTS_RAW WHERE source_table = 'users' AND IS_OBJECT(payload)""")
+    return {"table": tmp, "id": '"ID"', "username": '"USERNAME"'}, [tmp]
+
+
 def _flatten_checked(cursor, raw_schema: str, clean_schema: str, table: str, expanded_fields,
-                     dedup_facility: str | None = None) -> dict | None:
+                     dedup_facility: str | None = None, audit=None) -> dict | None:
     """The V3-checked build of one table (see V3 TYPE CHECK above). None = this table does not use it.
     Raises cast_clean_to_v3_types.TypingErrors when the check fails, before anything in CLEAN is touched.
     With dedup_facility, records dedup merged away are left out first and links point at the survivors, as in the
     ordinary build, so the check sees exactly the records that would be built."""
     import cast_clean_to_v3_types as cast
     facility = _facility_of(clean_schema)
+    if table.lower() in cast.NOT_TYPE_CHECKED:
+        print(f"    {table}: left out of the V3 type check (not migrated) - built as before")
+        return None
     mapped, derived = cast.load_mapping(facility)
     service = mapped.get(table.lower())
     if not service:
@@ -418,6 +442,9 @@ def _flatten_checked(cursor, raw_schema: str, clean_schema: str, table: str, exp
     columns = ([{"name": "SOURCE_SCHEMA", "type": "TEXT", "nullable": True}] +
                [{"name": n.upper(), "type": "VARIANT" if dtype in NESTED_TYPES else "TEXT", "nullable": True}
                 for n, _, dtype in expanded_fields])
+    if audit is None:                      # a single table run on its own (the Airflow task): its findings are stored under a run of its own
+        audit = cast.Audit(cursor, facility, raw_schema, clean_schema, source="airflow")
+        audit.save_run("single table", finished=True)
     tmp = f"{clean_schema}.V3CHK_{table.upper()}"
     made = [tmp]
     try:
@@ -428,16 +455,21 @@ def _flatten_checked(cursor, raw_schema: str, clean_schema: str, table: str, exp
         cursor.execute(f"CREATE OR REPLACE TEMPORARY TABLE {tmp} AS\n{query}")
         raw_parents, parent_tmps = _raw_parents(cursor, raw_schema, clean_schema, cast, table, structure, service, columns, derived)
         made += parent_tmps
+        users, user_tmps = _raw_users(cursor, raw_schema, clean_schema, cast, table, columns)
+        made += user_tmps
         result = cast.check_table_for_flatten(cursor, facility, table, tmp, columns, service,
-                                              structure=structure, derived=derived, raw_parents=raw_parents)
+                                              structure=structure, derived=derived, raw_parents=raw_parents, audit=audit, users=users)
         if not result["ok"]:
             shown = result["errors"][:10]
             for e in shown:
                 print(f"    ✗ {table} record {e['record_id']}: {e['error']}")
-            raise cast.TypingErrors(
+            failure = cast.TypingErrors(
                 f"{table}: {result['failed_records']} record(s) have errors; nothing was changed in {clean_schema} "
-                f"(the previous {table} stays as it was). Details in output/typing/", {table: result["failed_records"]})
-        print(f"    V3 type check OK ({result['skipped_records']} skipped, {len(result['changes'])} values changed or listed; "
+                f"(the previous {table} stays as it was). Details: {audit.schema}.ERRORS, run {audit.run_id}", {table: result["failed_records"]})
+            failure.errors = result["errors"][:20]      # kept in the run state, so the reason survives the run
+            raise failure
+        print(f"    V3 type check OK ({result['skipped_records']} skipped, {len(result['changes'])} values changed or listed"
+              f"{', user names looked up' if users else ''}; "
               f"schema file {structure.source})")
         # build next to the old object, then swap: the old one is only replaced once the new one exists
         was = existing_object_type(cursor, clean_schema, table)
@@ -462,7 +494,7 @@ def _flatten_checked(cursor, raw_schema: str, clean_schema: str, table: str, exp
 
 
 def flatten_table(cursor, raw_schema: str, clean_schema: str, table: str, expanded_fields,
-                  materialize: str = "auto", facility: str | None = None) -> dict:
+                  materialize: str = "auto", facility: str | None = None, audit=None) -> dict:
     """Flatten one RAW source table into CLEAN.
 
       auto   keep what's there: an existing TABLE is refreshed in place
@@ -478,7 +510,7 @@ def flatten_table(cursor, raw_schema: str, clean_schema: str, table: str, expand
     ignored for it; dedup still applies first). Returns {"object": view|table, "was": view|table|None, "backup": name|None}."""
     if materialize not in MATERIALIZE_MODES:
         raise ValueError(f"materialize must be one of {MATERIALIZE_MODES}, not {materialize!r}")
-    checked = _flatten_checked(cursor, raw_schema, clean_schema, table, expanded_fields, dedup_facility=facility)
+    checked = _flatten_checked(cursor, raw_schema, clean_schema, table, expanded_fields, dedup_facility=facility, audit=audit)
     if checked is not None:
         prune_backups(cursor, clean_schema, table)
         return checked
@@ -498,50 +530,172 @@ def flatten_table(cursor, raw_schema: str, clean_schema: str, table: str, expand
     return {"object": target, "was": was, "backup": backup}
 
 
+# RUN STATE (runs started by hand: python flatten_jsons_schemas.py)
+#
+# Kept in Snowflake, in the audit schema of cast_clean_to_v3_types (HOSPITALS.V3_CAST_AUDIT): one RUNS row per run and one TABLE_STATE row
+# per table (ok, failed with the reason, still running when the run stopped, or pending). The errors, changes and log of the run are in
+# the same schema under the same RUN_ID. `--retry-failed` reads the latest run of the RAW schema and runs only the tables that are not OK;
+# each of those is checked and built again from scratch, and its findings replace its earlier ones in that run.
+# A normal run (no flag) starts a new run. Every write is one transaction, so a crash never leaves a half-written state.
+# The Airflow DAG keeps its own task status and does not use this (its findings are still stored, per table).
+STATUS_OK = "ok"
+
+
+def load_state(audit) -> dict | None:
+    """The state of the latest run by hand of this RAW schema (and the audit's run id becomes that run's), or None when there is none."""
+    return audit.load_latest()
+
+
+def save_state(audit, state: dict, status: str = "running", finished: bool = False) -> None:
+    """Writes the run row: when it started, the RAW row count, whether dedup is done."""
+    audit.save_run(status, raw_rows=state.get("raw_rows"), dedup=state.get("dedup", "pending"), finished=finished)
+
+
+def new_state(audit, tables: list[str], raw_rows: int | None) -> dict:
+    """A fresh run: every table pending."""
+    return {"version": 2, "raw_schema": audit.raw_schema, "run_id": audit.run_id, "started_at": audit.started_at.isoformat(timespec="seconds"),
+            "raw_rows": raw_rows, "dedup": "pending", "tables": {t: {"status": "pending"} for t in tables}}
+
+
+def mark_table(audit, state: dict, table: str, status: str, **info) -> None:
+    """Records one table's status (and the reason, for a failure) in memory and in Snowflake."""
+    state["tables"][table] = {"status": status, "updated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"), **info}
+    audit.save_table(table, status, object_type=info.get("object"), error=info.get("error"))
+
+
+def pending_tables(state: dict, tables: list[str]) -> list[str]:
+    """The tables to run again: everything not recorded as OK
+    (failed, still running when the run stopped, pending, or new in RAW)."""
+    return [t for t in tables if state["tables"].get(t, {}).get("status") != STATUS_OK]
+
+
+def raw_row_count(cursor, raw_schema: str) -> int | None:
+    """Rows in the RAW events table (a cheap marker for '
+    has RAW changed since the saved run?')."""
+    try:
+        cursor.execute(f"SELECT COUNT(*) FROM {raw_schema}.EVENTS_RAW")
+        return int(cursor.fetchone()[0])
+    except Exception:                      # noqa: BLE001 - only a warning marker
+        return None
+
+
+def cleanup_leftovers(cursor, clean_schema: str) -> list[str]:
+    """Drops half-built `<table>__V3NEW` tables a crashed run left in CLEAN 
+    (they are never the real table, and the migration must not see them)."""
+    db, schema = clean_schema.split(".") if "." in clean_schema else (None, clean_schema)
+    info = f"{db}.INFORMATION_SCHEMA.TABLES" if db else "INFORMATION_SCHEMA.TABLES"
+    dropped = []
+    try:
+        cursor.execute(f"SELECT table_name FROM {info} WHERE table_schema = %s AND table_type = 'BASE TABLE' AND table_name LIKE '%%V3NEW'",
+                       (schema.upper(),))
+        for (name,) in cursor.fetchall():
+            if str(name).upper().endswith("__V3NEW"):
+                cursor.execute(f"DROP TABLE IF EXISTS {(db + '.') if db else ''}{schema}.{name}")
+                dropped.append(str(name))
+        if dropped:
+            print(f"  half-built tables from an earlier run dropped: {', '.join(dropped)}")
+    except Exception as e:                 # noqa: BLE001 - best effort
+        print(f"  leftover clean-up skipped: {e}")
+    return dropped
+
+
 # Main function to orchestrate the flattening process for all tables in all schema pairs.
 # It iterates through each raw/clean schema pair, discovers tables, fields, expands objects, builds SQL, and executes it to create the flattened views. 
-# It also keeps track of successes and failures for reporting.
-def flatten_all(conn):
+# It also keeps track of successes and failures for reporting, and saves them in the run state (see RUN STATE).
+def flatten_all(conn, retry_failed: bool = False) -> dict:
+    """Flattens every table of every schema pair. retry_failed=True runs only the tables the last run did not finish OK.
+    The run state, what the V3 check found and what the run printed are stored in the audit schema (see RUN STATE).
+    Returns {raw_schema: {"ok": n, "failed": [tables]}}."""
+    import cast_clean_to_v3_types as cast
     cursor = conn.cursor()
     total_ok, total_fail = 0, 0
+    summary: dict = {}
     try:
         for raw_schema, clean_schema in SCHEMA_PAIRS:
-            print(f"\n=== {raw_schema} → {clean_schema} ===")
-            tables = get_source_tables(cursor, raw_schema)
-            print(f"  Found {len(tables)} tables to process")
             facility = raw_schema.removesuffix("_RAW")
-            expanded = {t: expand_objects(cursor, raw_schema, t, discover_fields(cursor, raw_schema, t))
-                        for t in tables}
-            dedup.run(f"HOSPITALS.{raw_schema}", facility=facility, fields=expanded)
-            ok, fail = 0, 0
-            for table in tables:
-                try:
-                    done = flatten_table(cursor, raw_schema, clean_schema, table, expanded[table],
-                                         facility=facility)
-                    print(f"  ✓ {table} ({len(expanded[table])} cols, {done['object']}"
-                          f"{', backup ' + done['backup'] if done['backup'] else ''})")
-                    ok += 1
-                except Exception as e:
-                    print(f"  ✗ {table}: {e}")
-                    fail += 1
-            print(f"  {raw_schema} done: {ok} ok, {fail} failed")
+            audit = cast.Audit(cursor, facility, raw_schema, clean_schema, source="manual")
+            audit.ensure()                 # fails here, before anything is touched, if the audit schema cannot be written
+            ok, failed, state = 0, [], None
+            with audit.capture_log():
+                print(f"\n=== {raw_schema} → {clean_schema} ===")
+                tables = get_source_tables(cursor, raw_schema)
+                print(f"  Found {len(tables)} tables to process")
+                rows_now = raw_row_count(cursor, raw_schema)
+                state = load_state(audit) if retry_failed else None
+                if retry_failed and state is None:
+                    print("  No earlier run recorded for this schema - running every table")
+                if state is not None:
+                    todo = pending_tables(state, tables)
+                    print(f"  Retrying {len(todo)} of {len(tables)} tables (run {state['run_id']}); "
+                          f"{len(tables) - len(todo)} finished OK and are skipped")
+                    if state.get("raw_rows") is not None and rows_now is not None and state["raw_rows"] != rows_now:
+                        print(f"  WARNING: RAW has changed since that run ({state['raw_rows']} -> {rows_now} rows). "
+                              f"Tables that finished OK may be out of date; run without --retry-failed to redo everything.")
+                    state["tables"] = {t: state["tables"].get(t, {"status": "pending"}) for t in tables}
+                else:
+                    state = new_state(audit, tables, rows_now)
+                    todo = list(tables)
+                save_state(audit, state)
+                audit.save_pending([t for t in tables if state["tables"][t]["status"] == "pending"])
+                cleanup_leftovers(cursor, clean_schema)
+                expanded = {t: expand_objects(cursor, raw_schema, t, discover_fields(cursor, raw_schema, t))
+                            for t in tables}
+                if state.get("dedup") != STATUS_OK:
+                    try:
+                        dedup.run(f"HOSPITALS.{raw_schema}", facility=facility, fields=expanded)
+                    except BaseException:
+                        state["dedup"] = "failed"
+                        save_state(audit, state, status="dedup failed", finished=True)
+                        raise
+                    state["dedup"] = STATUS_OK
+                    save_state(audit, state)
+                for table in todo:
+                    audit.flush_log()
+                    audit.current_table = table
+                    mark_table(audit, state, table, "running")
+                    try:
+                        done = flatten_table(cursor, raw_schema, clean_schema, table, expanded[table],
+                                             facility=facility, audit=audit)
+                        print(f"  ✓ {table} ({len(expanded[table])} cols, {done['object']}"
+                              f"{', backup ' + done['backup'] if done['backup'] else ''})")
+                        mark_table(audit, state, table, STATUS_OK, object=done["object"])
+                        ok += 1
+                    except Exception as e:
+                        print(f"  ✗ {table}: {e}")
+                        mark_table(audit, state, table, "failed", error=str(e)[:2000])
+                        failed.append(table)
+                audit.current_table = None
+                print(f"  {raw_schema} done: {ok} ok, {len(failed)} failed")
+                if failed:
+                    print(f"  To run only the failed tables again after fixing them: python flatten_jsons_schemas.py --retry-failed")
+                    print(f"  Why they failed: SELECT * FROM {audit.schema}.ERRORS WHERE RUN_ID = '{audit.run_id}' AND FACILITY = '{audit.facility}'")
+            save_state(audit, state, status=f"failed: {len(failed)} table(s)" if failed else STATUS_OK, finished=True)
+            audit.prune()
             total_ok += ok
-            total_fail += fail
+            total_fail += len(failed)
+            summary[raw_schema] = {"ok": ok, "failed": failed}
         print(f"\n=== TOTAL: {total_ok} ok, {total_fail} failed ===")
     finally:
         cursor.close()
+    return summary
 
 # When this script is run, it will execute the main function which connects to Snowflake, 
 # processes all tables, and creates the flattened views and closes the connection.
-def main():
+def main(argv: list[str] | None = None) -> None:
+    ap = argparse.ArgumentParser(description="Flatten RAW.EVENTS_RAW into CLEAN for every schema pair.")
+    ap.add_argument("--retry-failed", action="store_true",
+                    help="run only the tables the last run did not finish OK (each is checked and built again from scratch)")
+    args = ap.parse_args(argv)
     conn = None
     try:
         conn = _snowflake_connect()
-        flatten_all(conn)
+        summary = flatten_all(conn, retry_failed=args.retry_failed)
     finally:
         if conn:
-            conn.close()    
-        
+            conn.close()
+    if any(s["failed"] for s in summary.values()):
+        sys.exit(1)
+
 # TEST FUNCTION 
 def test_expand_objects():
     conn = _snowflake_connect()
