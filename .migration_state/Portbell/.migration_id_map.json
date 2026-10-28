@@ -1,0 +1,114 @@
+{
+  "_readme": "Conversion map from the OPD register (Excel) to V3 tables. 'confirmed': true means the field name was seen in the datapipelines repo; false means it is my guess and must be checked against V3. To rename an output column for V3, edit 'column_map' at the bottom (that is the only section the script reads).",
+  "version": "0.1-draft",
+  "source": {
+    "description": "Hand-typed OPD register, one row per visit, all rows marked N (new)",
+    "header_row": "first row containing PATIENT NAME",
+    "date_format": "day/month/year (d/m/yy or d/m/yyyy)",
+    "columns": ["DATE", "SERIAL NO.", "OPD NO.", "NEW/REVISIT", "PATIENT NAME", "AGE", "SEX", "RESIDENCE", "ID.NO", "CONTACT", "OCCUPATION", "TEMP", "WEIGHT", "BP", "DIAGNOSIS", "TREATMENT", "REMARKS", "MODE OF PAYMENT"]
+  },
+  "target": {
+    "organization_id": null,
+    "facility_id": null,
+    "note": "Ask the V3 admin for these two IDs, then pass them with --organization-id and --facility-id"
+  },
+  "tables": {
+    "patients": {
+      "v3_service": "reception (patient)",
+      "grain": "one row per unique patient; repeat visits are merged by ID, phone, name and age",
+      "fields": [
+        {"output": "patient_ref", "source": "generated", "transform": "P00001, P00002 ... in order of first appearance", "send_to_v3": false, "note": "internal link between tables only"},
+        {"output": "first_name", "source": "PATIENT NAME", "transform": "first word, title case", "required": true, "confirmed": true},
+        {"output": "last_name", "source": "PATIENT NAME", "transform": "remaining words, title case; UNKNOWN if only one name", "required": true, "confirmed": true},
+        {"output": "full_name", "source": "PATIENT NAME", "transform": "longest spelling across visits, title case", "confirmed": false},
+        {"output": "gender", "source": "SEX", "transform": "M -> male, F -> female, anything else blank", "confirmed": true, "note": "V2 'sex' became V3 'gender'; confirm accepted values (male/female vs M/F)"},
+        {"output": "dob_estimated", "source": "AGE + DATE", "transform": "visit date minus age; 5.9 means 5 years 9 months", "confirmed": false, "note": "estimated, not a real date of birth; mark as estimated in V3 if it has such a flag"},
+        {"output": "age_years_at_first_visit", "source": "AGE", "transform": "whole years", "confirmed": false},
+        {"output": "age_months_at_first_visit", "source": "AGE", "transform": "months part for children", "confirmed": false},
+        {"output": "residence", "source": "RESIDENCE", "transform": "title case; KANYAGA/KINYAGA -> Kianyaga", "confirmed": false},
+        {"output": "national_id", "source": "ID.NO", "transform": "6-8 digits kept; passports kept; anything else blanked and flagged", "confirmed": false},
+        {"output": "id_type", "source": "ID.NO", "transform": "national_id or passport", "confirmed": false},
+        {"output": "phone", "source": "CONTACT", "transform": "restore leading 0 (9 digits starting 7 or 1); invalid blanked and flagged", "confirmed": false},
+        {"output": "phone_e164", "source": "CONTACT", "transform": "+254 format", "confirmed": false},
+        {"output": "occupation", "source": "OCCUPATION", "transform": "B.MAN -> BUSINESSMAN, B.LADY -> BUSINESSWOMAN, C.LABOUR -> CASUAL LABOURER, FARMING -> FARMER", "confirmed": false},
+        {"output": "first_visit_date", "source": "DATE", "transform": "earliest visit date, ISO yyyy-mm-dd", "confirmed": false},
+        {"output": "organization_id", "source": "config", "confirmed": false},
+        {"output": "facility_id", "source": "config", "confirmed": false},
+        {"output": "source_rows", "source": "row numbers", "transform": "Excel rows merged into this patient", "send_to_v3": false}
+      ]
+    },
+    "visits": {
+      "v3_service": "reception (visit)",
+      "grain": "one row per register row with a patient name and a readable date",
+      "fields": [
+        {"output": "visit_ref", "source": "OPD NO.", "transform": "OPD number; ROW<n> if missing", "send_to_v3": false},
+        {"output": "patient_ref", "source": "generated", "send_to_v3": false, "note": "replace with the V3 patient id after patients are created"},
+        {"output": "opd_no", "source": "OPD NO.", "confirmed": false},
+        {"output": "serial_no", "source": "SERIAL NO.", "confirmed": false},
+        {"output": "visit_date", "source": "DATE", "transform": "ISO yyyy-mm-dd", "required": true, "confirmed": false},
+        {"output": "visit_type", "source": "NEW/REVISIT", "transform": "recomputed: first visit per patient = new, later ones = revisit", "confirmed": false},
+        {"output": "register_said_new", "source": "NEW/REVISIT", "transform": "original value kept for audit", "send_to_v3": false},
+        {"output": "diagnosis_primary", "source": "DIAGNOSIS", "transform": "first diagnosis after spelling fixes", "confirmed": false},
+        {"output": "diagnosis_all", "source": "DIAGNOSIS", "transform": "all diagnoses joined with '; '", "confirmed": false},
+        {"output": "payment_mode", "source": "MODE OF PAYMENT", "transform": "upper case (CASH)", "confirmed": false},
+        {"output": "remarks", "source": "REMARKS", "confirmed": false},
+        {"output": "idempotency_key", "source": "generated", "transform": "opd-<facility_id>-<opd_no>", "note": "use so a re-run does not create duplicate visits"},
+        {"output": "source_row", "source": "row number", "send_to_v3": false}
+      ]
+    },
+    "vitals": {
+      "v3_service": "evaluation (vital)",
+      "grain": "one row per visit that has at least one vital sign",
+      "fields": [
+        {"output": "temperature", "source": "TEMP", "transform": "accepted 32-43 C, otherwise blanked and flagged", "confirmed": false},
+        {"output": "weight", "source": "WEIGHT", "transform": "kg, accepted 2-250", "confirmed": false},
+        {"output": "systolic_bp", "source": "BP", "transform": "part before the slash", "confirmed": true},
+        {"output": "diastolic_bp", "source": "BP", "transform": "part after the slash", "confirmed": true}
+      ]
+    },
+    "doctor_notes": {
+      "v3_service": "evaluation (doctor note)",
+      "grain": "one row per visit",
+      "fields": [
+        {"output": "subjective", "source": "none", "transform": "left blank, register has no complaint column", "confirmed": true},
+        {"output": "objective", "source": "none", "transform": "left blank", "confirmed": true},
+        {"output": "assessment", "source": "DIAGNOSIS", "transform": "cleaned diagnoses joined with '; '", "confirmed": true},
+        {"output": "plan", "source": "TREATMENT", "transform": "cleaned treatment items joined with '; '", "confirmed": true},
+        {"output": "assessment_raw", "source": "DIAGNOSIS", "send_to_v3": false, "note": "original text for audit"},
+        {"output": "plan_raw", "source": "TREATMENT", "send_to_v3": false, "note": "original text for audit"}
+      ]
+    },
+    "prescriptions": {
+      "v3_service": "evaluation or pharmacy (prescription)",
+      "grain": "one row per drug item",
+      "fields": [
+        {"output": "drug", "source": "TREATMENT", "transform": "split on commas, spelling fixed (PCM -> PARACETAMOL, ABZ -> ALBENDAZOLE ...)", "confirmed": false},
+        {"output": "route", "source": "TREATMENT", "transform": "IV / IM / PO when written before or after the drug", "confirmed": false},
+        {"output": "note", "source": "none", "transform": "dose, frequency and duration are not in the register", "confirmed": false}
+      ]
+    },
+    "procedures": {
+      "v3_service": "evaluation (procedure) - unconfirmed",
+      "grain": "one row per procedure",
+      "fields": [
+        {"output": "procedure", "source": "TREATMENT", "transform": "XLA -> TOOTH EXTRACTION (XLA); suturing, filling, dressing, nebulization, ear syringing kept as written", "confirmed": false}
+      ]
+    }
+  },
+  "rules": {
+    "reject_row_if": ["no patient name", "date missing or unreadable"],
+    "blank_and_flag_field_if": ["invalid sex", "invalid phone", "invalid ID", "temperature outside 32-43", "weight outside 2-250", "BP unreadable or systolic <= diastolic"],
+    "keep_but_flag_if": ["date out of sequence", "duplicate serial or OPD number", "female-only diagnosis on a male (or the reverse)", "student older than 25", "narrow pulse pressure", "diagnosis empty", "several drugs in one treatment item"],
+    "never_merge_automatically": ["same name with ages more than about 1.6 years apart", "same name with different national IDs"],
+    "load_order": ["patients", "visits", "vitals", "doctor_notes", "prescriptions", "procedures"]
+  },
+  "column_map": {
+    "_help": "Format: {\"our_column\": \"v3_column\"}. Example for patients: {\"phone\": \"mobile\", \"dob_estimated\": \"dob\"}. Leave empty to keep our names.",
+    "patients": {},
+    "visits": {},
+    "vitals": {},
+    "doctor_notes": {},
+    "prescriptions": {},
+    "procedures": {}
+  }
+}
