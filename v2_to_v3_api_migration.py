@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import argparse
 import atexit
+import signal
 import base64
 import contextlib
 import hashlib
@@ -56,10 +57,12 @@ import secrets
 import sys
 import threading
 import time
+from  migration_state import StatePaths, get_paths, run_lock, use_state_dir, STATE_ROOT
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
 
 try:
     import fcntl   # state-file locking (see _file_lock); absent on Windows
@@ -118,6 +121,7 @@ GARBLED_KEY = "__garbled__"   # transform → poster only: encoded fallbacks for
 ENCODE_CORRUPTED_PII = os.getenv("ENCODE_CORRUPTED_PII", "0").strip() in ("1", "true", "yes")  # see transform_record step 4c
 RECORD_LOG_EVERY   = int(os.getenv("RECORD_LOG_EVERY", "100")) # log progress every N records
 RECORD_FLUSH_EVERY = int(os.getenv("RECORD_FLUSH_EVERY", "50")) # flush progress file every N records
+RECORD_FLUSH_SECONDS = float(os.getenv("RECORD_FLUSH_SECONDS", "5")) 
 TOKEN_TTL_SECONDS  = int(os.getenv("TOKEN_TTL_SECONDS", str(50 * 60)))
 DEFAULT_BATCH_SIZE = 200
 DEFAULT_LIMIT      = 500
@@ -125,15 +129,32 @@ V3_POST_THROTTLE   = float(os.getenv("V3_POST_THROTTLE", "0"))   # seconds to sl
 V3_RETRY_WAIT      = int(os.getenv("V3_RETRY_WAIT", "30"))        # initial wait (s) before retrying 502/503/504
 V3_GATEWAY_RETRIES = int(os.getenv("V3_GATEWAY_RETRIES", "5"))    # retries on 502/503/504 before failing the record
 
-WATERMARK_FILE       = Path(__file__).resolve().parent / ".migration_watermarks.json"
-PROGRESS_FILE        = Path(__file__).resolve().parent / ".migration_progress.json"
-RECORD_PROGRESS_FILE = Path(__file__).resolve().parent / ".migration_record_progress.json"
-ID_MAP_FILE          = Path(__file__).resolve().parent / ".migration_id_map.json"
-VISIT_PATIENT_FILE   = Path(__file__).resolve().parent / ".migration_visit_patient.json"
-VISIT_ADMISSION_FILE = Path(__file__).resolve().parent / ".migration_visit_admission.json"
-DEAD_LETTER_FILE     = Path(__file__).resolve().parent / ".migration_failures.jsonl"
-DONE_FILE            = Path(__file__).resolve().parent / ".migration_done.json"   # cross-run completed jobs
-PII_CORRUPTION_LOG   = Path(__file__).resolve().parent / ".migration_pii_corruption.jsonl"
+PROGRESS_FILE = None
+RECORD_PROGRESS_FILE = None
+ID_MAP_FILE = None
+DONE_FILE = None
+WATERMARK_FILE = None
+DEAD_LETTER_FILE = None
+
+
+
+def _sync_path_globals() -> None:
+    """Temporary back-compat layer.
+    Prefer get_paths().file("...") in all new code.
+    """
+    p = get_paths()
+    global PROGRESS_FILE, RECORD_PROGRESS_FILE, ID_MAP_FILE
+    global DONE_FILE,DEAD_LETTER_FILE,WATERMARK_FILE
+    PROGRESS_FILE        = p.file("progress")
+    RECORD_PROGRESS_FILE = p.file("record_progress")
+    ID_MAP_FILE          = p.file("id_map")
+    DONE_FILE            = p.file("done")
+    WATERMARK_FILE       = p.watermark          # still shared at env level
+    DEAD_LETTER_FILE     = p.file("dead_letter", ext="jsonl")
+       
+   
+# Initialize defaults (repo root, no facility) so early imports/calls have real Paths
+_sync_path_globals()
 
 # Per-facility state. V2 ids are only unique WITHIN a facility (two
 # facilities both have a patient #271700, in different V3 orgs), so the id
@@ -141,25 +162,22 @@ PII_CORRUPTION_LOG   = Path(__file__).resolve().parent / ".migration_pii_corrupt
 # shared with another: use_state_dir(facility) points the files above at
 # .migration_state/<facility>/. Without it (the old CLI path) they stay in
 # the repo root. The failure/PII logs stay shared (append-only).
-STATE_ROOT = Path(__file__).resolve().parent / ".migration_state"
 
 
-def use_state_dir(facility: str | None) -> Path:
-    """Point the state files at this facility's own directory. Call before
-    loading any state (the loaders read these paths at call time)."""
-    global PROGRESS_FILE, RECORD_PROGRESS_FILE, ID_MAP_FILE, VISIT_PATIENT_FILE, \
-        VISIT_ADMISSION_FILE, DONE_FILE, _record_progress_mtime, _id_map_mtime
-    d = STATE_ROOT / facility if facility else Path(__file__).resolve().parent
-    d.mkdir(parents=True, exist_ok=True)
-    PROGRESS_FILE        = d / ".migration_progress.json"
-    RECORD_PROGRESS_FILE = d / ".migration_record_progress.json"
-    ID_MAP_FILE          = d / ".migration_id_map.json"
-    VISIT_PATIENT_FILE   = d / ".migration_visit_patient.json"
-    VISIT_ADMISSION_FILE = d / ".migration_visit_admission.json"
-    DONE_FILE            = d / ".migration_done.json"
+
+def use_state_dir(
+    facility: str | None,
+    pipeline: str = "v2_to_v3",
+    *,
+    process_wide: bool = False,
+) -> Path:
+    """Switch state directory for this facility + pipeline and refresh globals."""
+    from migration_state import use_state_dir as _use
+    d = _use(facility, pipeline=pipeline, process_wide=process_wide)
+    _sync_path_globals()
+    global _record_progress_mtime, _id_map_mtime
     _record_progress_mtime = _id_map_mtime = None
     return d
-
 
 def v2_facility_config(facility: str) -> dict:
     """V2_FACILITIES[facility] with base_url/db overridable by
@@ -947,9 +965,7 @@ _PER_KEY_DROP_FIELDS: dict[str, list] = {
 # in transform_record's step 4c (hash it, don't null it — see
 # _hash_corrupted_value). A record with a clean value for one of these
 # fields keeps it; only the broken ones get hashed, and every replacement is
-# logged to PII_CORRUPTION_LOG (not silently discarded) so affected patients
 # can be identified and backfilled once V2 fixes the decryption.
-#
 # first_name/last_name are the SAME kind of corrupted ciphertext-as-text and
 # ARE included here even though isolated A/B testing confirmed V3 requires
 # them non-null (dropping either one alone causes an opaque 500) — that
@@ -999,8 +1015,7 @@ _PER_KEY_KEEP_ONLY: dict[str, set[str]] = {
     "inpatient_admission": {"patient_id", "visit_id", "ward_id", "bed_id", "admission_type_id",
                             "admission_request_id", "admitting_doctor_id", "admission_number",
                             "admission_date", "admitted_at", "discharged_at", "reason", "cost",
-                            "days_admitted", "payment_mode", "external_doctor", "created_at", "updated_at",
-                            "status", "discharge_date"},
+                            "days_admitted", "payment_mode", "external_doctor", "created_at", "updated_at"},
     # columns of reception-service's patient_next_of_kin (gateway describe) + the FK
     "reception_patient_nok": {"patient_id", "first_name", "middle_name", "last_name", "relationship",
                               "relationship_id", "id_no", "mobile", "alt_phone", "email", "address",
@@ -1322,17 +1337,10 @@ def reset_v3_user_cache() -> None:
 
 
 def _v3_user_id_for_v2(v2_user_id, email=None) -> int | None:
-    """V3 user for a V2 user: by the users id map, else by the V2 id embedded in
-    the migrated email, else by plain email (accounts created some other way).
-    The id map comes first: an org copied V3 → V3 (org 284) has the users but
-    not the placeholder e-mails — every new admission there came out with no
-    admitting doctor and was skipped (2026-10-21)."""
+    """V3 user for a V2 user: by the V2 id embedded in the migrated email,
+    else by plain email (accounts created some other way)."""
     global _v3_users_by_v2_id
     if v2_user_id not in (None, "") and str(v2_user_id).isdigit():
-        users = _id_map.get(_v3_alias(r"App\Models\User"), {})
-        found = users.get(int(v2_user_id), users.get(str(v2_user_id)))
-        if found is not None:
-            return found
         with _v3_users_lock:
             if _v3_users_by_v2_id is None:
                 users = _fetch_v3_records(_v3_alias(r"App\Models\User"), v3_login_org_cfg(), service_name="core")
@@ -1511,54 +1519,8 @@ def _flag_with_message(flag: str, note_field: str):
     return fix
 
 
-_staff_names: dict[str, dict[int, tuple]] = {}
-_staff_names_lock = threading.Lock()
-
-
-def _staff_name(facility: str, employee_id) -> tuple | None:
-    """(first, middle, last) of a V2 staff member, from their V2 user profile (live V2 API, read once)."""
-    if not str(employee_id or "").strip().isdigit():
-        return None
-    with _staff_names_lock:
-        if facility not in _staff_names:
-            names = {}
-            try:
-                cfg = V2_FACILITIES[facility]
-                rows, _ = extract_v2_records({"facility": facility, "namespace": r"Ignite\Users\Entities\UserProfile",
-                                              "database": cfg["db"], "updated_since": "1970-01-01T00:00:00Z",
-                                              "limit": 100})
-                for p in rows:
-                    if str(p.get("user_id") or "").isdigit():
-                        names[int(p["user_id"])] = (p.get("first_name"), p.get("middle_name"), p.get("last_name"))
-            except Exception as e:                   # noqa: BLE001 — the patient then stays nameless
-                log.warning("staff names for %s: couldn't read V2 user profiles: %s", facility, str(e)[:150])
-            _staff_names[facility] = names
-        return _staff_names[facility].get(int(employee_id))
-
-
-def _patient_names(out: dict) -> None:
-    """V3 patients need first_name and last_name (NOT NULL). 91 kisumu_v3 patients went without
-    (2026-10-16): 79 staff registered as patients with no name typed in — their names are on their V2
-    staff profile (EMPLOYEE_ID = user id); 11 with the surname typed into middle_name."""
-    first, last = _blank_to_none(out.get("first_name")), _blank_to_none(out.get("last_name"))
-    if first and last:
-        return
-    if not first and not last and out.get("employee_id"):
-        facility = str(out.get("source_schema") or _v3_target_facility or "").strip()
-        name = _staff_name(facility, out["employee_id"]) if facility in V2_FACILITIES else None
-        if name and (_blank_to_none(name[0]) or _blank_to_none(name[2])):
-            out["first_name"], out["middle_name"], out["last_name"] = name
-            first, last = _blank_to_none(name[0]), _blank_to_none(name[2])
-    middle = _blank_to_none(out.get("middle_name"))
-    if first and not last and middle:                # surname typed into middle_name
-        out["last_name"], out["middle_name"] = middle, None
-    elif last and not first and middle:
-        out["first_name"], out["middle_name"] = middle, None
-
-
 # run before the per-key coercions, on the renamed record
 _PER_KEY_PRE_COERCE: dict[str, Any] = {
-    "reception_patient": _patient_names,
     "evaluation_prescription": _flag_with_message("moved_from_chargesheet", "notes"),
     # same V2 message-in-a-flag on investigations (all 11,491 kisumu_v3 rows missing from V3 on
     # 2026-10-15 were refused for it: "Incorrect integer value: 'Item removed from chargesheet …'")
@@ -1593,18 +1555,6 @@ def _additional_vitals(r: dict) -> dict | None:
 def _dispensing_notes(r: dict) -> str:
     return (f"Migrated V2 dispensing #{r.get('id')} of {r.get('created_at')}: "
             f"prescription #{r.get('prescription')}, visit #{r.get('visit_id')}")
-
-
-# V2 prescription id → V2 store id (evaluation_prescriptions.store_id), filled by the loader that posts
-# dispensing: V2 dispensing rows carry no store, but V3 inv_sales.store_id is NOT NULL ("Field 'store_id'
-# doesn't have a default value", 2026-10-21)
-_prescription_store: dict[str, str] = {}
-
-
-def _dispensing_store(r: dict) -> int | None:
-    """The V2 store a V2 dispensing was served from (its prescription's) — the FK remap turns it into V3's."""
-    v2_store = _prescription_store.get(str(r.get("prescription")))
-    return int(v2_store) if str(v2_store or "").isdigit() else None
 
 
 def _discharge_request_notes(r: dict) -> str | None:
@@ -1644,11 +1594,6 @@ _PER_KEY_INJECT: dict[str, dict[str, Any]] = {
         "status":         lambda r: "completed",
         "payment_status": lambda r: "pending",   # only if V2 had none (see _PER_KEY_COERCIONS)
         "notes":          _dispensing_notes,
-        "store_id":       _dispensing_store,
-    },
-    "finance_invoice": {
-        # NOT NULL in V3; some V2 invoices leave it empty ("Column 'invoice_date' cannot be null", 2026-10-21)
-        "invoice_date": lambda r: str(r["created_at"])[:10] if r.get("created_at") else None,
     },
     "theatre_schedule": {
         # V3 scheduled_date (date) is empty on V2 rows: the day the schedule starts (reported 2026-10-15)
@@ -1859,11 +1804,6 @@ _PER_KEY_INJECT: dict[str, dict[str, Any]] = {
         "admission_number": lambda r: f"ADM-{r.get('id', 'unknown')}",
         # Fall back to created_at if V2 didn't carry an explicit admission_date.
         "admission_date":   lambda r: r.get("created_at") or r.get("updated_at"),
-        # V3's inpatient list shows an admission while it's 'admitted', with the bed / ward of its open
-        # ward stay: a V2 admission with discharged_at is discharged then (2026-10-17, was loaded
-        # 'admitted' — fix_admission_discharges.py)
-        "status":           lambda r: "discharged" if _blank_to_none(r.get("discharged_at")) else "admitted",
-        "discharge_date":   lambda r: _blank_to_none(r.get("discharged_at")),
     },
     "evaluation_doctor_note": {
         # V2 DoctorNote has no patient_id column — it's visit → patient.
@@ -2184,7 +2124,6 @@ def transform_record(record: dict, transform_key: str, org_cfg: dict, facility: 
     for field in _PER_KEY_CORRUPTION_WATCH.get(tk, []):
         v = out.get(field)
         if isinstance(v, str) and "�" in v:
-            _record_pii_corruption(facility, tk, record, field, v)
             if ENCODE_CORRUPTED_PII:
                 out[field] = _encode_corrupted_value(v)
             else:
@@ -2582,7 +2521,7 @@ def extract_v2_records(job: dict) -> tuple[list[dict], list[int]]:
     the job fully done (watermark must not advance on incomplete data).
     """
     facility = job["facility"]
-    cfg      = V2_FACILITIES[facility]
+    cfg      = v2_facility_config(facility)
     url      = f"{cfg['base_url'].rstrip('/')}/api/finance/access/data/point"
     session  = _v2_session(facility)
     headers  = {
@@ -2693,10 +2632,6 @@ class GatewayModelNotRegistered(Exception):
 _gateway_model_meta: dict[str, dict] = {}
 
 
-# services whose model aliases never displace a core service's (see _fetch_available_models)
-_SIDE_SERVICES = {"dialysis", "theatre"}
-
-
 def _fetch_available_models() -> set[str]:
     """Query every V3 service gateway, union the insertable aliases, and build _alias_to_service.
 
@@ -2719,13 +2654,7 @@ def _fetch_available_models() -> set[str]:
                 if not alias:
                     continue
                 ops = e.get("operations", [])
-                # An alias two services both register goes to the core services, never to theatre /
-                # dialysis: since the migration key reached dialysis (2026-10-16), its patient / ward /
-                # ward_type took the reception / inpatient models' place — patients were posted to
-                # dialysis_patients ("Field 'patient_id' doesn't have a default value").
-                owner = _alias_to_service.get(alias)
-                if owner and owner != service_name and service_name in _SIDE_SERVICES:
-                    continue
+                # last-writer wins if alias appears in multiple services (unlikely)
                 _gateway_model_meta[alias] = {
                     "tenant":     e.get("tenant"),
                     "facility":   e.get("facility"),
@@ -2800,7 +2729,6 @@ def _v3_alias(v3_namespace: str) -> str:
 # ─── DEAD-LETTER ─────────────────────────────────────────────────────────────
 
 _dead_letter_lock = threading.Lock()
-_pii_corruption_lock = threading.Lock()
 
 
 def _encode_corrupted_value(value: str) -> str:
@@ -2815,34 +2743,6 @@ def _encode_corrupted_value(value: str) -> str:
     useful free signal when investigating the encryption bug on the V2 side.
     """
     return base64.b64encode(value.encode("utf-8")).decode("ascii")
-
-
-def _record_pii_corruption(facility: str, transform_key: str, record: dict, field: str, value: str) -> None:
-    """Append one corrupted field to a JSONL audit trail before it's replaced
-    with a base64 placeholder (see _encode_corrupted_value).
-
-    This is the difference between silently losing data and having an
-    actionable backlog: every time a watched field is visibly corrupted
-    (U+FFFD from V2 returning undecrypted ciphertext as UTF-8 text — see
-    _PER_KEY_CORRUPTION_WATCH), the record's identity, which field was
-    affected, and the value it was replaced with are logged here. Once V2
-    fixes the decryption, this file tells you exactly which patients (by
-    uuid) need a backfill — nothing has to be guessed or re-derived from
-    scratch.
-    """
-    entry = {
-        "ts":            datetime.now(timezone.utc).isoformat(),
-        "facility":      facility,
-        "transform_key": transform_key,
-        "record_id":     record.get("id"),
-        "uuid":          record.get("uuid"),
-        "field":         field,
-        "sample":        value[:80],
-        "encoded":       _encode_corrupted_value(value),
-    }
-    with _pii_corruption_lock:
-        with PII_CORRUPTION_LOG.open("a") as fh:
-            fh.write(_dumps(entry) + "\n")
 
 
 class RecordDeadLettered(Exception):
@@ -3219,24 +3119,77 @@ def post_to_v3(
 
     alias = _v3_alias(v3_namespace)
 
-    # Skip records V3 already has: the uuid comes from V2 and is carried to V3
-    # unchanged, so a uuid already present in V3 means the record is already
-    # there (from an earlier run, a reset progress file, or another loader).
-    # No re-post, no re-insert — just record the V2 id → V3 id mapping.
-    if any(_v2_uuid(r) for r in pending):
+
+    # One V3 uuid scan for this model (used by uncertain reconcile + already-in-V3 skip)
+    existing: dict[str, int] = {}
+    if pending:
         existing = _existing_v3_uuids(alias, org_cfg, service_name=service_override)
-        already, still_pending = [], []
-        for r in pending:
-            u = _v2_uuid(r)
-            (already if u and u in existing else still_pending).append(r)
-        if already:
-            _store_id_mappings(alias, [(r["id"], existing[_v2_uuid(r)]) for r in already if r.get("id") is not None])
-            if job_key:
-                for r in already:
-                    if r.get("id") is not None:
-                        _mark_record_inserted(job_key, r["id"])
-            log.info("  Skipping %d records already in V3 (matched on uuid) — mapped, not re-posted", len(already))
-        pending = still_pending
+
+    # ── Reconcile ::uncertain from earlier timed-out POSTs ─────────────────────
+    if job_key:
+        uncertain_ids = {
+            r["id"] for r in pending
+            if r.get("id") is not None and _record_inserted(uncertain_key, r["id"])
+        }
+        if uncertain_ids:
+            existing = _existing_v3_uuids(alias, org_cfg, service_name=service_override)
+            promoted, retryable, still_blocked = [], [], []
+            still_pending = []
+            for r in pending:
+                rid = r.get("id")
+                if rid is None or rid not in uncertain_ids:
+                    still_pending.append(r)
+                    continue
+                u = _v2_uuid(r)
+                if u and u in existing:
+                    # POST did land — treat as successfully inserted
+                    _store_id_mapping(alias, rid, existing[u])
+                    _mark_record_inserted(job_key, rid)
+                    promoted.append(rid)
+                    # do not add to still_pending (already done)
+                elif u:
+                    # Has uuid but not in V3 — safe to retry
+                    retryable.append(rid)
+                    still_pending.append(r)
+                else:
+                    # No uuid — still must not auto-retry (duplicate risk)
+                    still_blocked.append(rid)
+                    # omit from pending
+            pending = still_pending
+            if promoted:
+                log.info(
+                    "  Uncertain reconcile: %d id(s) found in V3 by uuid — promoted to inserted",
+                    len(promoted),
+                )
+            if retryable:
+                log.info(
+                    "  Uncertain reconcile: %d id(s) not in V3 — will retry POST",
+                    len(retryable),
+                )
+            if still_blocked:
+                log.warning(
+                    "  Uncertain reconcile: %d uuid-less id(s) still blocked under '%s' "
+                    "(verify in V3, then remove from %s to replay)",
+                    len(still_blocked), uncertain_key, RECORD_PROGRESS_FILE.name,
+                )
+        # Skip records V3 already has: the uuid comes from V2 and is carried to V3
+        # unchanged, so a uuid already present in V3 means the record is already
+        # there (from an earlier run, a reset progress file, or another loader).
+        # No re-post, no re-insert — just record the V2 id → V3 id mapping.
+        if any(_v2_uuid(r) for r in pending):
+            existing = _existing_v3_uuids(alias, org_cfg, service_name=service_override)
+            already, still_pending = [], []
+            for r in pending:
+                u = _v2_uuid(r)
+                (already if u and u in existing else still_pending).append(r)
+            if already:
+                _store_id_mappings(alias, [(r["id"], existing[_v2_uuid(r)]) for r in already if r.get("id") is not None])
+                if job_key:
+                    for r in already:
+                        if r.get("id") is not None:
+                            _mark_record_inserted(job_key, r["id"])
+                log.info("  Skipping %d records already in V3 (matched on uuid) — mapped, not re-posted", len(already))
+            pending = still_pending
 
     total = len(pending)
     log.info("  Posting %d new record(s) → %s", total, v3_namespace)
@@ -3272,25 +3225,26 @@ def post_to_v3(
         if n % RECORD_LOG_EVERY == 0 or n == total:
             log.info("  Posted %d / %d → %s", n, total, v3_namespace)
 
-    with ThreadPoolExecutor(max_workers=RECORD_WORKERS) as pool:
-        futures = {pool.submit(_post_one, r): r for r in pending}
-        for fut in as_completed(futures):
-            try:
-                fut.result()
-            except Exception as e:
-                # 403 / exhausted 504 retries / network errors: the record was
-                # NOT inserted and not dead-lettered either. Count it, or the
-                # job gets marked done and these records are never retried.
-                rec = futures[fut]
-                log.error("  Failed record id=%s: %s", rec.get("id"), e)
-                with _record_progress_lock:
-                    dead_letter_count += 1
-
-    # Final flush so no inserted IDs are lost between batch flushes
-    with _record_progress_lock:
-        if _inserted_ids:
-            _flush_record_progress()
-
+    try:
+        with ThreadPoolExecutor(max_workers=RECORD_WORKERS) as pool:
+            futures = {pool.submit(_post_one, r): r for r in pending}
+            for fut in as_completed(futures):
+                try:
+                    fut.result()
+                except Exception as e:
+                    # 403 / exhausted 504 retries / network errors: the record was
+                    # NOT inserted and not dead-lettered either. Count it, or the
+                    # job gets marked done and these records are never retried.
+                    rec = futures[fut]
+                    log.error("  Failed record id=%s: %s", rec.get("id"), e)
+                    with _record_progress_lock:
+                        dead_letter_count += 1
+    finally:
+        # Always flush so inserted IDs are on disk even if the pool raised
+        # or an outer path is about to abort the job.
+        with _record_progress_lock:
+            if _record_progress_unflushed or _inserted_ids:
+                _flush_record_progress()
     if dead_letter_count:
         log.warning("  %d / %d record(s) dead-lettered → %s", dead_letter_count, total, v3_namespace)
     return dead_letter_count
@@ -3302,12 +3256,31 @@ _wm_lock = threading.Lock()
 
 
 def _load_watermarks() -> dict:
-    if WATERMARK_FILE.exists():
+    """Load watermark JSON. Missing → {}; corrupt → bak + {}."""
+    if not WATERMARK_FILE.exists():
+        return {}
+
+    try:
+        data = json.loads(WATERMARK_FILE.read_text())
+        if not isinstance(data, dict):
+            raise ValueError(f"expected object, got {type(data).__name__}")
+        return data
+    except Exception as e:
+        bak = WATERMARK_FILE.with_suffix(
+            WATERMARK_FILE.suffix + f".bak.{int(time.time())}"
+        )
         try:
-            return json.loads(WATERMARK_FILE.read_text())
-        except Exception as e:
-            log.warning("Could not parse %s: %s — starting fresh", WATERMARK_FILE, e)
-    return {}
+            WATERMARK_FILE.replace(bak)
+            log.warning(
+                "Could not parse %s: %s — moved to %s and starting fresh",
+                WATERMARK_FILE.name, e, bak.name,
+            )
+        except OSError:
+            log.warning(
+                "Could not parse %s: %s — starting fresh",
+                WATERMARK_FILE.name, e,
+            )
+        return {}
 
 
 def _get_watermark(facility: str, namespace: str, default: str = "1970-01-01T00:00:00Z") -> str:
@@ -3315,24 +3288,60 @@ def _get_watermark(facility: str, namespace: str, default: str = "1970-01-01T00:
 
 
 def _save_watermarks(wm: dict) -> None:
-    WATERMARK_FILE.write_text(json.dumps(wm, indent=2, sort_keys=True))
-
+    """Merge-safe, atomic write so parallel facility tasks cannot clobber each other
+    and a crash mid-write cannot leave invalid JSON."""
+    text = json.dumps(wm, indent=2, sort_keys=True)
+    with _wm_lock, _file_lock(WATERMARK_FILE):
+        # Another process may have written newer keys since we loaded; union them in.
+        if WATERMARK_FILE.exists():
+            try:
+                on_disk = json.loads(WATERMARK_FILE.read_text())
+                if isinstance(on_disk, dict):
+                    merged = dict(on_disk)
+                    merged.update(wm)
+                    text = json.dumps(merged, indent=2, sort_keys=True)
+            except (OSError, ValueError) as e:
+                log.warning("Could not merge %s before writing: %s", WATERMARK_FILE.name, e)
+        _atomic_write(WATERMARK_FILE, text)
 
 # ─── PROGRESS CHECKPOINTS ────────────────────────────────────────────────────
 
 _progress_lock = threading.Lock()
 _completed_jobs: set[str] = set()
 
-
 def _load_progress(run_id: str) -> set[str]:
-    if PROGRESS_FILE.exists():
+    """Load jobs completed in an in-progress migration.
+
+    run_id is used when *writing*; on load we accept any file so a restarted
+    process still skips jobs already finished before the crash. Cross-run
+    skip of fully successful jobs remains DONE_FILE / record progress.
+    """
+    if not PROGRESS_FILE.exists():
+        return set()
+    try:
+        data = json.loads(PROGRESS_FILE.read_text())
+        completed = set(data.get("completed", []))
+        file_run = data.get("run_id")
+        if file_run and file_run != run_id and completed:
+            log.info(
+                "Loaded %d completed job(s) from progress file (file run_id=%s, this run_id=%s)",
+                len(completed), file_run, run_id,
+            )
+        return completed
+    except Exception as e:
+        bak = PROGRESS_FILE.with_suffix(PROGRESS_FILE.suffix + f".bak.{int(time.time())}")
         try:
-            data = json.loads(PROGRESS_FILE.read_text())
-            if data.get("run_id") == run_id:
-                return set(data.get("completed", []))
-        except Exception:
-            pass
-    return set()
+            PROGRESS_FILE.replace(bak)
+            log.warning(
+                "Could not parse %s: %s — moved to %s; treating run as having no completed jobs",
+                PROGRESS_FILE.name, e, bak.name,
+            )
+        except OSError:
+            log.warning(
+                "Could not parse %s: %s — treating run as having no completed jobs",
+                PROGRESS_FILE.name, e,
+            )
+        return set()
 
 
 def _mark_done(run_id: str, job_key: str) -> None:
@@ -3342,7 +3351,7 @@ def _mark_done(run_id: str, job_key: str) -> None:
             {"run_id": run_id, "completed": sorted(_completed_jobs)},
             indent=2,
         ))
-    _mark_permanently_done(job_key)
+  
 
 
 # ─── CROSS-RUN DONE TRACKING ─────────────────────────────────────────────────
@@ -3355,18 +3364,31 @@ _permanently_done: set[str] = set()
 
 def _load_permanently_done() -> None:
     global _permanently_done
-    if DONE_FILE.exists():
+    if not DONE_FILE.exists():
+        _permanently_done = set()
+        return
+    try:
+        data = json.loads(DONE_FILE.read_text())
+        _permanently_done = set(data.get("done", []))
+        if _permanently_done:
+            log.info(
+                "Skipping %d already-migrated jobs (delete %s to re-run them)",
+                len(_permanently_done), DONE_FILE.name,
+            )
+    except Exception as e:
+        bak = DONE_FILE.with_suffix(DONE_FILE.suffix + f".bak.{int(time.time())}")
         try:
-            data = json.loads(DONE_FILE.read_text())
-            _permanently_done = set(data.get("done", []))
-            if _permanently_done:
-                log.info(
-                    "Skipping %d already-migrated jobs (delete %s to re-run them)",
-                    len(_permanently_done), DONE_FILE.name,
-                )
-        except Exception as e:
-            log.warning("Could not load %s: %s", DONE_FILE.name, e)
-            _permanently_done = set()
+            DONE_FILE.replace(bak)
+            log.warning(
+                "Could not load %s: %s — moved to %s; starting with empty done list",
+                DONE_FILE.name, e, bak.name,
+            )
+        except OSError:
+            log.warning(
+                "Could not load %s: %s — starting with empty done list",
+                DONE_FILE.name, e,
+            )
+        _permanently_done = set()
 
 
 def _mark_permanently_done(job_key: str) -> None:
@@ -3434,8 +3456,7 @@ def _record_inserted(job_key: str, record_id) -> bool:
 
 _record_flush_counter = 0
 _record_progress_unflushed = False   # inserted ids not yet on disk (see _flush_state_at_exit)
-
-
+_record_last_flush_time = 0.0
 _record_progress_mtime: tuple | None = None   # _file_sig of the version we last read/wrote
 
 
@@ -3466,12 +3487,13 @@ def _file_sig(path: Path) -> tuple:
 
 
 def _atomic_write(path: Path, text: str) -> tuple:
-    """Write via a temp file + rename, so a run killed mid-write can't leave
-    a truncated file (which the loaders would treat as empty). Returns the
-    new version's _file_sig."""
+    path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
-    tmp.write_text(text)
-    os.replace(tmp, path)
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write(text)
+        f.flush()           # push from Python to OS
+        os.fsync(f.fileno())  # force OS to write to disk
+    os.replace(tmp, path)   # now the rename is safe
     return _file_sig(path)
 
 
@@ -3488,10 +3510,11 @@ def _flush_record_progress() -> None:
     — ids are only ever added, and writing just our own view would erase
     theirs, and for records without a uuid an erased id means a duplicate
     insert on the next run."""
-    global _record_progress_mtime, _record_progress_unflushed
+    global _record_progress_mtime, _record_progress_unflushed, _record_last_flush_time
     # mappings first: an id saved as inserted must have its V3 id on disk too
     _flush_id_map()
     _record_progress_unflushed = False
+    _record_last_flush_time = time.monotonic()
     with _file_lock(RECORD_PROGRESS_FILE):
         if _changed_on_disk(RECORD_PROGRESS_FILE, _record_progress_mtime):
             try:
@@ -3511,7 +3534,12 @@ def _mark_record_inserted(job_key: str, record_id) -> None:
         _inserted_ids.setdefault(job_key, set()).add(record_id)
         _record_flush_counter += 1
         _record_progress_unflushed = True
-        if _record_flush_counter % RECORD_FLUSH_EVERY == 0:
+        by_count = _record_flush_counter % RECORD_FLUSH_EVERY == 0
+        by_time = (
+            RECORD_FLUSH_SECONDS > 0
+            and (time.monotonic() - _record_last_flush_time) >= RECORD_FLUSH_SECONDS
+        )
+        if by_count or by_time:
             _flush_record_progress()
 
 
@@ -3525,7 +3553,7 @@ _id_map: dict[str, dict] = {}      # alias → {v2_id: v3_id}
 _id_map_lock = threading.Lock()
 
 # Secondary lookup: V2 visit_id → V2 patient_id.
-# Persisted to VISIT_PATIENT_FILE so it survives across interrupted/resumed runs.
+# Persisted so it survives across interrupted/resumed runs.
 # Populated when reception_visit records are transformed; used by DoctorNote inject.
 _visit_patient_map: dict[int, int] = {}
 _visit_patient_dirty: int = 0
@@ -3533,9 +3561,10 @@ _visit_patient_dirty: int = 0
 
 def _load_visit_patient_map() -> None:
     global _visit_patient_map
-    if VISIT_PATIENT_FILE.exists():
+    path = get_paths().file("visit_patient")
+    if path.exists():
         try:
-            raw = json.loads(VISIT_PATIENT_FILE.read_text())
+            raw = json.loads(path.read_text())
             _visit_patient_map = {int(k): int(v) for k, v in raw.items() if v is not None}
             log.info("Visit→patient map loaded — %d entries", len(_visit_patient_map))
         except Exception as e:
@@ -3544,17 +3573,25 @@ def _load_visit_patient_map() -> None:
     else:
         _visit_patient_map = {}
 
-
 def _record_visit_patient(v2_visit_id: int, v2_patient_id: int) -> None:
     global _visit_patient_dirty
     _visit_patient_map[v2_visit_id] = v2_patient_id
     _visit_patient_dirty += 1
-    if _visit_patient_dirty % 500 == 0:
-        _write_int_map(VISIT_PATIENT_FILE, _visit_patient_map)
+    if _visit_patient_dirty % RECORD_FLUSH_EVERY == 0:  # was 500
+        _write_int_map(get_paths().file("visit_patient"), _visit_patient_map)
+        _visit_patient_dirty = 0
+
+def _record_visit_admission(v2_visit_id: int, v2_admission_id: int) -> None:
+    global _visit_admission_dirty
+    _visit_admission_map[v2_visit_id] = v2_admission_id
+    _visit_admission_dirty += 1
+    if _visit_admission_dirty % RECORD_FLUSH_EVERY == 0:  # was 500
+        _write_int_map(get_paths().file("visit_admission"), _visit_admission_map)
+        _visit_admission_dirty = 0
 
 
 # Secondary lookup: V2 visit_id → V2 admission_id.
-# Persisted to VISIT_ADMISSION_FILE. Populated when Admission records are
+# Persisted when Admission records are migrated.
 # transformed. Used to split V2 Vitals into inpatient (has an admission)
 # vs outpatient (visit only, no admission) before posting — V3 has two
 # separate vitals tables (inp_vitals vs patient-evaluation vitals).
@@ -3564,9 +3601,10 @@ _visit_admission_dirty: int = 0
 
 def _load_visit_admission_map() -> None:
     global _visit_admission_map
-    if VISIT_ADMISSION_FILE.exists():
+    path = get_paths().file("visit_admission")
+    if path.exists():
         try:
-            raw = json.loads(VISIT_ADMISSION_FILE.read_text())
+            raw = json.loads(path.read_text())
             _visit_admission_map = {int(k): int(v) for k, v in raw.items() if v is not None}
             log.info("Visit→admission map loaded — %d entries", len(_visit_admission_map))
         except Exception as e:
@@ -3575,13 +3613,6 @@ def _load_visit_admission_map() -> None:
     else:
         _visit_admission_map = {}
 
-
-def _record_visit_admission(v2_visit_id: int, v2_admission_id: int) -> None:
-    global _visit_admission_dirty
-    _visit_admission_map[v2_visit_id] = v2_admission_id
-    _visit_admission_dirty += 1
-    if _visit_admission_dirty % 500 == 0:
-        _write_int_map(VISIT_ADMISSION_FILE, _visit_admission_map)
 
 
 def _write_int_map(path: Path, mapping: dict) -> None:
@@ -3595,8 +3626,16 @@ def _write_int_map(path: Path, mapping: dict) -> None:
         except (OSError, ValueError):
             pass
         _atomic_write(path, json.dumps(mapping))
-
-
+        
+def _flush_visit_maps() -> None:
+    """Write dirty visit→patient / visit→admission maps to disk."""
+    global _visit_patient_dirty, _visit_admission_dirty
+    if _visit_patient_dirty:
+       _write_int_map(get_paths().file("visit_patient"), _visit_patient_map)
+    _visit_patient_dirty = 0
+    if _visit_admission_dirty:
+        _write_int_map(get_paths().file("visit_admission"), _visit_admission_map)
+        _visit_admission_dirty = 0
 # Which FK fields to remap, and which model alias holds their ID map.
 _FK_REMAP: dict[str, dict[str, str]] = {
     # insurance_schemes.company_id → the insurance company's V3 id. Companies
@@ -3952,12 +3991,28 @@ def _flush_state_at_exit() -> None:
                 _flush_record_progress()   # writes the id map first
         else:
             _flush_id_map()
+        _flush_visit_maps()                # always — independent of record progress
     except Exception as e:
         log.warning("State flush at exit failed: %s", e)
 
 
 atexit.register(_flush_state_at_exit)
+        
+def _on_terminate(signum, frame) -> None:
+    """Airflow / K8s / systemd send SIGTERM before kill. Flush progress so a
+    graceful stop does not lose the last few successful inserts."""
+    log.warning("Received signal %s — flushing migration state before exit", signum)
+    _flush_state_at_exit()
+    # Restore default and re-raise so the process still exits
+    signal.signal(signum, signal.SIG_DFL)
+    os.kill(os.getpid(), signum)
 
+for _sig in (signal.SIGTERM, signal.SIGINT):
+    try:
+        signal.signal(_sig, _on_terminate)
+    except (ValueError, OSError):
+        # Not main thread, or platform does not support it — atexit still runs
+        pass
 
 def _store_id_mappings(alias: str, pairs: list[tuple]) -> None:
     """Bulk _store_id_mapping — one file write instead of one per record."""
@@ -4474,6 +4529,7 @@ def _run_vitals_split_job(
 def run_job(job: dict, run_id: str, batch_size: int, dry_run: bool) -> bool:
     """Extract from V2, transform, POST to V3. Returns True on success."""
     facility  = job["facility"]
+    use_state_dir(facility, pipeline="v2_to_v3")   
     namespace = job["namespace"]
     mapping   = NAMESPACE_MAP.get(namespace)
     if mapping is None:
@@ -4609,7 +4665,26 @@ def run_migration(
     dry_run: bool,
     max_pages: int | None = None,
 ) -> None:
-    run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    _started = datetime.now(timezone.utc)                      # CHANGED: keep the start time
+    run_id = _started.strftime("%Y%m%dT%H%M%SZ")
+
+    # NEW: several facilities -> one process each (state lives in module globals)
+    if len(facilities) > 1:
+        from concurrent.futures import ProcessPoolExecutor
+        import multiprocessing as mp
+        kw = dict(namespaces=namespaces, since=since, workers=workers,
+                  batch_size=batch_size, dry_run=dry_run, max_pages=max_pages)
+        with ProcessPoolExecutor(max_workers=min(len(facilities), 4),
+                                 mp_context=mp.get_context("spawn")) as pool:
+            futs = {f: pool.submit(run_migration, [f], **kw) for f in facilities}
+            for f, fut in futs.items():
+                try:
+                    fut.result()
+                except BaseException as e:      # a facility failing must not hide the others
+                    log.error("Facility %s failed: %s", f, e)
+        return
+
+    use_state_dir(facilities[0], pipeline="v2_to_v3", process_wide=True)                             
     global _completed_jobs
     _completed_jobs = _load_progress(run_id)
     _load_record_progress()
@@ -4740,7 +4815,6 @@ def run_migration(
                     failures.append(_job_key(job["facility"], job["namespace"]))
         else:
             with ThreadPoolExecutor(max_workers=workers) as pool:
-                print(job['facility'])
                 future_to_job = {
                     pool.submit(run_job, job, run_id, batch_size, dry_run): job
                     for job in tier_jobs
@@ -4797,14 +4871,11 @@ def run_migration(
     log.info("\n".join(summary_lines))
 
     # Flush any unsaved visit→patient / visit→admission map entries
-    if _visit_patient_dirty:
-        VISIT_PATIENT_FILE.write_text(json.dumps(_visit_patient_map))
-    if _visit_admission_dirty:
-        VISIT_ADMISSION_FILE.write_text(json.dumps(_visit_admission_map))
+    _flush_visit_maps()                                        # CHANGED: merge-safe + atomic
 
     # Advance watermarks only if zero failures
     if not failures and not dry_run:
-        now_iso = datetime.now(timezone.utc).isoformat()
+        now_iso = _started.isoformat()                         # CHANGED: run START, not run end
         wm = _load_watermarks()
         for facility in facilities:
             for ns in all_namespaces:
