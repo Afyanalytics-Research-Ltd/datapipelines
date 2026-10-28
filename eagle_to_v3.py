@@ -547,6 +547,9 @@ class Run:
         # V3 facility: AFYA_<TARGET>_BRANCH_FACILITIES='001:15,003:14'. Rows of a branch with no facility are skipped.
         raw = os.environ.get(f"AFYA_{target.upper()}_BRANCH_FACILITIES", "")
         self.branch_fac = {b.strip().zfill(3): int(f) for b, f in (x.split(":") for x in raw.split(",") if ":" in x)}
+        if not self.branch_fac:      # without it every visit would be skipped as "branch has no facility"
+            raise RuntimeError(f"AFYA_{target.upper()}_BRANCH_FACILITIES is not set (.env, or Extra \"branch_facilities\" "
+                               f"on connection afya_v3_{target}), e.g. '001:15,002:16,003:17,004:14'")
         self.clients = {}          # facility → its own login (with X-Facility-Id); self.c writes org-wide rows
         for fac in sorted(set(self.branch_fac.values())):
             self.client(fac)
