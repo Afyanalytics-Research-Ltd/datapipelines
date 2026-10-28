@@ -92,7 +92,7 @@ def run_steps(steps: list[str], *, target: str, only_missing: bool, dry_run: boo
     catchup=False,
     max_active_runs=2,
     tags=["v3", "migration", "eagle"],
-    default_args={"owner": "data-eng", "retries": 1, "retry_delay": timedelta(minutes=5)},
+    default_args={"owner": "data-eng", "retries": 3, "retry_delay": timedelta(minutes=10)},   # a retry resumes (only_missing)
     params={
         "target": Param("eagle", type="string", enum=TARGETS, title="Target",
                         description="eagle = migrate org 13 / facility 14; eagle_prod = production org 199 / facility 196."),
@@ -117,7 +117,7 @@ def eagle_to_v3():
         return {"target": p["target"], "only_missing": bool(p["only_missing"]), "dry_run": bool(p["dry_run"]),
                 "workers": int(p["workers"]), "limit": int(p["limit"]), "patients": step_names(p["patients"])}
 
-    @task(execution_timeout=timedelta(hours=20))
+    @task(execution_timeout=timedelta(hours=48))
     def chosen_steps() -> dict:
         p = get_current_context()["params"]
         if not p["steps"]:
@@ -125,7 +125,7 @@ def eagle_to_v3():
             return {}
         return run_steps(step_names(p["steps"]), **args())
 
-    @task(execution_timeout=timedelta(hours=12))
+    @task(execution_timeout=timedelta(hours=24))
     def base(_) -> dict:
         p = get_current_context()["params"]
         if p["steps"] or not p["base"]:
@@ -134,7 +134,7 @@ def eagle_to_v3():
         return run_steps(BASE, **args())
 
     def group_task(name: str):
-        @task(task_id=name, execution_timeout=timedelta(hours=20))
+        @task(task_id=name, execution_timeout=timedelta(hours=48))   # orders: ~2M rows at ~1.1k/min
         def _run(_) -> dict:
             p = get_current_context()["params"]
             if p["steps"] or name not in p["groups"]:
