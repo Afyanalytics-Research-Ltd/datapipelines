@@ -277,8 +277,28 @@ def visit_payload(r: dict, patient_id: int, *, inpatient: bool, clinic: int | No
             "created_at": when, "updated_at": stamp(r.get("updateddate")) or when}
 
 
+# plausible range per vital; a value 10× too big ('366' for 36.6, '17200' for 172) is a slipped decimal point
+VITAL_RANGES = {"height": (20, 250), "weight": (0.3, 350), "temperature": (25, 45), "bmi": (5, 90), "pulse": (20, 300),
+                "respiratory_rate": (3, 100), "systolic_bp": (40, 300), "diastolic_bp": (20, 200)}
+
+
+def vital(name: str, v, dropped: list) -> float | None:
+    """A vital that fits V3's column: as typed, or with the decimal point put back; else None (kept in `dropped`)."""
+    x = num(v)
+    if x is None or x == 0:
+        return None
+    lo, hi = VITAL_RANGES[name]
+    for cand in (x, x / 10, x / 100):
+        if lo <= cand <= hi:
+            return round(cand, 2)
+    dropped.append(f"{name} {clean(v)}")
+    return None
+
+
 def vitals_payload(r: dict, visit_id: int, patient_id: int) -> dict:
-    sys_, dia = num(r.get("bpsystolic")), num(r.get("bpdiastolic"))
+    dropped: list[str] = []
+    sys_, dia = vital("systolic_bp", r.get("bpsystolic"), dropped), vital("diastolic_bp", r.get("bpdiastolic"), dropped)
+    pulse, resp = vital("pulse", r.get("pulse"), dropped), vital("respiratory_rate", r.get("respiration"), dropped)
     chronic = ", ".join(n for n, k in (("Diabetes", "dm"), ("Hypertension", "hypertension"), ("Respiratory", "respiratory"),
                                        ("Cardiac", "cardiac"), ("Epilepsy", "epilepsy"), ("Renal", "renal"))
                         if words(r.get(k)) in ("checked", "on", "yes", "1"))
@@ -288,16 +308,17 @@ def vitals_payload(r: dict, visit_id: int, patient_id: int) -> dict:
                    ("Unaided R", r.get("unaidedr")), ("Unaided L", r.get("unaidedl")))
     iop = text_join(("Right", r.get("iopright")), ("Left", r.get("iopleft"))) if (num(r.get("iopright")) or num(r.get("iopleft"))) else None
     spo2 = num(r.get("spo2"))
+    height, weight = vital("height", r.get("height"), dropped), vital("weight", r.get("weight"), dropped)
+    temp, bmi = vital("temperature", r.get("celsius"), dropped), vital("bmi", r.get("bmi"), dropped)
+    notes = "\n".join(x for x in (other, f"Out-of-range in Patcom (not loaded as numbers): {', '.join(dropped)}" if dropped else None) if x)
     return {"uuid": gid("triage", r["vitalid"]), "visit_id": visit_id, "visit": visit_id, "patient_id": patient_id,
-            "height": num(r.get("height")), "weight": num(r.get("weight")), "temperature": num(r.get("celsius")),
+            "height": height, "weight": weight, "temperature": temp,
             "systolic_bp": int(sys_) if sys_ else None, "diastolic_bp": int(dia) if dia else None,
             "bp_systolic": int(sys_) if sys_ else None, "bp_diastolic": int(dia) if dia else None,
             "blood_pressure": f"{int(sys_)}/{int(dia)}" if sys_ and dia else None,
-            "pulse": int(num(r.get("pulse"))) if num(r.get("pulse")) else None,
-            "respiratory_rate": int(num(r.get("respiration"))) if num(r.get("respiration")) else None,
-            "bmi": round(num(r.get("bmi")), 2) if num(r.get("bmi")) else None,
+            "pulse": int(pulse) if pulse else None, "respiratory_rate": int(resp) if resp else None, "bmi": bmi,
             "oxygen_saturation": int(spo2) if spo2 and 0 < spo2 <= 100 else None,
-            "chronic_illnesses": chronic or None, "notes": other, "visual_acuity_uncorrected": va,
+            "chronic_illnesses": chronic or None, "notes": notes or None, "visual_acuity_uncorrected": va,
             "intraocular_pressure": iop, "recorded_by_name": clean(r.get("user")),
             "recorded_at": when, "created_at": when, "updated_at": stamp(r.get("updatedate")) or when}
 
@@ -529,6 +550,18 @@ def evaluation_payment_payload(uid: str, receipt: str, *, amount, mode_text, whe
 
 
 # ── run ─────────────────────────────────────────────────────────────────────
+def patient_login(login, target: str, waits=(60, 120, 180, 300, 300, 300)) -> str:
+    """V3 sign-in that waits out its throttle (HTTP 422 "Too many failed sign-in attempts from this device")."""
+    for wait in (*waits, None):
+        try:
+            return login()
+        except Exception as e:
+            if wait is None or "too many" not in str(e).lower():
+                raise
+            log.warning("%s: V3 is throttling sign-ins — retrying in %ds", target, wait)
+            time.sleep(wait)
+
+
 class Run:
     def __init__(self, target: str, dry_run: bool, limit: int, workers: int, only_missing: bool = False):
         from pipelines_common import use_pipelines_dir
@@ -537,6 +570,8 @@ class Run:
         import snowflake_to_v3_migration as s2v3
         self.target, self.dry_run, self.limit, self.workers, self.only_missing = target, dry_run, limit, workers, only_missing
         self.c = V3Client(target)
+        login = self.c.login
+        self.c.login = lambda: patient_login(login, self.target)   # token refreshes wait out a throttle too
         self.c._token = (self.c.login(), time.time())    # kept: token() would otherwise log in a second time
         self.sf = s2v3._snowflake_connect()
         self.today = date.today().isoformat()
@@ -561,11 +596,13 @@ class Run:
             return self.c
         if fac not in self.clients:
             from v3_to_v3_client import V3Client
+            # no sign-in of its own: it borrows the main client's token and names its facility in X-Facility-Id.
+            # V3 throttles sign-ins ("too many failed sign-in attempts from this device"): a login per facility
+            # per task, with the DAG's groups starting together, tripped it on the server.
             c = V3Client(self.target, facility_id=fac)
             c.send_facility_header = True
-            c._token = (c.login(), time.time())        # one login per facility (V3 locks out bursts of sign-ins)
-            if c.facility_id != fac:
-                raise RuntimeError(f"{self.target}: login landed in facility {c.facility_id}, not {fac}")
+            c.token = self.c.token
+            c.organization_id, c.user_id = self.c.organization_id, self.c.user_id
             # an account offered one facility logs in without choosing, so access to `fac` only shows on first use
             try:
                 c.read_page("core", "departments", 1, per_page=1)
