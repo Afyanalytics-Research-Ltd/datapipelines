@@ -72,6 +72,9 @@ _SINCE = re.compile(r"^\d{4}-\d\d-\d\d( \d\d:\d\d(:\d\d)?)?$")
         "page_workers": Param(32, type="integer", minimum=1, maximum=64, title="Parallel V2 page reads"),
         "dry_run": Param(False, type="boolean", title="Dry run",
                          description="Read, transform and decide; post nothing."),
+        "corrections": Param(True, type="boolean", title="Run the org corrections after",
+                             description="v3_org_corrections: visit destinations, discharges, destination "
+                                         "categories (skipped on a dry run)."),
     },
 )
 def v2_delta_to_v3():
@@ -103,7 +106,20 @@ def v2_delta_to_v3():
             if r["why"] != "all changes applied":
                 log.info("  %-42s %s", r["table"], r["why"][:400])
 
-    report(delta())
+    @task(execution_timeout=timedelta(hours=6))
+    def corrections(_: str) -> None:
+        p = get_current_context()["params"]
+        if p["dry_run"] or not p.get("corrections", True):
+            log.info("corrections skipped (dry run / turned off)")
+            return
+        from v3_org_corrections_dag import run_corrections
+        run_corrections(p["target"], source=None, facility=p["source"], dry_run=False,
+                        steps=["destination_categories", "eval_visit_destinations", "eval_consumables", "eval_investigation_links",
+                               "admission_discharges"])
+
+    out = delta()
+    report(out)
+    corrections(out)
 
 
 v2_delta_to_v3()

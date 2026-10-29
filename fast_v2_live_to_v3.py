@@ -99,6 +99,22 @@ def _n(v) -> str:
         return _s(v)
 
 
+# "<facility>-[org<N>-]<V2 patient_no>-<V2 id>" (how the migration writes it) or "PAT<V2 patient_no>"
+# (org 284 renumbered to V2's own number, 2026-10-26). V3's own numbers are PAT + year + 6 digits (10):
+# capped at 8 digits so they never read as a V2 number
+_PATIENT_NO = re.compile(r"^(?:[a-z0-9_]+-(?:org\d+-)?(\d+)-\d+|pat(\d{1,8}))$")
+
+
+def _patient_no_key(v) -> str:
+    """The V2 patient number inside a V3 patient_no, whichever of the two formats it's in, so a patient
+    renumbered to PAT<no> still matches the migration's payload. Anything else — "PAT<no>-DUP" (the
+    extra copy of a duplicated patient, which must not be picked), V3's own PAT<year><seq> numbers —
+    stays as it is and only matches itself."""
+    s = _s(v)
+    m = _PATIENT_NO.match(s)
+    return (m.group(1) or m.group(2)) if m else s
+
+
 # content key per V3 model: a V2 row whose key V3 already has is already there (under another uuid)
 CONTENT_KEY = {
     # older loads left destination_id / department_id unset or mapped differently: visit + arrival
@@ -112,7 +128,7 @@ CONTENT_KEY = {
     "procedure_prices": lambda r: (str(r.get("evaluation_procedure_id")),),
     # V3's own unique keys, as the migration builds them ("kisumu_v3-org4-<no>-<V2 id>", "ADM-<V2 id>");
     # timestamps don't work here — some older rows were stored 3 h earlier (UTC)
-    "patient": lambda r: (_s(r.get("patient_no")),),
+    "patient": lambda r: (_patient_no_key(r.get("patient_no")),),
     "admission": lambda r: (_s(r.get("admission_number")),),
     "stock": lambda r: (str(r.get("product_id")), str(r.get("store_id"))),
     # one profile per user (user_id unique in V3): a user that has one already is skipped
