@@ -1203,6 +1203,14 @@ def _int_or_zero(v) -> int:
 
 _INV_RESULT_STATUSES = {"preliminary", "final", "corrected", "amended", "approved", "rejected", "retracted", "publish"}
 
+
+def _inv_result_status(v) -> str:
+    """V2's investigation result status (1 published / 0 not) → V3's word; a valid word passes through."""
+    s = str(v if v is not None else "").strip().lower()
+    if s in _INV_RESULT_STATUSES:
+        return s
+    return "publish" if s in ("1", "true") else "preliminary"
+
 _REQUISITION_STATUS = {s: s for s in ("draft", "submitted", "pending_approval", "approved", "partially_fulfilled",
                                        "fulfilled", "rejected", "cancelled")} | {"pending": "pending_approval"}
 
@@ -1971,13 +1979,12 @@ _PER_KEY_COERCIONS: dict[str, dict[str, Any]] = {
         "receipt_date": lambda v: (str(v)[:10] if _blank_to_none(v) and re.match(r"(19|20)\d\d-\d\d-\d\d", str(v))
                                    else None),
     },
-    # investigation_results.status is an enum of words; V2 holds 0 / 1. MySQL
-    # read 1 as the enum's first value (preliminary — 47,326 kisumu_v3 rows
-    # already in V3) and refused 0 ("Data truncated", 430 results + their
-    # details). Both → preliminary, consistently; a valid word passes through.
+    # investigation_results.status is an enum of words; V2 holds 0 / 1 (MySQL refused the raw numbers).
+    # V2 1 = published (every one has published_on / published_by) → "publish"; 0 → "preliminary", or
+    # "approved" when V2 approved it (set after the coercions, it needs approved_on). Until 2026-10-27
+    # both went to "preliminary", which V3 shows as pending: the patient history hid "View Results".
     "evaluation_inv_result": {
-        "status": lambda v: (str(v).strip().lower() if str(v or "").strip().lower() in _INV_RESULT_STATUSES
-                             else "preliminary"),
+        "status": lambda v: _inv_result_status(v),
     },
     # inv_requisitions.status is an enum without V2's "pending" ("Data truncated
     # for column 'status'"): pending → pending_approval, unknown → submitted
@@ -2206,6 +2213,8 @@ def transform_record(record: dict, transform_key: str, org_cfg: dict, facility: 
             continue
         if field in out:
             out[field] = fn(out[field])
+    if tk == "evaluation_inv_result" and out.get("status") == "preliminary" and _blank_to_none(out.get("approved_on")):
+        out["status"] = "approved"              # V2 0 but approved: not yet published
 
     # 5b. Populate visit→patient side-channel so doctor_note can derive patient_id.
     # Read from `out`, not `record`: V2 visits carry a bare "patient" column
@@ -2460,6 +2469,17 @@ def _v3_invalidate_token() -> None:
 # post_with_retry_and_fallback and _extract_all_pages mirror
 # facility_to_snowflake_fast.py exactly, adjusted for V2-only auth.
 
+def _retry_after_seconds(r, default: int) -> int:
+    """How long a 429 asks us to wait, kept to 1 s–5 min. The V2 API has answered with a negative
+    retry_after_seconds (its window already over), which crashed time.sleep and failed the whole table
+    (v2_delta patients, 2026-10-27)."""
+    try:
+        value = int(float(r.json().get("retry_after_seconds", default)))
+    except Exception:
+        value = default
+    return max(1, min(value, 300))
+
+
 def _post_with_retry(
     url: str,
     headers: dict,
@@ -2497,11 +2517,7 @@ def _post_with_retry(
                     continue
 
                 if r.status_code == 429:
-                    retry_after = default_retry_wait
-                    try:
-                        retry_after = int(r.json().get("retry_after_seconds", default_retry_wait))
-                    except Exception:
-                        pass
+                    retry_after = _retry_after_seconds(r, default_retry_wait)
                     if attempt >= max_retries:
                         r.raise_for_status()
                     log.warning("  429 ns=%s sleeping %ss (%s/%s)",

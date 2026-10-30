@@ -18,7 +18,8 @@ load_gyno_to_snowflake.py) and posts through the model gateway, in order:
              immunizations: vaccine pharmacy_records / services_records → evaluation/immunization_notes;
              anc_enrollments / fp_services: current pregnancies → ANC awaiting queue, FP items → FP register,
              both through the evaluation REST API (no gateway model; the API skips existing enrollments).
-  catalogue / investigations   laboratory, otherservices, otherprocedures → evaluation/procedures (+ categories);
+  catalogue / investigations   laboratory, otherservices, otherprocedures, orequests (inpatient procedures / other
+             requests — no price in Gyno, typed per charge; V3 category DOCTOR) → evaluation/procedures (+ categories);
              lab_requests, services_records, otherequests → evaluation/investigations.
   products / prescriptions     pharmacy → inventory/product (+ categories, units); pharmacy_records → prescriptions.
              Drug insurance price = cash × 1.33 (Gyno's rule; it never filled pharmacy.insurancecost) —
@@ -54,7 +55,7 @@ import sys
 import threading
 import time
 import uuid
-from collections import Counter
+from collections import Counter, defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, timedelta
 from pathlib import Path
@@ -72,7 +73,7 @@ STEPS = ("patients", "visits", "vitals", "doctor_notes", "discharges", "nurse_no
          "procedure_prices", "investigations", "products", "prescriptions", "payments", "appointments", "users", "user_profiles", "visit_doctors", "insurance", "invoices",
          "extra_notes", "documents", "stock", "procurement", "destinations", "destinations_reception", "payment_links", "receipts", "admissions", "inpatient_discharges",
          "inpatient_links", "prescription_fix", "close_admissions", "wards", "po_history", "theatre_bookings", "evaluation_payments", "evaluation_payment_details",
-         "mch_destinations", "patient_meta", "immunizations", "anc_enrollments", "fp_services", "drug_insurance_prices", "prescription_dose", "insurance_schemes", "procedure_price_facility", "prescription_drug_links", "activity")
+         "mch_destinations", "patient_meta", "immunizations", "anc_enrollments", "fp_services", "drug_insurance_prices", "prescription_dose", "insurance_schemes", "procedure_price_facility", "prescription_drug_links", "lab_catalogue_prices", "opening_batches", "pharmacy_store", "consumables", "hide_unused_catalogue", "theatre_booking_money", "invoice_insurers", "activity")
 
 
 # ── pure helpers (tests/test_gyno_to_v3.py) ────────────────────────────────
@@ -358,6 +359,43 @@ def procedure_price_payload(table: str, r: dict, procedure_id: int, facility_id:
             "status": 1, "created_at": stamp(r.get("updated_on")), "updated_at": stamp(r.get("updated_on"))}
 
 
+# V3's lab catalogue (category LAB, loaded before Gyno — what staff pick in org 159) → the Gyno in-house lab test
+# (laboratory.id) whose cash / insurance price it takes. Exact same names match on their own; these are the
+# renamed ones. Partner-lab variants ('… Agakhan', '… Metropolis') are deliberately not used where Gyno has its own.
+LAB_CATALOGUE_TO_GYNO = {
+    "full haemogram cbc fbc": 5, "haemogram cbc indic": 5, "haematology": 5, "haemoglobin hb": 14, "hb": 14,
+    "random blood sugar": 12, "fasting blood sugar": 129, "urine examination routine": 13, "bs for mps": 16,
+    "malaria rapid test r": 16, "stool examination routine": 17, "blood group a b o": 20, "blood grouping": 20,
+    "stool for h pylori": 21, "salmonela antigen test": 22, "b hcg": 23, "hepatitis b surface antigen rapid": 26,
+    "pregnancy test": 27, "uecs": 29, "kidney panel kft": 29, "kidney function tests": 29, "t3 test": 32, "t4 test": 33,
+    "prl": 34, "luteinizing hormone lh": 35, "luteinizing horme": 35, "fsh": 37, "glucose tolerance te": 53,
+    "brucella arbotus": 56, "brucella melitens": 56, "d dimer": 60, "e s r westergren": 61, "pap smear routine": 69,
+    "cytology pap smear": 69, "calcium": 70, "alkaline phosphatase": 210, "phosphorus": 72, "sputum gene xpert": 73,
+    "testosterone": 79, "testosterone total": 79, "serum testosterone levels": 79, "pt inr": 81, "estradiol": 83,
+    "anti ccp antibodies": 84, "crp quantitative": 88, "c reactive protein": 88, "psa": 94, "prostate specific an": 94,
+    "vitamin b12 level": 102, "culture urine": 6, "urine mcs": 6, "creatinine": 107, "ca 125 ovarian cancer": 110,
+    "rheumatoid factor serum": 114, "r a test quantitative": 114, "stool examination occult blood": 119,
+    "vitamin d": 120, "mantoux test tubercu": 124, "thyroid profile free t3 t4 tsh": 133, "thyroid function test": 133,
+    "hepatitis c antibodi rapid": 247, "serum tsh": 167, "tsh test": 167, "anti mullerian hormo": 168,
+    "grouping cross match": 172, "cholera antigen test": 193, "amylase": 198, "amylase serum": 198,
+    "alpha feto proein afp": 237, "liver panel 1 lft": 7, "liver function tests": 7, "hiv i ii antibody test": 1,
+    "bilirubin total": 420, "ca 199": 318, "antiphospholipid": 367, "anti streptolysin o asot": 398,
+    "peripheral blood film pbf": 402, "cea": 408, "ferritin": 416, "procalcitonin pct": 415, "cholesterol total": 403,
+    "seminalysis": 341, "semen analysis seminalysis": 341, "human papiloma virus": 245, "hpv dna pcr screening": 344,
+    "rota adenovirus combo": 50, "covid antigen test": 241, "covid 19 pcr": 358, "adult blood culture": 360,
+    "electrolyte": 161, "coombs test direct dct": 230, "anti toxo igg": 182, "anti toxo igm test": 182,
+    "serum cortisol am": 378, "serum cortisol pm": 378, "folic acid level": 356, "antinuclear antibody": 331,
+    "extractable nuclear screening panel": 388, "extractable nuclear antigen": 388,
+}
+
+
+LAB_CATALOGUE_SKIP = {"pct"}     # same name, different test: V3 'Pct' is the FBC platelet-crit line, Gyno PCT is procalcitonin
+
+
+def lab_key(name) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", str(name or "").lower()).strip()
+
+
 def investigation_payload(uid: str, visit_id: int, patient_id: int, *, type_: str, procedure, quantity, price,
                           amount, when, updated=None, result=None, instructions=None, comments=None) -> dict:
     p = num(price) or 0.0
@@ -396,6 +434,30 @@ def product_payload(r: dict, category: int, unit: int) -> dict:
             "category_id": category, "unit_id": unit,
             **prices(r.get("cost"), r.get("buying_price"), drug_insurance_price(r.get("cost"), r.get("insurancecost"))),
             "created_at": stamp(r.get("updated_on")), "updated_at": stamp(r.get("updated_on"))}
+
+
+# Gyno billed sundries through its pharmacy; these item names are consumables (V3's visit Consumables tab), not drugs
+CONSUMABLE_RE = re.compile(r"SPECULUM|GLOVE|CANNUL|SYRINGE|NEEDLE|CATHETER|GAUZE|COTTON|SUTURE|VICRYL|CHROMIC|GIVING SET|"
+                           r"DRIP SET|BANDAGE|PLASTER|STRAPPING|SWAB|BLADE|SPATULA|URINE BAG|MASK|SPECIMEN|DIAPER|STRIP")
+# 'kit' is not used: Gyno's kits (Triokit, OG Kit Tabs, VDM kit…) are drug packs. Anything named as a dose form is a drug.
+DRUG_FORM_RE = re.compile(r"\b(TABS?|TABLETS?|CAPS?|CAPSULES?|SYRUP|SUSP|INJ|INJECTION|CREAM|GEL|PESSAR(Y|IES)|MG|MIXTARD|"
+                          r"EXAMINATION)\b|\d\s*MG\b")    # + a service ('Speculum Examination') and insulin sold with needles
+
+
+def is_consumable(title) -> bool:
+    t = (clean(title) or "").upper()
+    return bool(CONSUMABLE_RE.search(t)) and not DRUG_FORM_RE.search(t)
+
+
+def consumable_payload(r: dict, visit_id: int, product_id: int, user_id: int, title: str | None) -> dict:
+    q, price = num(r.get("quantity")) or 1.0, num(r.get("unitpharmacycost")) or 0.0
+    used = clean(r.get("status")) == "Yes"
+    when = stamp(r.get("updated_on"))
+    return {"uuid": gid("consumable-pharmacy_records", r["id"]), "visit_id": visit_id, "product_id": product_id, "user_id": user_id,
+            "quantity": q, "price": price, "amount": num(r.get("totalcost")) or round(q * price, 2), "discount": 0, "bill": 1,
+            "status": "administered" if used else "pending", "cancelled": 0,
+            "notes": f"Gyno pharmacy record #{r['id']}: {title or ''} (by {clean(r.get('updated_by')) or 'unknown'})"[:2000],
+            "created_at": when, "updated_at": when}
 
 
 def prescription_payload(r: dict, visit_id: int, drug: int | None, drug_name: str | None, user_id: int) -> dict:
@@ -1125,10 +1187,15 @@ class Run:
 
     def catalogue(self) -> dict:
         cats = self.named("evaluation", "procedure_categories", ["Laboratory", "Ultrasound", "Services", "Procedures"])
+        # the inpatient procedures tab only offers categories named Doctor / MEDSURG / Nursing
+        cats["Inpatient Procedures"] = next((r["id"] for r in self.c.read_all("evaluation", "procedure_categories")
+                                             if r.get("code") == "DOCTOR"), None) \
+            or self.named("evaluation", "procedure_categories", ["Doctor"])["Doctor"]
         payloads = [procedure_payload("laboratory", "LAB", r, cats["Ultrasound" if clean(r.get("is_ultra")) == "Yes" else "Laboratory"])
                     for r in self.rows("laboratory")]
         payloads += [procedure_payload("otherservices", "SVC", r, cats["Services"]) for r in self.rows("otherservices")]
         payloads += [procedure_payload("otherprocedures", "PRC", r, cats["Procedures"]) for r in self.rows("otherprocedures")]
+        payloads += [procedure_payload("orequests", "ORQ", r, cats["Inpatient Procedures"]) for r in self.rows("orequests")]
         return {"categories": len(cats), "procedures": len(payloads), **self.post("evaluation", "procedures", payloads)}
 
     def procedure_prices(self) -> dict:
@@ -1141,6 +1208,77 @@ class Run:
                     continue
                 payloads.append(procedure_price_payload(table, r, pid, self.c.facility_id, self.facility_name()))
                 why["no price in Gyno (0)"] += not num(r.get("cost"))
+        return {**why, **self.post("evaluation", "procedure_prices", payloads)}
+
+    def opening_batches(self) -> dict:
+        """V3 sells / issues only from batches (FEFO allocation): one opening batch per Gyno stock row with stock and
+        no batch, holding its quantity (Gyno keeps no lot or expiry), then the stock row points at it."""
+        rows = {gid(f"{t}-stock", r["id"]): t for t in ("pharmacy", "stocks") for r in self.rows(t)}
+        todo, why = [], Counter()
+        for s in self.c.read_all("inventory", "stock", workers=8):
+            if str(s.get("uuid")).lower() not in rows:
+                continue
+            q = int(num(s.get("quantity")) or 0)
+            if s.get("batch_id"):
+                why["already has a batch"] += 1
+            elif q <= 0:
+                why["no stock (no batch needed)"] += 1
+            else:
+                todo.append(s)
+        why["to create"] = len(todo)
+        if self.limit:
+            todo = todo[:self.limit]
+        if self.dry_run:
+            return {**why, "would_create": len(todo)}
+        res, lock = Counter(), threading.Lock()
+
+        def one(s):
+            q = int(num(s.get("quantity")) or 0)
+            b = {"uuid": gid("opening-batch", s["uuid"]), "batch_no": f"GYN-OPEN-{s['id']}", "product_id": s["product_id"],
+                 "store_id": s["store_id"], "cost_price": num(s.get("average_cost")) or 0.0, "selling_price": num(s.get("selling_price")),
+                 "quantity_received": q, "quantity_available": q, "status": "active",
+                 "notes": "Opening balance from Gyno HMS (Gyno keeps no lot number or expiry)"}
+            r = self.c.insert("inventory", "batch", b, match_on="uuid")
+            bid = ((r.json() or {}).get("data") or {}).get("id") if r.ok else None
+            ok = bool(bid) and self.c.insert("inventory", "stock", {"uuid": s["uuid"], "batch_id": bid}, match_on="uuid").ok
+            with lock:
+                res["ok" if ok else "failed"] += 1
+                if not ok and res["failed"] <= 3:
+                    log.error("  batch for stock %s: %s %s", s["id"], r.status_code, r.text[:250])
+        with ThreadPoolExecutor(self.workers) as ex:
+            list(ex.map(one, todo))
+        return {**why, **res}
+
+    def lab_catalogue_prices(self) -> dict:
+        """Price V3's own lab catalogue (category LAB — what staff order from) with Gyno's in-house lab prices at this
+        facility: same-name tests, plus LAB_CATALOGUE_TO_GYNO. Tests that already have a price here are left alone."""
+        lab = next(r["id"] for r in self.c.read_all("evaluation", "procedure_categories") if r.get("code") == "LAB")
+        gyno = {str(r["id"]): r for r in self.rows("laboratory")}
+        by_name = {}
+        for r in sorted(gyno.values(), key=lambda r: int(r["id"])):
+            by_name.setdefault(lab_key(r.get("title")), r)
+        priced = {r.get("evaluation_procedure_id") for r in self.c.read_all("evaluation", "procedure_prices", workers=8)
+                  if r.get("facility_id") == self.c.facility_id}
+        ours = {gid("laboratory", i) for i in gyno}
+        payloads, why, used = [], Counter(), []
+        for p in self.c.read_all("evaluation", "procedures", workers=8):
+            if p.get("category") != lab or str(p.get("uuid")).lower() in ours:
+                continue
+            key = lab_key(p.get("name"))
+            if key in LAB_CATALOGUE_SKIP:
+                why["no Gyno equivalent"] += 1
+                continue
+            src = gyno.get(str(LAB_CATALOGUE_TO_GYNO[key])) if key in LAB_CATALOGUE_TO_GYNO else by_name.get(key)
+            if src is None:
+                why["no Gyno equivalent"] += 1
+            elif p["id"] in priced:
+                why["already priced (kept)"] += 1
+            else:
+                pay = procedure_price_payload("laboratory", src, p["id"], self.c.facility_id, self.facility_name())
+                payloads.append({**pay, "uuid": gid("lab-catalogue-price", p["id"])})
+                used.append(f"{p.get('name')} ← {clean(src.get('title'))} {pay['cash_charge']:g}/{pay['insurance_charge']:g}")
+        why["to price"] = len(payloads)
+        log.info("lab catalogue prices: %s", "; ".join(used))
         return {**why, **self.post("evaluation", "procedure_prices", payloads)}
 
     def facility_name(self) -> str | None:
@@ -1195,7 +1333,7 @@ class Run:
         link each to its V3 product (+ the store), and replace Gyno's '0' item names with the product's name."""
         prods = {str(p.get("uuid")).lower(): p for p in self.c.read_all("inventory", "product", workers=8) if p.get("uuid")}
         rx = {str(r.get("uuid")).lower(): r for r in self.c.read_all("evaluation", "prescriptions", workers=8) if r.get("uuid")}
-        store = self.store()
+        store, store_name = self.dispensing_store()
         items, why = [], Counter()
         for r in self.rows("pharmacy_records"):
             have = rx.get(gid("pharmacy_records", r["id"]))
@@ -1208,8 +1346,8 @@ class Run:
             want = {}
             if have.get("drug") != prod["id"]:
                 want["drug"] = prod["id"]
-            if not have.get("store_id"):
-                want.update(store_id=store, store_name="Main Store")
+            if have.get("store_id") != store:
+                want.update(store_id=store, store_name=store_name)
             if (clean(have.get("drug_name")) or "0") == "0" and prod.get("generic_name"):
                 want["drug_name"] = prod["generic_name"]
             if want:
@@ -1500,9 +1638,9 @@ class Run:
 
     def prescription_fix(self) -> dict:
         """status 'active' (what V3 lists), Gyno's dosing text, the store, and admission_id on inpatient stays."""
-        store_id = self.store()
+        store = self.dispensing_store()
         rx, adm = self.ids_by_uuid("evaluation", "prescriptions"), self.admission_by_source_visit()
-        updates = [(rx[gid("pharmacy_records", r["id"])], rx_fix_payload(r, (store_id, "Main Store"), adm.get(str(r.get("qid")))))
+        updates = [(rx[gid("pharmacy_records", r["id"])], rx_fix_payload(r, store, adm.get(str(r.get("qid")))))
                    for r in self.rows("pharmacy_records") if gid("pharmacy_records", r["id"]) in rx]
         if self.limit:
             updates = updates[:self.limit]
@@ -1848,7 +1986,222 @@ class Run:
 
     # ── procurement and stock ──
     def store(self) -> int:
-        return self.named("inventory", "store", ["Main Store"])["Main Store"]
+        return self.dispensing_store()[0]
+
+    def dispensing_store(self) -> tuple[int, str]:
+        """Where Gyno's stock lives: the org's flagged main store (org 159: 'Main', what V3's screens open on — user's
+        choice 2026-10-23); orgs without one get a 'Main Store' made by this loader."""
+        if not hasattr(self, "_dispensing_store"):
+            main = next((s for s in self.c.read_all("inventory", "store") if s.get("is_main_store") and s.get("is_active", True)), None)
+            if main:
+                self._dispensing_store = (main["id"], main.get("name"))
+            else:
+                self._dispensing_store = (self.named("inventory", "store", ["Main Store"])["Main Store"], "Main Store")
+        return self._dispensing_store
+
+    def consumables(self) -> dict:
+        """Gyno sundries (speculum, giving set, cannula, gauze, kits…) used on a visit → V3 visit consumables; the
+        prescription rows they also came in as stay for history. requested_by in V3 = user_id."""
+        titles = {str(r["id"]): clean(r.get("title")) for r in self.rows("pharmacy")}
+        prods = self.ids_by_uuid("inventory", "product")
+        doctors = self.visit_doctor_users()
+        vis, payloads, why = self.visit_map(), [], Counter()
+        for r in self.rows("pharmacy_records"):
+            title = titles.get(str(r.get("pid")))
+            if not is_consumable(title):
+                continue
+            v, pid = vis.get(gid("visits", r.get("qid"))), prods.get(gid("pharmacy", r.get("pid")))
+            if v is None or pid is None:
+                why["visit or product not in V3"] += 1
+                continue
+            payloads.append(consumable_payload(r, v[0], pid, doctors.get(str(r.get("qid"))) or self.c.user_id, title))
+        return {"source": len(payloads) + sum(why.values()), **why, **self.post("evaluation", "consumables", payloads)}
+
+    def hide_unused_catalogue(self) -> dict:
+        """The org's V3 template catalogue (thousands of never-stocked products) buries Gyno's stock under zeros. Set
+        is_active = false on non-Gyno products with no stock and no use anywhere (prescribed, consumable, procedure
+        consumable, ordered, received, requisitioned, moved, batch) that weren't created since 15 Oct (staff additions).
+        Every hidden id goes to output/gyno_to_v3/hidden_products_<target>.csv — re-activate from it to undo."""
+        ours = {gid(t, r["id"]) for t in ("pharmacy", "stocks") for r in self.rows(t)}
+        used, why = set(), Counter()
+        for s in self.c.read_all("inventory", "stock", workers=8):
+            if (num(s.get("quantity")) or 0) > 0:
+                used.add(s.get("product_id"))
+        for svc, alias, col in (("evaluation", "prescriptions", "drug"), ("evaluation", "consumables", "product_id"),
+                                ("evaluation", "procedure_consumables", "product_id"), ("inventory", "purchase_order_item", "product_id"),
+                                ("inventory", "goods_received_item", "product_id"), ("inventory", "requisition_item", "product_id"),
+                                ("inventory", "store_order_item", "product_id"), ("inventory", "stock_movement", "product_id"),
+                                ("inventory", "batch", "product_id")):
+            used |= {r.get(col) for r in self.c.read_all(svc, alias, workers=8) if r.get(col)}
+        hide = []
+        for p in self.c.read_all("inventory", "product", workers=8):
+            if str(p.get("uuid")).lower() in ours:
+                why["Gyno product (kept)"] += 1
+            elif not p.get("is_active"):
+                why["already inactive"] += 1
+            elif p["id"] in used:
+                why["template product in use (kept)"] += 1
+            elif str(p.get("created_at") or "") >= "2026-10-15":
+                why["created since 15 Oct (kept)"] += 1
+            else:
+                hide.append(p)
+        why["to hide"] = len(hide)
+        if self.limit:
+            hide = hide[:self.limit]
+        if self.dry_run:
+            return dict(why)
+        path = Path(__file__).resolve().parent / "output" / "gyno_to_v3" / f"hidden_products_{TARGET}.csv"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        new = not path.exists()
+        with path.open("a", encoding="utf-8") as f:
+            if new:
+                f.write("product_id,uuid,generic_name,created_at\n")
+            for p in hide:
+                f.write(f"{p['id']},{p.get('uuid')},\"{str(p.get('generic_name') or '').replace(chr(34), '')}\",{p.get('created_at')}\n")
+        return {**why, "csv": str(path), **self.update("inventory", "product", [(p["id"], {"is_active": False}) for p in hide])}
+
+    def invoice_insurers(self) -> dict:
+        """Finance → insurance management → company statements sum invoices by company_id (core insurers). Gyno's
+        invoices came without one: stamp each invoice billed to an insurer (Gyno's insurance bills) with the
+        insurer's core company + its Gyno scheme (as insurance_schemes linked patients)."""
+        types = {str(r["id"]): r for r in self.rows("paymentype")}
+        core = {words(r.get("name")): r["id"] for r in self.c.read_all("core", "insurance_companies")}
+        schemes = self.ids_by_uuid("core", "insurance_schemes")
+        def insurer(tid):
+            t = types.get(str(tid))
+            if not t or not is_insurer(t.get("paymentype"), t.get("is_insurance")):
+                return None
+            name = clean(t.get("paymentype"))
+            cid = core_insurer_match(name, core) or core.get(words(name))
+            return (cid, schemes.get(gid("core-insurance-scheme", words(name)))) if cid else None
+        by_name = {words(t.get("paymentype")): tid for tid, t in types.items()}
+        # Gyno's insurance bills (specificpaymentdetails: is_insurance = Yes, modeofpayment = the insurer's name) name
+        # the insurer per patient + visit date — the same key as the visit's invoice (generalpaymentdetails)
+        visit_ins = {}
+        for b in self.rows("specificpaymentdetails"):
+            if clean(b.get("is_insurance")) != "Yes":
+                continue
+            ins = insurer(by_name.get(words(b.get("modeofpayment"))))
+            if ins:
+                visit_ins[(str(b.get("patientsid")), day(b.get("dateofvisit")))] = ins
+        inv = {str(r.get("uuid")).lower(): r for r in self.c.read_all("finance", "invoice", workers=8) if r.get("uuid")}
+        items, why = [], Counter()
+        for g_ in self.rows("generalpaymentdetails"):
+            have = inv.get(gid("generalpaymentdetails", g_["id"]))
+            ins = visit_ins.get((str(g_.get("patient_id")), day(g_.get("dateofvisit"))))
+            if have is None:
+                why["invoice not in V3"] += 1
+            elif not ins:
+                why["cash / not insured"] += 1
+            elif have.get("company_id") == ins[0] and have.get("scheme_id") == ins[1]:
+                why["already linked"] += 1
+            else:
+                items.append((have["id"], {"company_id": ins[0], "scheme_id": ins[1], "for_cash": 0}))
+        why["to link"] = len(items)
+        if self.limit:
+            items = items[:self.limit]
+        return {**why, **({"would_update": len(items)} if self.dry_run else dict(self.update("finance", "invoice", items)))}
+
+    def theatre_booking_money(self) -> dict:
+        """Gyno surgery bookings came with only a free-text operation: link the procedure (+ its cash / insurance price
+        at this facility) where the name matches, and set authorized_amount — cash patients: the deposits they paid
+        within 30 days of the surgery date (Gyno inpatientdeposit); insured patients, or no deposit: the procedure's
+        price (insurance / cash). ECS (C/S) has no Gyno price: linked to the org's C/S procedure only with
+        GYNO_CS_PROCEDURE=1 (V3's price, not Gyno's)."""
+        norm = lambda s: re.sub(r"[^a-z0-9]+", " ", str(s or "").lower()).strip()
+        prices = {}
+        for r in self.c.read_all("evaluation", "procedure_prices", workers=8):
+            if r.get("facility_id") == self.c.facility_id and r.get("evaluation_procedure_id") not in prices:
+                prices[r.get("evaluation_procedure_id")] = r
+        procs = {}
+        for p in self.c.read_all("evaluation", "procedures", workers=8):
+            if p["id"] in prices and num(prices[p["id"]].get("cash_charge")) and norm(p.get("name")):
+                procs.setdefault(norm(p.get("name")), p)
+        cs = next((p for n, p in procs.items() if n.startswith("caesarean section")), None) \
+            if os.environ.get("GYNO_CS_PROCEDURE") == "1" else None
+        insured = {str(v["id"]) for v in self.rows("visits") if clean(v.get("isinsurance")) == "Yes"}
+        deposits = defaultdict(list)
+        for d in self.rows("inpatientdeposit"):
+            if day(d.get("updated_on")):
+                deposits[str(d.get("patientid"))].append((date.fromisoformat(day(d.get("updated_on"))), num(d.get("amount")) or 0.0))
+        notes = {gid("theatre_booking", r["id"]): r for r in self.rows("doctorsnotes")}
+        items, why, samples = [], Counter(), []
+        for b in self.c.read_all("theatre", "theatre_booking", workers=4):
+            r = notes.get(str(b.get("uuid")).lower())
+            if r is None:
+                continue                                        # booked in V3, not Gyno's
+            name = norm(b.get("operation_procedure_name"))
+            p = None if not name else \
+                procs.get(name) or (cs if cs and re.match(r"^(e?cs|elective c s|emergency c s|c s)\b", name) else None)
+            cash = num(prices[p["id"]].get("cash_charge")) if p else None
+            ins = num(prices[p["id"]].get("insurance_charge")) if p else None
+            want = {}
+            if p:
+                want.update(operation_procedure_id=p["id"], procedure_cash_price=cash, procedure_insurance_price=ins or cash)
+            surgery = day(r.get("surgeryappointment")) or day(b.get("preferred_date"))
+            paid = sum(a for when, a in deposits.get(str(r.get("patientid")), [])
+                       if surgery and abs((when - date.fromisoformat(surgery)).days) <= 30)
+            if str(r.get("qid")) in insured:
+                amount, how = (ins or cash), "insured: procedure insurance price"
+            elif paid:
+                amount, how = paid, "cash: deposits within 30 days"
+            else:
+                amount, how = cash, "cash, no deposit: procedure price"
+            if amount:
+                want["authorized_amount"] = round(amount, 2)
+            why[how if amount else how.split(":")[0] + ": nothing to fill"] += 1
+            why["procedure linked" if p else "procedure not matched"] += 1
+            if want:
+                items.append((b, want))
+                if len(samples) < 8:
+                    samples.append(f"#{b['id']} '{b.get('operation_procedure_name')}' → {p.get('name') if p else '—'} {want}")
+        log.info("theatre booking samples: %s", " || ".join(samples))
+        if self.limit:
+            items = items[:self.limit]
+        if self.dry_run:
+            return {**why, "would_update": len(items)}
+        res, lock = Counter(), threading.Lock()
+
+        def one(item):
+            b, want = item
+            ok = self.c.insert("theatre", "theatre_booking", {"uuid": b["uuid"], **want}, match_on="uuid").ok
+            with lock:
+                res["ok" if ok else "failed"] += 1
+        with ThreadPoolExecutor(self.workers) as ex:
+            list(ex.map(one, items))
+        return {**why, **res}
+
+    def pharmacy_store(self) -> dict:
+        """Put all Gyno stock rows (drugs and general / kitchen items) and their batches in the dispensing store (the
+        org's main store) wherever they sit elsewhere. Prescriptions follow with prescription_drug_links."""
+        target, name = self.dispensing_store()
+        drug_rows = {gid(f"{t}-stock", r["id"]) for t in ("pharmacy", "stocks") for r in self.rows(t)}
+        stocks = [s for s in self.c.read_all("inventory", "stock", workers=8) if str(s.get("uuid")).lower() in drug_rows]
+        batches = {b["id"]: b for b in self.c.read_all("inventory", "batch", workers=8)}
+        why, todo = Counter(), []
+        for s in stocks:
+            if s.get("store_id") == target:
+                why["stock already in " + name] += 1
+            else:
+                todo.append(s)
+        why["stock rows to move"] = len(todo)
+        if self.limit:
+            todo = todo[:self.limit]
+        if self.dry_run:
+            return {"store": name, **why}
+        res, lock = Counter(), threading.Lock()
+
+        def one(s):
+            ok = True
+            b = batches.get(s.get("batch_id"))
+            if b and b.get("store_id") != target:
+                ok = self.c.insert("inventory", "batch", {"uuid": b["uuid"], "store_id": target}, match_on="uuid").ok
+            ok = ok and self.c.insert("inventory", "stock", {"uuid": s["uuid"], "store_id": target}, match_on="uuid").ok
+            with lock:
+                res["moved" if ok else "failed"] += 1
+        with ThreadPoolExecutor(self.workers) as ex:
+            list(ex.map(one, todo))
+        return {"store": name, **why, **res}
 
     def stock(self) -> dict:
         src = self.rows("stocks")
@@ -1860,17 +2213,18 @@ class Run:
         stock_rows, moves = [], []
         for table, rows, qty_col, price_col, ins_col in (("pharmacy", self.rows("pharmacy"), "stock", "cost", "insurancecost"),
                                                          ("stocks", src, "quantity", "cost", None)):
+            rstore = store                                                         # the org's main store
             for r in rows:
                 pid = prods.get(gid(table, r["id"]))
                 if pid is None:
                     continue
                 # V3 keeps stock on hand on the stock row itself (movements posted through the gateway don't
                 # update it), so the source quantity, cost and value are written here
-                stock_rows.append(stock_row_payload(gid(f"{table}-stock", r["id"]), pid, store, quantity=r.get(qty_col),
+                stock_rows.append(stock_row_payload(gid(f"{table}-stock", r["id"]), pid, rstore, quantity=r.get(qty_col),
                                                     unit_cost=r.get("buying_price") or r.get("cost"),
                                                     selling=r.get(price_col),
                                                     insurance=drug_insurance_price(r.get(price_col), r.get(ins_col)) if ins_col else None))
-                m = movement_payload(gid(f"{table}-opening", r["id"]), pid, store, user, type_="adjustment", quantity=r.get(qty_col),
+                m = movement_payload(gid(f"{table}-opening", r["id"]), pid, rstore, user, type_="adjustment", quantity=r.get(qty_col),
                                      unit_cost=r.get("buying_price") or r.get("cost"), when=r.get("updated_on"),
                                      reason="Opening balance from Gyno HMS")
                 if m:

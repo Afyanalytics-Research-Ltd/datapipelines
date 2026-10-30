@@ -100,7 +100,8 @@ class TestApply:
         for t, s in xm.MAPPINGS.items():
             tk = xm.transform_key(t)
             assert v2v3.NAMESPACE_MAP[s["namespace"]] == {"v3": s["v3"], "transform": tk}
-            assert v2v3._PER_KEY_KEEP_ONLY[tk] == set(s["keep"])
+            # V2's own timestamps always ride along (else V3 stamps the load time)
+            assert v2v3._PER_KEY_KEEP_ONLY[tk] == set(s["keep"]) | {"created_at", "updated_at"}
             assert m._ALIAS_OVERRIDE[tk] == s["alias"] and m._SERVICE_OVERRIDE[tk] == s["service"]
             assert tk in v2v3._PER_KEY_RENAMES        # else transform_record treats it as "generic"
 
@@ -127,8 +128,9 @@ class TestTransforms:
                "created_at": "2024-09-05 06:58:14", "updated_at": "2024-09-05 06:58:14", "source_schema": "x"}
         out = transform("inpatient_notes", row)
         assert out == {"id": 6135, "admission_id": 7275, "visit_id": 309272, "title": "Ward round",
-                       "note_type": "general_note", "note_date": "2024-09-05 06:58:14",
-                       "note_content": "Patient stable", "created_by": 1503}
+                       "note_type": "nursing_note", "note_date": "2024-09-05 06:58:14",
+                       "note_content": "Patient stable", "created_by": 1503,
+                       "created_at": "2024-09-05 06:58:14", "updated_at": "2024-09-05 06:58:14"}
 
     def test_inpatient_vitals(self):
         row = {"id": 1902, "admission_id": 7275, "visit_id": 308750, "user_id": 1507, "bp_systolic": 101,
@@ -140,7 +142,7 @@ class TestTransforms:
                        "diastolic_bp": 52, "pulse_rate": 98, "respiratory_rate": 20, "oxygen_saturation": 96,
                        # a number: V3's decimal column (the vitals rules also mend '36,6' / '.36.5')
                        "temperature": 37.9, "recorded_date": "2024-06-01", "recorded_time": "06:28",
-                       "recorded_at": "2024-06-01 06:29:52"}
+                       "recorded_at": "2024-06-01 06:29:52", "created_at": "2024-06-01 06:29:52"}
 
     @pytest.mark.parametrize("flags,status", [({"cancelled": 1, "order_dispatched": 1}, "cancelled"),
                                               ({"cancelled": 0, "order_dispatched": 1}, "dispatched"),
@@ -173,7 +175,7 @@ class TestTransforms:
         out = transform("inpatient_charges", {"id": 43, "name": "Admission Fee", "cost": "2800.00", "type": "once",
                                               "associated_procedure": "Admission Fee", "source_schema": "s",
                                               "page": 1, "namespace": "n", "created_at": "c"})
-        assert set(out) == {"id", "name", "cost", "type", "associated_procedure"}
+        assert set(out) == {"id", "name", "cost", "type", "associated_procedure", "created_at"}
 
 
 class TestSkipping:

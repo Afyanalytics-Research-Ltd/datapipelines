@@ -97,6 +97,7 @@ rsa_key*
 # Backup files
 *.BAK
 *.sql
+*.*.gz
 
 .migration_state/*/journey/journeys.ndjson
 .migration_state/*/journey/

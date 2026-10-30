@@ -56,6 +56,7 @@ class V3Client:
         self.facility_id = facility_id if facility_id is not None else (int(fac) if fac.isdigit() else None)
         self.migration_key = migration_key or env("MIGRATION_KEY") or (os.getenv("MODEL_GATEWAY_MIGRATION_KEY") or "").strip()
         self.user_id: int | None = None
+        self.send_facility_header = False          # X-Facility-Id on every call (eagle_to_v3: one client per facility)
         self._session = session or requests.Session()
         adapter = requests.adapters.HTTPAdapter(pool_connections=len(SERVICES), pool_maxsize=pool_size,
                                                 max_retries=0, pool_block=True)
@@ -78,7 +79,8 @@ class V3Client:
             raise GatewayError(f"{self.key}: login failed {r.status_code} {r.text[:200]}")
         res = r.json()
         if res.get("step") == 2:                      # several facilities: name ours
-            allowed = res.get("allowed_facility_ids") or []
+            # older cores send allowed_facility_ids; current ones a "facilities" list ({id, name, region…})
+            allowed = res.get("allowed_facility_ids") or [f.get("id") for f in (res.get("facilities") or []) if f.get("id")]
             if self.facility_id is not None and self.facility_id not in allowed:
                 raise GatewayError(f"{self.key}: account can't log into facility {self.facility_id} ({allowed})")
             body["facility_id"] = self.facility_id if self.facility_id is not None else allowed[0]
@@ -115,6 +117,10 @@ class V3Client:
              "Authorization": f"Bearer {self.token()}"}
         if service in MIGRATION_KEY_SERVICES and self.migration_key:
             h["X-Migration-Key"] = self.migration_key
+        # a superadmin's login has every facility in scope and no active one, so V3 files new rows under no
+        # facility (or the column default 1); the header makes this client's facility the active one
+        if self.send_facility_header and self.facility_id is not None:
+            h["X-Facility-Id"] = str(self.facility_id)
         return h
 
     # ── gateway ───────────────────────────────────────────────────────────

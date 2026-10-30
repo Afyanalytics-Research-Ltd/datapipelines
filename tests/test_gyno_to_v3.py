@@ -338,3 +338,19 @@ def test_rx_dose_spelled_out_frequency():
     assert g.rx_dose("take one tablet three times daily for 5 days")["method"] == 2
     assert g.rx_dose("1 tab once daily")["method"] == 5 and g.rx_dose("take one tablet stat")["method"] == 4
     assert g.rx_dose("2 tabs at night")["method"] == 23 and g.rx_dose("1 when needed")["method"] == 19
+
+
+def test_lab_catalogue_mapping_keys():
+    assert g.lab_key("Full Haemogram (Cbc/Fbc)") == "full haemogram cbc fbc" and g.LAB_CATALOGUE_TO_GYNO["full haemogram cbc fbc"] == 5
+    assert g.lab_key("Thyroid Profile, Free T3 T4 .TSH") in g.LAB_CATALOGUE_TO_GYNO
+    assert g.lab_key("Hiv I&Ii Antibody Test") in g.LAB_CATALOGUE_TO_GYNO and g.lab_key("Pct") in g.LAB_CATALOGUE_SKIP
+
+
+def test_consumables():
+    assert g.is_consumable("Disposable Speculum") and g.is_consumable("Giving Set") and g.is_consumable("Cannular")
+    assert not g.is_consumable("OG Kit Tabs") and not g.is_consumable("Triokit 4S") and not g.is_consumable("Azithromycin 500mg")
+    assert not g.is_consumable(None) and g.is_consumable("Gauzes(Sterile)") and g.is_consumable("Blood GIving Set")
+    p = g.consumable_payload({"id": 7, "quantity": "2", "unitpharmacycost": "150", "totalcost": "300", "status": "Yes",
+                              "updated_by": "Nurse A", "updated_on": "2024-05-01 10:00:00"}, 11, 22, 33, "Giving Set")
+    assert p["uuid"] == g.gid("consumable-pharmacy_records", 7) and (p["visit_id"], p["product_id"], p["user_id"]) == (11, 22, 33)
+    assert p["quantity"] == 2.0 and p["amount"] == 300.0 and p["status"] == "administered" and p["bill"] == 1

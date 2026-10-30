@@ -109,11 +109,16 @@ MODEL_LINKS: dict[str, dict[str, str | None]] = {
     "inventory/product": {"category_id": "inventory/product_category"},
     "inventory/product_category": {"parent_category_id": "inventory/product_category"},
     "reception/visit_destination": {"clinic_id": DROP, "room_id": DROP},
+    # what the frontend reads (2026-10-17): destination_id → core_service_destinations via LINKS
+    "evaluation/visit_destinations": {"clinic_id": DROP, "room_id": DROP},
     "inpatient/admission": {"insurance_id": "reception/patient_insurance"},
     "theatre/theatre_booking": {"status_id": "theatre/theatre_scheduling_status"},
-    "evaluation/visits": {"unique_id": None, "sha_patient_cr_id": None},
+    # clinic: V3's check-in sets it to the facility id (the frontend requires and prints it) — found 2026-10-21
+    # copying Portbell org 7 → 263, where it went across as the source's facility 9
+    "evaluation/visits": {"unique_id": None, "sha_patient_cr_id": None, "clinic": FACILITY},
     "evaluation/investigations": {"invoiced": None},
     "finance/receipt": {"invoice_id": "finance/invoice"},
+    "finance/payment": {"invoice_id": "finance/invoice"},
     "inpatient/visit_ward": {"bed_id": "inpatient/bed"},
     # polymorphic, but every row of kisumu_v3 is priceable_type = 'procedure'.
     # scheme_id: core-service's own schemes (FK → core_insurance_schemes), NOT finance's — the two
@@ -177,6 +182,7 @@ CRITICAL: dict[str, tuple[str, ...]] = {
     "reception/patient_random_note": ("patient_id",),
     "reception/visit_consultant": ("visit_id",),
     "reception/visit_destination": ("visit_id",),
+    "evaluation/visit_destinations": ("visit_id",),
     "evaluation/visits": ("patient",),
     "evaluation/vitals": ("visit",),
     "evaluation/doctor_notes": ("visit_id",),

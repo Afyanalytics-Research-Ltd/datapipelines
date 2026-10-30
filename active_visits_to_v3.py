@@ -68,8 +68,12 @@ TABLES: list[tuple[str, str, tuple[str, ...]]] = [
     ("patients", "patient", ("id",)),
     ("patient_insurance", "patient", ("patient", "patient_id")),
     ("visits", "visit", ("id",)),
+    ("inpatient_admission_requests", "visit", ("visit_id", "visit")),
     ("inpatient_admissions", "visit", ("visit_id", "visit")),
     ("investigations", "visit", ("visit", "visit_id")),
+    # lab / imaging results: without them V2's published results showed as pending in V3 (2026-10-23)
+    ("evaluation_investigation_results", "investigation", ("investigation", "investigation_id")),
+    ("evaluation_investigation_result_details", "visit", ("visit_id", "visit")),
     ("evaluation_prescriptions", "visit", ("visit", "visit_id")),
     ("inventory_evaluation_dispensing", "visit", ("visit", "visit_id")),
     # theatre chain booking → schedule → operation: a schedule carries only its booking (bookings_of())
@@ -77,10 +81,21 @@ TABLES: list[tuple[str, str, tuple[str, ...]]] = [
     ("theatre_schedules", "booking", ("booking_id",)),
     ("theatre_operations", "visit", ("visit_id", "visit")),
     ("inpatient_visit_wards", "visit", ("visit_id", "visit")),
+    # clinical notes (asked 2026-10-22: "inpatient notes have not been migrated")
+    ("doctor_notes", "visit", ("visit", "visit_id")),
+    ("evaluation_icd10_notes", "visit", ("visit", "visit_id")),
+    ("inpatient_notes", "visit", ("visit_id", "visit")),
+    ("inpatient_vitals", "visit", ("visit_id", "visit")),
+    ("evaluation_vitals", "visit", ("visit_id", "visit")),
+    ("inpatient_blood_transfusion", "visit", ("visit_id", "visit")),
+    ("inpatient_fluid_balances", "admission", ("admission_id",)),
+    ("inpatient_daily_charges_verifications", "visit", ("visit_id", "visit")),
     ("finance_invoices", "visit", ("visit", "visit_id")),
     # a V2 receipt doesn't carry its visit (evaluation_payments.visit is empty): receipt_ids() finds them
     ("finance_evaluation_payments", "receipt", ("id",)),
 ]
+# read from the snapshot even with live values: their snapshot SQL joins in columns the raw API row lacks
+LIVE_SKIP = {"inpatient_daily_charges_verifications"}
 COVERED_ELSEWHERE = {
     "evaluation_visits": "sent as its twin `visits` (same V2 class)",
     "reception_patients": "sent as its twin `patients` (same V2 class)",
@@ -98,7 +113,7 @@ ASKED = ["evaluation_visits", "evaluation_visit_destinations", "reception_patien
          "finance_split_insurances", "finance_split_insurance_items", "finance_invoices", "finance_invoice_items",
          "finance_invoice_payments", "finance_evaluation_payments", "finance_evaluation_payment_details",
          "finance_payments_cash", "finance_payments_mpesa", "finance_payments_card", "finance_payments_cheque"]
-CORRECTION_STEPS = ["eval_visit_destinations", "eval_consumables", "admission_discharges"]
+CORRECTION_STEPS = ["eval_visit_destinations", "eval_consumables", "eval_investigation_links", "admission_discharges"]
 VISIT_NS = r"Ignite\Evaluation\Entities\Visit"
 VD_NS = r"Ignite\Evaluation\Entities\VisitDestinations"
 ADMISSION_NS = r"Ignite\Inpatient\Entities\Admission"
@@ -302,6 +317,30 @@ def prescription_stores_of(loader, visits: list[dict]) -> dict[str, str]:
     return out
 
 
+def investigations_of(loader, visits: list[dict]) -> set[str]:
+    """The V2 investigations of the active visits (snapshot + live tail): results carry only the investigation."""
+    import snowflake_to_v3_migration as s2v3
+    clean = s2v3.sf_schema(loader.facility, "CLEAN")
+    vset = {str(v["id"]) for v in visits}
+    out = {str(i) for (i,) in loader.sf(f'SELECT "ID" FROM {clean}.EVALUATION_INVESTIGATIONS WHERE "VISIT" IN {_in(vset)}')}
+    out |= {str(r["id"]) for r in loader.api_tail(loader.namespace("investigations"),
+                                                  loader.snapshot_max_id("evaluation_investigations"))
+            if str(r.get("visit") or r.get("visit_id")) in vset}
+    return out
+
+
+def admissions_of(loader, visits: list[dict]) -> set[str]:
+    """The V2 admissions of the active visits (snapshot + live tail): fluid balances carry only the admission."""
+    import snowflake_to_v3_migration as s2v3
+    clean = s2v3.sf_schema(loader.facility, "CLEAN")
+    vset = {str(v["id"]) for v in visits}
+    out = {str(i) for (i,) in loader.sf(f'SELECT "ID" FROM {clean}.INPATIENT_ADMISSIONS WHERE "VISIT_ID" IN {_in(vset)}')}
+    out |= {str(r["id"]) for r in loader.api_tail(loader.namespace("inpatient_admissions"),
+                                                  loader.snapshot_max_id("inpatient_admissions"))
+            if str(r.get("visit_id") or r.get("visit")) in vset}
+    return out
+
+
 def not_sent(loader, source: str) -> dict[str, str]:
     """The asked-for tables this run doesn't send, and why (the V2 load's own reasons)."""
     import snowflake_to_v3_migration as s2v3
@@ -321,34 +360,101 @@ def not_sent(loader, source: str) -> dict[str, str]:
 def make_active_loader(source: str, target: str, workers: int, page_workers: int, dry_run: bool, delta_root: Path):
     import snowflake_to_v3_migration as s2v3
     import v2_delta_to_v3 as d
+    # make_loader rebuilds the delta state from the chained maps, dropping the ids earlier runs added. Records
+    # posted without a stable uuid (patient_insurance: the gateway gives them its own) are then known by those
+    # ids alone — losing them made the next run insert 21 duplicates (2026-10-23). Keep them.
+    map_file = delta_root / source / ".migration_id_map.json"
+    earlier = json.loads(map_file.read_text()) if map_file.exists() else {}
     loader = d.make_loader(source, target, "2000-01-01", False, workers, page_workers, dry_run, delta_root)
+    if earlier:
+        rebuilt = json.loads(map_file.read_text())
+        kept = 0
+        for alias, ids in earlier.items():
+            have = rebuilt.setdefault(alias, {})
+            for k, v in ids.items():
+                if k not in have:
+                    have[k] = v; kept += 1
+        map_file.write_text(json.dumps(rebuilt))
+        log.info("delta state: %d id(s) added by earlier runs kept", kept)
     base = type(loader)
 
     class ActiveLoader(base):
         scope: dict[str, tuple[set[str], tuple[str, ...]]] = {}
+        live_values = True                  # snapshot rows re-read from the live V2 API (asked 2026-10-23)
+        _pages: dict[str, dict[int, list[dict]]] = {}
 
         def api_tail(self, ns, after_id):
             rows = super().api_tail(ns, after_id)
             f = getattr(self, "_tail_filter", None)
             if f and ns == f[0]:
                 rows = [r for r in rows if f[1](r)]
+                have = {str(r["id"]) for r in rows}
+                rows += [r for r in getattr(self, "_extra_tail", []) if str(r["id"]) not in have and f[1](r)]
                 self._seen += len(rows)
             return rows
 
+        def live_by_ids(self, ns: str, ids: set[int]) -> dict[int, dict]:
+            """The live V2 API rows with these ids. The API pages by ascending id (100 a page) and can't
+            filter, so each id's page is found by binary search over page numbers; fetched pages are kept, and
+            every row on them is collected, so ids that sit together cost one page."""
+            pages = self._pages.setdefault(ns, {})
+
+            def page(p):
+                if p not in pages:
+                    pages[p] = self.v2_page(ns, p)[0]
+                return pages[p]
+            _, pg = self.v2_page(ns, 1)
+            last = int(pg.get("last_page") or 1)
+            found: dict[int, dict] = {}
+            for want in sorted(ids):
+                if want in found:
+                    continue
+                lo, hi = 1, last
+                for p, rows in pages.items():               # narrow with the pages already read
+                    if rows and int(rows[-1]["id"]) < want:
+                        lo = max(lo, p + 1)
+                    elif rows and int(rows[0]["id"]) > want:
+                        hi = min(hi, p)
+                while lo < hi:
+                    mid = (lo + hi) // 2
+                    rows = page(mid)
+                    if rows and int(rows[-1]["id"]) < want:
+                        lo = mid + 1
+                    else:
+                        hi = mid
+                for r in page(lo):
+                    found.setdefault(int(r["id"]), r)
+            return {i: found[i] for i in ids if i in found}
+
         def capture(self, table):
             """The base loader's snapshot + tail read (not the delta's whole-table one), each row kept only
-            when it belongs to an active visit."""
+            when it belongs to an active visit. With live_values the snapshot only says WHICH rows belong to
+            the active visits; their values are read from the live V2 API (rows V2 deleted since drop out)."""
             keys, cols = self.scope[table]
             keep = row_filter(keys, cols)
             real_chunks = s2v3.iter_clean_chunks
+            ns = self.namespace(table)
+            live = self.live_values and table not in LIVE_SKIP
+            self._extra_tail = []
+            if live:
+                ids = {int(r.get("id") or r.get("ID")) for ch in real_chunks(self.facility, table, s2v3.CHUNK_ROWS)
+                       for r in ch if keep({str(k).lower(): v for k, v in r.items()})
+                       and str(r.get("id") or r.get("ID") or "").isdigit()}
+                t0 = time.time()
+                got = self.live_by_ids(ns, ids) if ids else {}
+                self._extra_tail = [{str(k).lower(): v for k, v in r.items()} for r in got.values()]
+                log.info("%s: %d snapshot row(s) of the active visits re-read live from V2 in %.0fs — %d found, "
+                         "%d gone from V2", table, len(ids), time.time() - t0, len(got), len(ids) - len(got))
 
             def scoped(facility, tbl, chunk_rows=s2v3.CHUNK_ROWS):
+                if live:                                    # every row comes from the API (tail + _extra_tail)
+                    return
                 for ch in real_chunks(facility, tbl, chunk_rows):
                     ch = [r for r in ch if keep({str(k).lower(): v for k, v in r.items()})]
                     if ch:
                         self._seen += len(ch)
                         yield ch
-            self._seen, self._tail_filter = 0, (self.namespace(table), keep)
+            self._seen, self._tail_filter = 0, (ns, keep)
             saved = (self.since, self.live)
             self.since, self.live = None, False
             s2v3.iter_clean_chunks = scoped
@@ -357,7 +463,7 @@ def make_active_loader(source: str, target: str, workers: int, page_workers: int
             finally:
                 s2v3.iter_clean_chunks = real_chunks
                 self.since, self.live = saved
-                self._tail_filter = None
+                self._tail_filter, self._extra_tail = None, []
             self._live_rows = self._seen
             return out
 
@@ -380,6 +486,7 @@ def corrections(target: str, source: str, visits: dict[str, dict], dry_run: bool
         try:
             out[s] = {"eval_visit_destinations": lambda: oc.eval_visit_destinations(x, True, 0),
                       "eval_consumables": lambda: oc.eval_consumables(x, 0),
+                      "eval_investigation_links": lambda: oc.eval_investigation_links(x, 0),
                       "admission_discharges": lambda: oc.admission_discharges(x)}[s]()
         except Exception as e:
             log.exception("%s failed", s)
@@ -392,13 +499,14 @@ def corrections(target: str, source: str, visits: dict[str, dict], dry_run: bool
 
 def run(source: str, target: str, rule: str = "default", days: int = 1, workers: int = 16, page_workers: int = 16,
         dry_run: bool = False, corrections_steps: list[str] | None = None, out: Path | None = None,
-        now: datetime | None = None, tables: list[str] | None = None) -> Path:
+        now: datetime | None = None, tables: list[str] | None = None, live_values: bool = True) -> Path:
     import v2_delta_to_v3 as d
     if rule not in RULES:
         raise SystemExit(f"--rule must be one of {sorted(RULES)}")
     now = now or datetime.now(NAIROBI).replace(tzinfo=None)
     delta_root = ROOT / ".migration_state" / f"v2active_{source}_to_{target}"
     loader = make_active_loader(source, target, workers, page_workers, dry_run, delta_root)
+    loader.live_values = live_values
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     out = out or ROOT / "output" / "active_visits" / f"{source}-to-{target}-{rule}-{stamp}.csv"
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -413,6 +521,8 @@ def run(source: str, target: str, rule: str = "default", days: int = 1, workers:
     keys = keys_for(list(active.values()), ps, schemes)
     keys["receipt"] = receipts_of(loader, list(active.values()))
     keys["booking"] = bookings_of(loader, list(active.values()))
+    keys["admission"] = admissions_of(loader, list(active.values()))
+    keys["investigation"] = investigations_of(loader, list(active.values()))
     loader.m._prescription_store.update(prescription_stores_of(loader, list(active.values())))
     loader.scope = {t: (keys[k], cols) for t, k, cols in TABLES}
     todo = [t for t, _, _ in TABLES if not tables or t in tables]
@@ -447,11 +557,13 @@ def main(argv=None) -> int:
     ap.add_argument("--tables", nargs="*", default=None, help=f"only these of {[t for t, _, _ in TABLES]}")
     ap.add_argument("--no-corrections", action="store_true", help="skip visit destinations / consumables / discharges")
     ap.add_argument("--dry-run", action="store_true", help="read + transform + decide; post nothing")
+    ap.add_argument("--snapshot-values", action="store_true",
+                    help="rows the snapshot has keep its values (faster); default re-reads them from the live V2 API")
     ap.add_argument("--out", type=Path, default=None)
     a = ap.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     print(run(a.source, a.target, a.rule, a.days, a.workers, a.page_workers, a.dry_run,
-              [] if a.no_corrections else None, a.out, tables=a.tables))
+              [] if a.no_corrections else None, a.out, tables=a.tables, live_values=not a.snapshot_values))
     return 0
 
 

@@ -20,6 +20,7 @@ importing gspread/pandas/boto3/snowflake into the DAG processor.
 from __future__ import annotations
 
 import ast
+import logging
 import os
 import sys
 from functools import lru_cache
@@ -34,7 +35,7 @@ PIPELINE_MODULES = ("facility_to_snowflake_fast_resume", "flatten_jsons_schemas"
                     "v3_to_v3_migration", "v3_to_v3_client", "v3_to_v3_links", "v3_to_v3_audit",
                     "v2_delta_to_v3", "fast_v2_live_to_v3",
                     "export_missing_records", "v3_db_tables", "load_missing_records",
-                    "dedup", "dedup_rules")
+                    "dedup", "dedup_rules", "v3_org_softdelete")
 
 # Used only if the scripts aren't mounted, so the DAGs still parse and the
 # import error surfaces when a task runs, not as a broken DAG.
@@ -105,11 +106,16 @@ def _variable(key: str) -> str | None:
     return str(value).strip() if value not in (None, "") else None
 
 
+CONNECTION_ERRORS: dict[str, str] = {}   # conn id → why the last lookup failed (for clearer task errors)
+
+
 def _connection(conn_id: str):
     try:
         from airflow.sdk import BaseHook
         return BaseHook.get_connection(conn_id)
-    except Exception:
+    except Exception as e:  # a missing connection is normal (Variables / .env may hold it) — but say why
+        CONNECTION_ERRORS[conn_id] = f"{type(e).__name__}: {e}"[:300]
+        logging.getLogger(__name__).info("Airflow connection %r not used: %s", conn_id, CONNECTION_ERRORS[conn_id])
         return None
 
 
@@ -194,6 +200,11 @@ def load_airflow_config(facilities=()) -> None:
             _set_if_missing(f"AFYA_{up}_{str(svc).upper()}_URL", url, f"conn afya_v3_{facility}", filled)
         # theatre / dialysis gateways: X-Migration-Key of that instance (Extra "migration_key")
         _set_if_missing(f"AFYA_{up}_MIGRATION_KEY", extra.get("migration_key"), f"conn afya_v3_{facility}", filled)
+        # source branch → V3 facility (eagle_to_v3): Extra "branch_facilities", "001:15,002:16" or {"001": 15, …}
+        branches = extra.get("branch_facilities")
+        if isinstance(branches, dict):
+            branches = ",".join(f"{b}:{f}" for b, f in branches.items())
+        _set_if_missing(f"AFYA_{up}_BRANCH_FACILITIES", branches, f"conn afya_v3_{facility}", filled)
 
     if filled:
         import logging
