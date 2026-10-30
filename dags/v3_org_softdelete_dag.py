@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -68,6 +69,14 @@ def v3_org_softdelete():
         p = get_current_context()["params"]
         target = p["target"].strip()
         use_pipelines_dir([target])
+        up = target.upper()
+        missing = [f"AFYA_{up}_{k}" for k in ("USERNAME", "PASSWORD") if not (os.environ.get(f"AFYA_{up}_{k}") or "").strip()]
+        if missing:
+            import pipelines_common
+            why = pipelines_common.CONNECTION_ERRORS.get(f"afya_v3_{target}", "found, but its Login / Password is empty")
+            raise AirflowFailException(
+                f"No V3 login for {target!r}: {', '.join(missing)} not set. Looked for Airflow Connection "
+                f"'afya_v3_{target}' (exact id, lower case) — {why}. Or set Variables {', '.join(missing)}.")
         import v3_org_softdelete as sd
         rep = sd.run(target, ids_path=(p.get("ids") or "").strip() or None,
                      rollback_csv=(p.get("rollback") or "").strip() or None, dry_run=bool(p["dry_run"]),

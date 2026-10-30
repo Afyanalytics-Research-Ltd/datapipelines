@@ -20,6 +20,7 @@ importing gspread/pandas/boto3/snowflake into the DAG processor.
 from __future__ import annotations
 
 import ast
+import logging
 import os
 import sys
 from functools import lru_cache
@@ -105,11 +106,16 @@ def _variable(key: str) -> str | None:
     return str(value).strip() if value not in (None, "") else None
 
 
+CONNECTION_ERRORS: dict[str, str] = {}   # conn id → why the last lookup failed (for clearer task errors)
+
+
 def _connection(conn_id: str):
     try:
         from airflow.sdk import BaseHook
         return BaseHook.get_connection(conn_id)
-    except Exception:
+    except Exception as e:  # a missing connection is normal (Variables / .env may hold it) — but say why
+        CONNECTION_ERRORS[conn_id] = f"{type(e).__name__}: {e}"[:300]
+        logging.getLogger(__name__).info("Airflow connection %r not used: %s", conn_id, CONNECTION_ERRORS[conn_id])
         return None
 
 
