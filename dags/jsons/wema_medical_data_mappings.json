@@ -3,7 +3,7 @@
         "id": 59,
         "name": "wema medical",
         "exported_at": "2026-10-22T08:50:43+00:00",
-        "reworked_at": "2026-10-22T11:11:47+00:00",
+        "reworked_at": "2026-10-23T06:15:40+00:00",
         "reworked_against": "erp-platform-3.0 origin 38d4ea19 (2026-10-22)"
     },
     "tables": [
@@ -712,12 +712,23 @@
             "model": "App\\Models\\Inpatient\\Bed",
             "v3_table": "inp_beds",
             "table": "beds",
-            "column": "bed_number",
+            "column": "id",
             "field": "bed_number",
             "kind": "copied",
             "rule": "",
             "transform": "",
-            "why": "V3 inp_beds.bed_number is NOT NULL"
+            "why": "NOT NULL in V3; Wema beds have no number column (probed 2026-10-23)"
+        },
+        {
+            "model": "App\\Models\\Inpatient\\Bed",
+            "v3_table": "inp_beds",
+            "table": "beds",
+            "column": "id",
+            "field": "number",
+            "kind": "copied",
+            "rule": "",
+            "transform": "",
+            "why": "NOT NULL in V3 (inp_beds.number)"
         },
         {
             "model": "App\\Models\\Inpatient\\Bed",
@@ -858,9 +869,9 @@
             "column": "created_at",
             "field": "note_type",
             "kind": "codes converted",
-            "rule": "{\"map\":{},\"column\":\"created_at\",\"default\":\"nursing\"}",
+            "rule": "{\"map\":{},\"column\":\"created_at\",\"default\":\"nursing_note\"}",
             "transform": "",
-            "why": "constant 'nursing' (NOT NULL)"
+            "why": "constant 'nursing_note' (V3 enum)"
         },
         {
             "model": "App\\Models\\Inpatient\\Note",
@@ -1163,12 +1174,12 @@
             "model": "App\\Models\\PatientEvaluation\\Prescription",
             "v3_table": "prescriptions",
             "table": "prescriptions",
-            "column": "drug",
+            "column": "details",
             "field": "drug_name",
             "kind": "copied",
             "rule": "",
             "transform": "",
-            "why": "UNVERIFIED source column \u2014 the gateway returns the drug text as `name`"
+            "why": "the prescription text (drug, dose, frequency)"
         },
         {
             "model": "App\\Models\\PatientEvaluation\\Prescription",
@@ -1388,7 +1399,21 @@
             "kind": "copied",
             "rule": "",
             "transform": "",
-            "why": "\u2192 patients"
+            "why": "\u2192 patients; tool target `patient` (a patient_id\u2192patient_id copy comes back blank)",
+            "also": [
+                "patient"
+            ]
+        },
+        {
+            "model": "App\\Models\\Finance\\Invoice",
+            "v3_table": "invoices",
+            "table": "invoices",
+            "column": "payment_method",
+            "field": "invoice_type",
+            "kind": "copied",
+            "rule": "",
+            "transform": "lowercase",
+            "why": "V3 enum cash/insurance/credit"
         },
         {
             "model": "App\\Models\\Finance\\Invoice",
@@ -1449,7 +1474,7 @@
             "model": "App\\Models\\Finance\\InvoiceItem",
             "v3_table": "invoice_items",
             "table": "bills",
-            "column": "name",
+            "column": "details",
             "field": "item_name",
             "kind": "copied",
             "rule": "",
@@ -1586,7 +1611,10 @@
             "kind": "copied",
             "rule": "",
             "transform": "",
-            "why": "\u2192 patients"
+            "why": "\u2192 patients; tool target `patient` (a patient_id\u2192patient_id copy comes back blank)",
+            "also": [
+                "patient"
+            ]
         },
         {
             "model": "App\\Models\\Finance\\Copay",
@@ -1700,8 +1728,8 @@
             "source_columns": [
                 "created_at"
             ],
-            "rule": "{\"map\":{},\"column\":\"created_at\",\"default\":\"nursing\"}",
-            "why": "constant 'nursing' (NOT NULL)",
+            "rule": "{\"map\":{},\"column\":\"created_at\",\"default\":\"nursing_note\"}",
+            "why": "constant 'nursing_note' (V3 enum)",
             "made_by": "rework",
             "examples": []
         },

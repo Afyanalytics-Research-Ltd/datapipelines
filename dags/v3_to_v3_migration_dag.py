@@ -94,6 +94,11 @@ def _plan(vv, src, state, p, refresh=False):
         "refresh_plan": Param(False, type="boolean", title="Rebuild the plan",
                               description="Re-read the source catalogue (new models / columns)."),
         "skip_verify": Param(False, type="boolean", title="Skip verify after migrate"),
+        "corrections": Param(True, type="boolean", title="Run the org corrections after migrate",
+                             description="v3_org_corrections on the target: restore lost destinations, destination "
+                                         "categories, evaluation visit destinations (re-linked), discharges."),
+        "v2_facility": Param("kisumu_v3", type="string", title="V2 facility (for the corrections)",
+                             description="The V2 load behind the source org (live API + snapshot)."),
     },
 )
 def v3_to_v3_migration():
@@ -233,6 +238,18 @@ def v3_to_v3_migration():
     linked >> to_verify
     checked = verify_model.override(task_id="verify").expand(job=to_verify)
     [planned, *tier_tasks, linked, checked] >> done()
+
+    @task(trigger_rule=TriggerRule.ALL_DONE, execution_timeout=timedelta(hours=6))
+    def corrections() -> None:
+        p = get_current_context()["params"]
+        if p["mode"] != "migrate" or int(p["record_limit"]) > 0 or not p.get("corrections", True):
+            raise AirflowSkipException("only after a full migrate (not plan / verify / a canary)")
+        from v3_org_corrections_dag import run_corrections
+        run_corrections(p["target"], source=p["source"], facility=p.get("v2_facility") or p["source"],
+                        dry_run=False, steps=["restore_destinations", "destination_categories",
+                                              "eval_visit_destinations", "eval_consumables", "admission_discharges"])
+
+    linked >> corrections()
 
 
 v3_to_v3_migration()

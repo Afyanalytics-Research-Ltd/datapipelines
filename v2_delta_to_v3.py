@@ -126,6 +126,16 @@ def point_v3_side_at(source: str, target: str) -> None:
 
 # ─── which payloads update what, and which are new ─────────────────────────────────────────────
 
+def target_id(v3_id, tid) -> int | None:
+    """The target row a posted record now lives in: the id the post returned (an insert), else the row
+    it was matched to and updated. An update returns no id, and without this the V2 → target link of a
+    record matched by content was never recorded, so its children (a patient's visits) stayed held."""
+    for v in (v3_id, tid):
+        if v is not None and str(v).isdigit() and int(v):
+            return int(v)
+    return None
+
+
 def plan_delta(payloads: list[dict], existing: list[dict], id_map: dict[int, int], key, since: str) \
         -> tuple[list[tuple[dict, int | None]], Counter]:
     """[(payload to post, target id or None for an insert)] and a Counter of what was decided.
@@ -229,9 +239,10 @@ def make_loader(source: str, target: str, since: str, new_only: bool, workers: i
                 try:
                     v3_id = self.m._post_to_v3_batch(ns, self.org, p, alias_override=alias, service_override=svc)
                     ok = "updated" if tid is not None else "inserted" if v3_id else "duplicate_key"
-                    if v3_id and str(p.get("id") or "").isdigit():
+                    link = target_id(v3_id, tid)
+                    if link is not None and str(p.get("id") or "").isdigit():
                         with lock:
-                            self.extra[alias][int(p["id"])] = int(v3_id)
+                            self.extra[alias][int(p["id"])] = link
                 except self.m.RecordDeadLettered:
                     ok = "failed"
                 except Exception as e:                    # network, after the poster's retries

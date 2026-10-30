@@ -154,7 +154,7 @@ def verify_and_sync(copier: vv.Copier, model: str, entry: dict, sync: bool) -> d
         why.append(f"{v['source_without_uuid']} source row(s) have no uuid — can't be matched on the target")
     if v.get("mismatched_fields"):
         why.append("fields still different: " + "; ".join(
-            f"{c} on {n} row(s) (e.g. source {ex[0]['expected']!r} vs target {ex[0]['target']!r})"
+            f"{c} on {n} row(s) (e.g. source {ex[0].get('expected', ex[0].get('sent'))!r} vs target {ex[0].get('target')!r})"
             for c, n in sorted(v["mismatched_fields"].items(), key=lambda kv: -kv[1])[:5]
             for ex in [v["mismatch_examples"].get(c) or [{}]]))
     if patched:

@@ -106,6 +106,13 @@ from pathlib import Path
 import snowflake.connector
 from dotenv import load_dotenv
 
+# Run as a script this module is __main__; v3_passthrough's
+# `import snowflake_to_v3_migration` would load a second copy and register its
+# aliases / services / FK rules there, unseen by the running one (procedures →
+# inpatient `procedure`, links posted as raw source ids).
+if __name__ == "__main__":
+    sys.modules.setdefault("snowflake_to_v3_migration", sys.modules[__name__])
+
 import v2_to_v3_api_migration as v2v3
 import v3_passthrough as v3pt
 import v3_extra_mappings as xm

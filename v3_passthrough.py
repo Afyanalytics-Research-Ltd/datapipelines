@@ -71,6 +71,7 @@ LINKS: dict[str, str] = {
     "created_by": USERS, "updated_by": USERS, "recorded_by": USERS, "requested_by": USERS,
     "confirmed_by": USERS, "cancelled_by": USERS, "doctor_id": USERS, "consultant_id": USERS,
     "user_id": USERS, "user": USERS, "reversed_by_id": USERS,
+    "ordered_by": USERS, "prescribed_by": USERS, "performing_doctor": USERS,
     "department_id": "core_departments",
     "gl_account_id": "gl_accounts", "parent_account_id": "gl_accounts", "gl_transaction_id": "gl_transactions",
     "investigation_id": "investigations", "prescription_id": "prescriptions",
@@ -93,6 +94,9 @@ DROP_FIELDS = {"organization_id", "deleted_at", "source_schema"}
 # NOT NULL user columns: when the original user can't be found in V3, record
 # the migrating V3 account instead of posting NULL.
 USER_FALLBACK_FIELDS = {"created_by"}
+# per table: NOT NULL user columns the source may not fill — the migrating account when unresolved
+TABLE_USER_FALLBACKS: dict[str, set[str]] = {"payments": {"processed_by", "created_by"}, "vitals": {"recorded_by"},
+                                              "inp_admissions": {"admitting_doctor_id"}}
 # user links that DO hold their record back until that user is in V3
 CRITICAL_USER_LINKS = {("user_profiles", "user_id")}
 # NOT NULL columns V3 can't derive: a record without them is held back (not
@@ -112,8 +116,32 @@ REQUIRED: dict[str, set[str]] = {
     "inv_products": {"category_id"},
     "inv_sale_items": {"product_name"},
     "user_profiles": {"first_name", "last_name"},
+    "patients": {"first_name"},                       # NOT NULL; _patient_names fills it from a full name in last_name
 }
 _held_missing: dict[str, int] = defaultdict(int)
+# NOT NULL reference links the source has nothing for: a named row in the
+# destination org (created once, stable uuid) — table → field → (service,
+# gateway alias, record → name)
+REFERENCE_DEFAULTS: dict[str, dict[str, tuple]] = {
+    "inv_products": {"category_id": ("inventory", "product_category", lambda r: "Medicines"),
+                     "unit_id": ("inventory", "unit", lambda r: "Unit")},
+    "procedures": {"procedure_category_id": ("evaluation", "procedure_categories",
+                                             lambda r: str(r.get("departmentCode") or "").strip() or "General")},
+    "inp_beds": {"bed_type_id": ("inpatient", "bed_type", lambda r: "General")},
+    "inp_admissions": {"admission_type_id": ("inpatient", "admission_type", lambda r: "General")},
+}
+# Numbers V3 generates per org but indexes UNIQUE across the instance: its
+# INV202610000005 for org 8 collides with another org's, and the duplicate is
+# then taken as "already in V3". Sent from the source id instead:
+# "<FACILITY>-org<org>-<prefix>-<id>" (org in it: the same data in a second org can't collide).
+NUMBER_FIELDS: dict[str, tuple[str, str]] = {
+    "invoices": ("invoice_no", "INV"), "payments": ("receipt_no", "RCP"), "visits": ("visit_no", "VST"),
+    "inp_admissions": ("admission_number", "ADM"), "procedures": ("code", "PRC"),
+}
+# values V3 needs for a record to show at all: the prescription screens list only status = 'active'
+CONSTANT_DEFAULTS: dict[str, dict[str, object]] = {"prescriptions": {"status": "active"}}
+_reference_ids: dict[tuple, int] = {}
+_reference_lock = threading.Lock()
 # patient_id from the parent record when the source row doesn't carry it:
 # table → (link field on this record, parent table's CLEAN view, its patient column)
 PATIENT_FROM_PARENT: dict[str, tuple[str, str, str]] = {
@@ -166,6 +194,17 @@ def _gateway_catalog() -> dict[tuple[str, str], tuple[str, str]]:
         return out
 
 
+def _catalog_hit(catalog: dict, service: str, table: str, ns: str) -> tuple[str, str] | None:
+    """(alias, class) for a V3 table. An alias named exactly like the table in
+    that service wins: several services share a class name (procedure =
+    inpatient inp_procedures, procedures = evaluation procedures; vital/vitals;
+    visit = reception, visits = evaluation)."""
+    hit = catalog.get((service, table)) or catalog.get((service, "class:" + (ns or "").split("\\")[-1].lower()))
+    if v2v3._alias_to_service.get(table) == service and (not hit or hit[0] != table):
+        return table, hit[1] if hit else ""
+    return hit
+
+
 def _links_for(table: str, fields: set[str]) -> dict[str, str]:
     return {f: LINK_OVERRIDES.get((table, f)) or LINKS[f] for f in fields
             if (table, f) in LINK_OVERRIDES or f in LINKS}
@@ -185,8 +224,7 @@ def prepare(facility: str, rows: list[tuple[str, str, list]], sample_fields: dic
         ns = next((x for x in stored if x), None)
         entry = {"table": table, "module": module_source, "namespace": ns, "v3": None, "transform": None}
         service = SERVICES.get(str(module_source).lower())
-        hit = (catalog.get((service, table)) or catalog.get((service, "class:" + (ns or "").split("\\")[-1].lower()))
-               if service else None)
+        hit = _catalog_hit(catalog, service, table, ns) if service else None
         if table in SKIP_TABLES:
             entry["reason"] = SKIP_TABLES[table]
         elif not service:
@@ -214,7 +252,7 @@ def prepare(facility: str, rows: list[tuple[str, str, list]], sample_fields: dic
                 continue
             p_svc = SERVICES.get(_module_of(rows, parent), "")
             p_ns = next((x for t, _, st in rows if t == parent for x in st if x), "")
-            p_hit = catalog.get((p_svc, parent)) or catalog.get((p_svc, "class:" + p_ns.split("\\")[-1].lower()))
+            p_hit = _catalog_hit(catalog, p_svc, parent, p_ns) if p_svc else None
             if p_hit:
                 alias_of[f] = p_hit[0]
         users_hit = catalog.get(("core", USERS)) or catalog.get(("core", "class:user"))
@@ -267,6 +305,57 @@ def _tiers(deps: dict[str, set]) -> dict[str, int]:
     return {t: min(d, 6) for t, d in out.items()}
 
 
+def _reference_id(facility: str, service: str, alias: str, name: str) -> int | None:
+    """V3 id of the named reference row (product category, unit …) in the
+    destination org — created with a stable uuid the first time, so re-runs
+    and parallel tables find the same row."""
+    import uuid as uuid_lib
+    from v3_to_v3_client import V3Client
+
+    key = (facility, alias, name.lower())
+    with _reference_lock:
+        if key in _reference_ids:
+            return _reference_ids[key]
+        uid = str(uuid_lib.uuid5(uuid_lib.NAMESPACE_URL, f"v3_passthrough/{facility}/{alias}/{name.lower()}"))
+        client = V3Client(facility)
+        client.login()
+        find = lambda: next((r["id"] for r in client.read_all(service, alias) if str(r.get("uuid") or "").lower() == uid), None)
+        rid = find()
+        if rid is None:
+            # some reference tables also want a code, UNIQUE across the instance
+            code = f"{facility.upper()}-org{client.organization_id}-{re.sub(r'[^A-Z0-9]+', '-', name.upper()).strip('-')}"
+            r = client.insert(service, alias, {"uuid": uid, "name": name, "code": code}, match_on="uuid")
+            if not r.ok and "Unknown column 'code'" in r.text:
+                r = client.insert(service, alias, {"uuid": uid, "name": name}, match_on="uuid")
+            rid = find()
+            if rid is None:
+                log.error("[%s] could not create %s %r: %s %s", facility, alias, name, r.status_code, r.text[:200])
+                return None                       # not cached: the next record tries again
+            log.info("[%s] created %s %r → V3 id %s", facility, alias, name, rid)
+        _reference_ids[key] = rid
+        return rid
+
+
+# patients.last_name is NOT NULL and V3 (Laravel ConvertEmptyStringsToNull)
+# turns "" into null — a surname-less patient gets this placeholder
+NO_SURNAME = "-"
+
+
+def _patient_names(out: dict) -> None:
+    """V3 patients.first_name is NOT NULL. Sources that keep the whole name in
+    one column (Wema: surname "Jayden Okalo", othernames empty) → first word is
+    the first name, the rest the last name; a single word is the first name."""
+    if str(out.get("first_name") or "").strip():
+        if not str(out.get("last_name") or "").strip():
+            out["last_name"] = NO_SURNAME         # NOT NULL; the source left the surname empty
+        return
+    words = str(out.get("last_name") or "").split()
+    if not words:
+        return                                    # no name at all → held back by REQUIRED
+    out["first_name"] = words[0]
+    out["last_name"] = " ".join(words[1:]) or NO_SURNAME
+
+
 def transform(record: dict, transform_key: str, org_cfg: dict) -> dict | None:
     """V3 record from the CLEAN view → gateway payload. Links to parents in
     this facility stay as source ids here (the migration's FK remap turns them
@@ -274,10 +363,36 @@ def transform(record: dict, transform_key: str, org_cfg: dict) -> dict | None:
     emptied — or the record is dropped (held) when that parent is the patient."""
     spec = _tables[transform_key]
     out = {k: v for k, v in record.items() if k not in DROP_FIELDS}
+    if out.get("id") in (None, ""):
+        # the source id is the progress key and what every link resolves
+        # through: without it a re-run posts the record again and nothing
+        # can link to it (extraction mappings with no id → id)
+        with _lock:
+            _held_missing[f"{spec['table']} (no source id)"] += 1
+            first = _held_missing[f"{spec['table']} (no source id)"] == 1
+        if first:
+            log.warning("%s: records have no source id — held back; map id → id in the extraction tool", spec["table"])
+        return None
     if spec["table"] in PATIENT_FROM_PARENT and out.get("patient_id") in (None, ""):
         out["patient_id"] = _patient_from_parent(spec, out)
-    if spec["table"] == "patients" and out.get("patient_no") in (None, ""):
-        out["patient_no"] = f"{PATIENT_NO_PREFIX}-{spec['facility'].upper()}-{out.get('id')}"
+    for field, value in CONSTANT_DEFAULTS.get(spec["table"], {}).items():
+        if out.get(field) in (None, ""):
+            out[field] = value
+    if spec["table"] in NUMBER_FIELDS:
+        field, prefix = NUMBER_FIELDS[spec["table"]]
+        if out.get(field) in (None, ""):
+            out[field] = f"{spec['facility'].upper()}-org{org_cfg.get('organization_id')}-{prefix}-{out['id']}"
+    for field, (service, alias, name_of) in REFERENCE_DEFAULTS.get(spec["table"], {}).items():
+        if out.get(field) in (None, ""):
+            out[field] = _reference_id(spec["facility"], service, alias, name_of(out))
+    if spec["table"] == "inv_products" and not str(out.get("generic_name") or "").strip():
+        # NOT NULL; 28 Wema drugs have no name at all — kept, marked, inactive (as gyno_to_v3)
+        out["generic_name"] = out["name"] = f"Unnamed product {out['id']}"
+        out["is_active"] = 0
+    if spec["table"] == "patients":
+        _patient_names(out)
+        if out.get("patient_no") in (None, ""):
+            out["patient_no"] = f"{PATIENT_NO_PREFIX}-{spec['facility'].upper()}-{out.get('id')}"
     missing = [f for f in REQUIRED.get(spec["table"], ()) if out.get(f) in (None, "")]
     if missing:
         with _lock:
@@ -304,12 +419,17 @@ def transform(record: dict, transform_key: str, org_cfg: dict) -> dict | None:
             out[field] = org_cfg.get("user_id")
     for field in _unknown_links.get(spec["table"], ()):
         out[field] = None
+    for field in TABLE_USER_FALLBACKS.get(spec["table"], ()):
+        if out.get(field) in (None, ""):
+            out[field] = org_cfg.get("user_id")
     # facility: only on models the gateway scopes by facility (it sets the
     # destination facility itself); other tables may have no facility column
     # at all, and posting one there is a 500
     out.pop("facility_id", None)
     if spec.get("facility_col"):
         out[spec["facility_col"]] = org_cfg.get("facility_id")
+    if spec["table"] == "visits" and out.get("clinic") in (None, ""):
+        out["clinic"] = org_cfg.get("facility_id")    # V3 check-in sets it to the facility; the frontend requires it
     return out
 
 

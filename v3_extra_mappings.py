@@ -152,6 +152,8 @@ MAPPINGS: dict[str, dict] = {
         "inject": {"destination_type": ("map", "destination_type_id",
                                         {"1": "room", "2": "department", "3": "specialized_clinic"}, "department"),
                    "code": ("fmt", "DST-{source_schema}-{id}")},
+        # V2 procedure category ids → V3's (were copied raw: fix_destination_categories.py, 2026-10-17)
+        "fk_list": {"associated_procedure_category": r"App\Models\ProcedureCategory"},
     },
     # ── theatre-service: operation details and checklists ────────────────
     # (_STAND_IN_CERTIFIER_INJECT: see _checklist_certifier_sql)
@@ -970,7 +972,9 @@ def apply(v2v3, s2v3) -> int:
             continue
         v2v3.NAMESPACE_MAP[spec["namespace"]] = {"v3": spec["v3"], "transform": tk}
         v2v3._PER_KEY_RENAMES.setdefault(tk, dict(spec.get("renames") or {}))
-        v2v3._PER_KEY_KEEP_ONLY.setdefault(tk, set(spec["keep"]))
+        # V2's own timestamps always ride along: without them V3 stamps the load time, and staff saw every
+        # migrated inpatient note / vital dated the day it was loaded ("timestamps are all different", 2026-10-23)
+        v2v3._PER_KEY_KEEP_ONLY.setdefault(tk, set(spec["keep"]) | {"created_at", "updated_at"})
         if spec.get("fk"):
             v2v3._FK_REMAP.setdefault(tk, dict(spec["fk"]))
         if spec.get("inject"):
@@ -985,6 +989,16 @@ def apply(v2v3, s2v3) -> int:
             # the vitals number rules (v2v3._vital_reading: decimal comma, first of several readings,
             # 0 height/weight, implausible values) — a mapped table gets none of inpatient_vital's coercions
             v2v3._PER_KEY_COERCIONS.setdefault(tk, {f: v2v3._vital_reading(f) for f in spec["vital_numbers"]})
+        if spec.get("fk_list"):
+            # a comma-separated list of V2 ids ("1,6,46") → the same list of V3 ids; ids V3 lacks are dropped
+            def _ids(model):
+                def coerce(v):
+                    m = s2v3._id_map_for(v2v3._v3_alias(model))
+                    out = [m.get(int(x)) or m.get(x) for x in (s.strip() for s in str(v or "").split(","))
+                           if x.isdigit()]
+                    return ",".join(dict.fromkeys(str(x) for x in out if x is not None)) or None
+                return coerce
+            v2v3._PER_KEY_COERCIONS.setdefault(tk, {}).update({f: _ids(mdl) for f, mdl in spec["fk_list"].items()})
         if spec.get("critical"):
             s2v3._CRITICAL_FK_FIELDS.setdefault(tk, list(spec["critical"]))
         if spec.get("null_if_unresolved"):

@@ -67,6 +67,9 @@ DAG_ID = "fast_v2_live_to_v3"
         "workers": Param(24, type="integer", minimum=1, maximum=64, title="Parallel V3 posts"),
         "page_workers": Param(8, type="integer", minimum=1, maximum=32, title="Parallel V2 API pages"),
         "dry_run": Param(True, type="boolean", title="Dry run", description="On: count only, post nothing."),
+        "corrections": Param(True, type="boolean", title="Run the org corrections after",
+                             description="v3_org_corrections: visit destinations, discharges, destination "
+                                         "categories (skipped on a dry run)."),
     },
 )
 def fast_v2_live_to_v3():
@@ -114,7 +117,19 @@ def fast_v2_live_to_v3():
         if errors:
             raise AirflowFailException(f"tables that errored (re-run them): {errors}")
 
-    summary(load())
+    @task(execution_timeout=timedelta(hours=6))
+    def corrections(_) -> None:
+        p = get_current_context()["params"]
+        if p["dry_run"] or not p.get("corrections", True):
+            log.info("corrections skipped (dry run / turned off)")
+            return
+        from v3_org_corrections_dag import run_corrections
+        run_corrections(p["facility"].strip(), source=None, facility=p["facility"].strip(), dry_run=False,
+                        steps=["destination_categories", "eval_visit_destinations", "eval_consumables", "admission_discharges"])
+
+    loaded = load()
+    summary(loaded)
+    corrections(loaded)
 
 
 fast_v2_live_to_v3()

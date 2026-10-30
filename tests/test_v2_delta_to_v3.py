@@ -3,7 +3,17 @@ chained to the target, and which payloads update an existing record vs insert a 
 from __future__ import annotations
 
 from fast_v2_live_to_v3 import changed_since
-from v2_delta_to_v3 import compose_id_map, plan_delta
+from v2_delta_to_v3 import compose_id_map, plan_delta, target_id
+
+
+def test_target_id_records_updates_as_well_as_inserts():
+    assert target_id(501, None) == 501            # insert: the id the post returned
+    assert target_id(None, 77) == 77              # update: the post returns no id → the matched row
+    assert target_id("501", None) == 501
+    assert target_id(501, 77) == 501
+    assert target_id(None, None) is None          # duplicate key / nothing posted
+    assert target_id(0, None) is None
+    assert target_id("", "") is None
 
 
 def test_changed_since_new_and_edits():
