@@ -1,9 +1,12 @@
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 import argparse
+import hashlib
+import json
 import os
 import re
 import sys
+import time
 from pathlib import Path
 
 import snowflake.connector
@@ -20,8 +23,9 @@ SCHEMA_PAIRS = [
     #("XANALIFE_RAW", "XANALIFE_CLEAN"),
     # ("AFYA_API_AUTH_RAW", "AFYA_API_AUTH_CLEAN"),
     # ("KISUMU_V3_RAW", "KISUMU_V3_CLEAN"),
-    ("SILVERWOOD_RAW", "SILVERWOOD_CLEAN"),
- 
+    #("SILVERWOOD_RAW", "SILVERWOOD_CLEAN"),
+    ("SILVERWOOD_TEST_RAW", "SILVERWOOD_TEST_CLEAN"),
+
 ]
 
 # SNOWFLAKE CONNECTION
@@ -371,50 +375,253 @@ def _facility_of(clean_schema: str) -> str:
     return name[:-len("_CLEAN")] if name.endswith("_CLEAN") else name
 
 
+# SHARED LOOKUPS
+# Every table with links or user columns needs the ids of its parent tables (visits, invoices, patients...) and the
+# users, copied out of RAW into temporary tables. During a run (flatten_all) each of those copies is made ONCE and
+# reused by every table; outside a run (a single table task) each table makes and drops its own, as before.
+# Temporary tables belong to one connection, so a copy is only reused by the cursor that made it.
+_SHARED: dict = {}
+
+
+def share_lookups(cursor, raw_schema: str, clean_schema: str, fingerprints: dict | None = None) -> None:
+    """Starts sharing the lookup copies for this schema pair (see SHARED LOOKUPS). With fingerprints (see SKIPPING TABLES THAT HAVE NOT CHANGED),
+    tables that have not changed are skipped."""
+    _SHARED[(raw_schema.upper(), clean_schema.upper())] = {"cursor": cursor, "parents": {}, "users": None, "users_done": False, "tmps": [],
+                                                     "fp": fingerprints, "decisions": []}
+
+
+def take_decisions(cursor, raw_schema: str, clean_schema: str) -> list[dict]:
+    """The rebuilt / skipped decisions made so far for this schema pair."""
+    entry = _shared_entry(cursor, raw_schema, clean_schema)
+    return list(entry["decisions"]) if entry else []
+
+
+def release_lookups(cursor, raw_schema: str, clean_schema: str) -> None:
+    """Stops sharing and drops the copies."""
+    entry = _SHARED.pop((raw_schema.upper(), clean_schema.upper()), None)
+    for name in (entry or {}).get("tmps", []):
+        try:
+            cursor.execute(f"DROP TABLE IF EXISTS {name}")
+        except Exception:                  # noqa: BLE001 - temporary tables vanish with the session anyway
+            pass
+
+
+def _shared_entry(cursor, raw_schema: str, clean_schema: str) -> dict | None:
+    entry = _SHARED.get((raw_schema.upper(), clean_schema.upper()))
+    return entry if entry is not None and entry["cursor"] is cursor else None
+
+
 def _raw_parents(cursor, raw_schema: str, clean_schema: str, cast, table: str, structure, service: str, columns, derived) -> tuple[dict, list]:
-    """Copies the id (and patient id) of every parent table this table points to out of RAW into temporary tables, so
+    """The id (and patient id) of every parent table this table points to, copied out of RAW into temporary tables, so
     links are checked against the data as it is in RAW right now. Returns the names for check_table_for_flatten, and the
-    temporary tables made (to drop)."""
+    temporary tables to drop (none when the copies are shared for the whole run)."""
     wanted = {p for _, p in cast.PARENTS} | set(cast.link_candidates(structure, table, service, columns, derived).values())
     if not wanted:
         return {}, []
-    marks = ", ".join(["%s"] * len(wanted))
-    cursor.execute(f"""SELECT source_table, COUNT(payload:"id"), COUNT(payload:"patient_id"), COUNT(payload:"patient")
-                       FROM {raw_schema}.EVENTS_RAW
-                       WHERE source_table IN ({marks}) AND IS_OBJECT(payload)
-                       GROUP BY 1""", tuple(sorted(wanted)))
-    out, made = {}, []
-    for source_table, n_id, n_patient_id, n_patient in cursor.fetchall():
-        if not n_id:
-            continue
-        patient = "patient_id" if n_patient_id else "patient" if n_patient else None
-        tmp = f"{clean_schema}.V3CHK_P_{str(source_table).upper()}"
-        extra = f', payload:"{patient}"::STRING AS "PATIENT_ID"' if patient else ""
-        cursor.execute(f"""CREATE OR REPLACE TEMPORARY TABLE {tmp} AS
-                           SELECT DISTINCT payload:"id"::STRING AS "ID"{extra}
+    shared = _shared_entry(cursor, raw_schema, clean_schema)
+    todo = sorted(wanted - set(shared["parents"])) if shared is not None else sorted(wanted)
+    made, found = [], {}
+    if todo:
+        marks = ", ".join(["%s"] * len(todo))
+        cursor.execute(f"""SELECT source_table, COUNT(payload:"id"), COUNT(payload:"patient_id"), COUNT(payload:"patient")
                            FROM {raw_schema}.EVENTS_RAW
-                           WHERE source_table = '{source_table}' AND IS_OBJECT(payload)""")
-        made.append(tmp)
-        out[str(source_table).lower()] = {"table": tmp, "id": '"ID"', "value": '"PATIENT_ID"' if patient else None}
-    return out, made
+                           WHERE source_table IN ({marks}) AND IS_OBJECT(payload)
+                           GROUP BY 1""", tuple(todo))
+        for source_table, n_id, n_patient_id, n_patient in cursor.fetchall():
+            if not n_id:
+                continue
+            patient = "patient_id" if n_patient_id else "patient" if n_patient else None
+            tmp = f"{clean_schema}.V3CHK_P_{str(source_table).upper()}"
+            extra = f', payload:"{patient}"::STRING AS "PATIENT_ID"' if patient else ""
+            cursor.execute(f"""CREATE OR REPLACE TEMPORARY TABLE {tmp} AS
+                               SELECT DISTINCT payload:"id"::STRING AS "ID"{extra}
+                               FROM {raw_schema}.EVENTS_RAW
+                               WHERE source_table = '{source_table}' AND IS_OBJECT(payload)""")
+            made.append(tmp)
+            found[str(source_table).lower()] = {"table": tmp, "id": '"ID"', "value": '"PATIENT_ID"' if patient else None}
+    if shared is None:
+        return found, made
+    for name in todo:                      # remember what was found, and what RAW does not have, so nothing is asked twice
+        shared["parents"][name] = found.get(name.lower())
+    shared["tmps"] += made
+    return {n: shared["parents"][n] for n in wanted if shared["parents"].get(n)}, []
 
 
 def _raw_users(cursor, raw_schema: str, clean_schema: str, cast, table: str, columns) -> tuple[dict | None, list]:
     """For tables with user columns (created_by, recorded_by, user...): copies the id and username of every user in RAW into a
     temporary table, so a column that holds a username ('admin') is replaced by that user's id. Returns the names for
-    check_table_for_flatten (None when there is nothing to look up or RAW has no users), and the temporary table made (to drop)."""
+    check_table_for_flatten (None when there is nothing to look up or RAW has no users), and the temporary tables to
+    drop (none when the copy is shared for the whole run)."""
     if table.lower() == "users" or not any(cast.is_user_column(c["name"]) for c in columns):
         return None, []
+    shared = _shared_entry(cursor, raw_schema, clean_schema)
+    if shared is not None and shared["users_done"]:
+        return shared["users"], []
     cursor.execute(f"""SELECT COUNT(payload:"id"), COUNT(payload:"username") FROM {raw_schema}.EVENTS_RAW
                        WHERE source_table = 'users' AND IS_OBJECT(payload)""")
     n_id, n_name = cursor.fetchone()
-    if not n_id or not n_name:
-        return None, []
-    tmp = f"{clean_schema}.V3CHK_P_USERNAMES"
-    cursor.execute(f"""CREATE OR REPLACE TEMPORARY TABLE {tmp} AS
-                       SELECT DISTINCT payload:"id"::STRING AS "ID", payload:"username"::STRING AS "USERNAME"
-                       FROM {raw_schema}.EVENTS_RAW WHERE source_table = 'users' AND IS_OBJECT(payload)""")
-    return {"table": tmp, "id": '"ID"', "username": '"USERNAME"'}, [tmp]
+    info, made = None, []
+    if n_id and n_name:
+        tmp = f"{clean_schema}.V3CHK_P_USERNAMES"
+        cursor.execute(f"""CREATE OR REPLACE TEMPORARY TABLE {tmp} AS
+                           SELECT DISTINCT payload:"id"::STRING AS "ID", payload:"username"::STRING AS "USERNAME"
+                           FROM {raw_schema}.EVENTS_RAW WHERE source_table = 'users' AND IS_OBJECT(payload)""")
+        info, made = {"table": tmp, "id": '"ID"', "username": '"USERNAME"'}, [tmp]
+    if shared is not None:
+        shared["users"], shared["users_done"] = info, True
+        shared["tmps"] += made
+        return info, []
+    return info, made
+
+
+# SKIPPING TABLES THAT HAVE NOT CHANGED
+# A table built last run is not built again when everything it was built from is the same. What it was built from, its
+# fingerprint:
+#   own      this table's rows in RAW: how many, and the latest ingested_at (a reload gives a new one)
+#   deps     the same for each table it points to (visits, invoices...) and for users, when it has user columns
+#   dedup    the facility's dedup crosswalk (a hash of its rows)
+#   code     the scripts, the V3 structure file and the facility's mapping file
+# The fingerprint of the last GOOD build is stored in <audit>.BUILDS (a failed build records nothing, so a table that
+# fails is tried again every run). Anything that cannot be worked out means: build. --force builds everything.
+# Only tables built by the V3 check are skipped; views cost nothing and always show RAW as it is.
+
+def _stamp(count, latest) -> str:
+    return f"{int(count or 0)}|{latest.isoformat() if hasattr(latest, 'isoformat') else (latest or '')}"
+
+
+def _raw_fingerprints(cursor, raw_schema: str) -> dict:
+    cursor.execute(f"SELECT source_table, COUNT(*), MAX(ingested_at) FROM {raw_schema}.EVENTS_RAW GROUP BY 1")
+    return {str(t).lower(): _stamp(n, latest) for t, n, latest in cursor.fetchall()}
+
+
+def _dedup_fingerprint(cursor, facility: str) -> str:
+    """A hash of the facility's rows in the dedup crosswalk (dedup rewrites them every run, so timestamps would always differ)."""
+    schema = getattr(dedup, "OUTPUT_SCHEMA", "HOSPITALS.DEDUP")
+    db, _, name = schema.partition(".")
+    cursor.execute(f"SELECT COUNT(*) FROM {db}.INFORMATION_SCHEMA.TABLES WHERE table_schema = %s AND table_name = 'CROSSWALK'", (name,))
+    if not cursor.fetchone()[0]:
+        return "none"
+    cursor.execute(f"SELECT COUNT(*), HASH_AGG(V3_TABLE, LOSER_ID, SURVIVOR_ID) FROM {schema}.CROSSWALK WHERE FACILITY = %s", (facility.upper(),))
+    n, h = cursor.fetchone()
+    return f"{int(n or 0)}|{h}"
+
+
+def _code_text(path: Path) -> bytes:
+    """A file's bytes for the fingerprint. In this script the SCHEMA_PAIRS list is left out: choosing which schemas to run
+    is not a change to how a table is built."""
+    if not path.is_file():
+        return b"missing"
+    data = path.read_bytes()
+    if path.resolve() == Path(__file__).resolve():
+        data = re.sub(rb"SCHEMA_PAIRS\s*=\s*\[.*?\n\]", b"", data, count=1, flags=re.S)
+    return data
+
+
+def _code_fingerprint(cast, facility: str) -> str:
+    """A hash of the files that decide how a table is built: these scripts, dedup, the V3 structure file, the facility's mapping file."""
+    paths = [Path(__file__), Path(cast.__file__), cast.v3_schema_path(), cast.mapping_path(facility)]
+    if getattr(dedup, "__file__", None):
+        paths.append(Path(dedup.__file__))
+    h = hashlib.sha256()
+    for path in paths:
+        h.update(path.name.encode())
+        h.update(_code_text(path))
+    return h.hexdigest()[:24]
+
+
+def build_run_fingerprints(cursor, audit, cast, raw_schema: str, facility: str, force: bool = False) -> dict | None:
+    """Everything the skip decisions need, read once per schema. None (build everything) when any part cannot be worked out."""
+    try:
+        return {"raw": _raw_fingerprints(cursor, raw_schema), "dedup": _dedup_fingerprint(cursor, facility),
+                "code": _code_fingerprint(cast, facility), "builds": audit.load_builds(), "force": force}
+    except Exception as e:                  # noqa: BLE001 - never skip when unsure
+        print(f"  WARNING: could not work out what changed ({e}); every table will be built")
+        return None
+
+
+def table_dependencies(cast, table: str, structure, service, columns, derived) -> list[str]:
+    """The other tables this table's check reads from RAW: the tables it points to, and users when it has user columns."""
+    wanted = {p for _, p in cast.PARENTS} | set(cast.link_candidates(structure, table, service, columns, derived).values())
+    if table.lower() != "users" and any(cast.is_user_column(c["name"]) for c in columns):
+        wanted.add("users")
+    wanted.discard(table.lower())
+    return sorted(wanted)
+
+
+def current_fingerprint(run_fp: dict, table: str, deps: list[str]) -> dict:
+    details = {"own": run_fp["raw"].get(table.lower(), "0|"), "deps": {d: run_fp["raw"].get(d, "0|") for d in deps},
+               "dedup": run_fp["dedup"], "code": run_fp["code"]}
+    details["hash"] = hashlib.sha256(json.dumps(details, sort_keys=True).encode()).hexdigest()[:32]
+    return details
+
+
+def decide_rebuild(now: dict, previous: dict | None, force: bool = False) -> tuple[bool, str]:
+    """(skip, reason). Skips only when nothing it was built from has changed."""
+    if force:
+        return False, "forced (--force)"
+    if not previous or not previous.get("hash"):
+        return False, "no earlier good build recorded"
+    if previous.get("code") != now["code"]:
+        return False, "script, mapping file or V3 structure changed"
+    if previous.get("dedup") != now["dedup"]:
+        return False, "dedup crosswalk changed"
+    if previous.get("own") != now["own"]:
+        old_n, new_n = str(previous.get("own", "")).split("|")[0], now["own"].split("|")[0]
+        return False, (f"RAW rows changed ({old_n} -> {new_n})" if old_n != new_n else "RAW reloaded, same row count")
+    prev_deps = previous.get("deps") or {}
+    moved = sorted(d for d in now["deps"] if prev_deps.get(d) != now["deps"][d])
+    if moved:
+        return False, f"a table it reads changed: {', '.join(moved)}"
+    return True, "unchanged since the last good build"
+
+
+def _took(seconds: float) -> str:
+    """'0.4s', '12s', '2m 05s'."""
+    if seconds < 10:
+        return f"{seconds:.1f}s"
+    return f"{seconds:.0f}s" if seconds < 120 else f"{int(seconds // 60)}m {int(seconds % 60):02d}s"
+
+
+def _verbose() -> bool:
+    """True when the full output is wanted (--verbose or V3_VERBOSE=1)."""
+    import cast_clean_to_v3_types as cast
+    return cast.verbose()
+
+
+_TABLE_NOTES: dict[str, str] = {}      # one-line notes about a table, printed on its result line
+
+
+def _decision_reason(cursor, raw_schema: str, clean_schema: str, table: str) -> str | None:
+    """Why this table was rebuilt or skipped in this run (None when no run is sharing)."""
+    entry = _shared_entry(cursor, raw_schema, clean_schema)
+    for d in reversed(entry["decisions"] if entry else []):
+        if d["table"] == table:
+            return d["reason"]
+    return None
+
+
+def _plan_skip(cursor, raw_schema, clean_schema, table, cast, structure, service, columns, derived) -> tuple[dict | None, dict | None]:
+    """(result to return when the table is skipped or None, this table's fingerprint or None when no run is sharing)."""
+    entry = _shared_entry(cursor, raw_schema, clean_schema)
+    run_fp = entry.get("fp") if entry else None
+    if not run_fp:
+        return None, None
+    try:
+        now = current_fingerprint(run_fp, table, table_dependencies(cast, table, structure, service, columns, derived))
+        previous = (run_fp["builds"].get(table.lower()) or {}).get("details")
+        skip, reason = decide_rebuild(now, previous, run_fp["force"])
+        if skip and existing_object_type(cursor, clean_schema, table) != "table":
+            skip, reason = False, "table missing in CLEAN"
+    except Exception as e:                  # noqa: BLE001 - never skip when unsure
+        print(f"    could not compare with the last build ({e}); building")
+        return None, None
+    entry["decisions"].append({"table": table, "decision": "skipped" if skip else "rebuilt", "reason": reason})
+    if skip:
+        return {"object": "table", "was": "table", "backup": None, "typed": True, "skipped": 0, "changes": 0,
+                "unchanged": True, "reason": reason}, now
+    if _verbose():
+        print(f"    rebuilding: {reason}")
+    return None, now
 
 
 def _flatten_checked(cursor, raw_schema: str, clean_schema: str, table: str, expanded_fields,
@@ -426,7 +633,8 @@ def _flatten_checked(cursor, raw_schema: str, clean_schema: str, table: str, exp
     import cast_clean_to_v3_types as cast
     facility = _facility_of(clean_schema)
     if table.lower() in cast.NOT_TYPE_CHECKED:
-        print(f"    {table}: left out of the V3 type check (not migrated) - built as before")
+        if _verbose():
+            print(f"    {table}: left out of the V3 type check (not migrated) - built as before")
         return None
     mapped, derived = cast.load_mapping(facility)
     service = mapped.get(table.lower())
@@ -437,11 +645,17 @@ def _flatten_checked(cursor, raw_schema: str, clean_schema: str, table: str, exp
         raise RuntimeError(f"{table} is in the mapping but the V3 structure file was not found. Looked in: {cast.v3_schema_tried()}. "
                            f"Set {cast.V3_SCHEMA_ENV} to its full path. Nothing was changed in {clean_schema}.")
     if structure.key(table, service) is None:
-        print(f"    {table}: not found in the V3 structure - built as before (no type check)")
+        if _verbose():
+            print(f"    {table}: not found in the V3 structure - built as before (no type check)")
+        else:
+            _TABLE_NOTES[table] = "⚠ not found in the V3 structure: built without a type check"
         return None
     columns = ([{"name": "SOURCE_SCHEMA", "type": "TEXT", "nullable": True}] +
                [{"name": n.upper(), "type": "VARIANT" if dtype in NESTED_TYPES else "TEXT", "nullable": True}
                 for n, _, dtype in expanded_fields])
+    unchanged, fingerprint = _plan_skip(cursor, raw_schema, clean_schema, table, cast, structure, service, columns, derived)
+    if unchanged:
+        return unchanged
     if audit is None:                      # a single table run on its own (the Airflow task): its findings are stored under a run of its own
         audit = cast.Audit(cursor, facility, raw_schema, clean_schema, source="airflow")
         audit.save_run("single table", finished=True)
@@ -460,17 +674,21 @@ def _flatten_checked(cursor, raw_schema: str, clean_schema: str, table: str, exp
         result = cast.check_table_for_flatten(cursor, facility, table, tmp, columns, service,
                                               structure=structure, derived=derived, raw_parents=raw_parents, audit=audit, users=users)
         if not result["ok"]:
-            shown = result["errors"][:10]
-            for e in shown:
-                print(f"    ✗ {table} record {e['record_id']}: {e['error']}")
+            if _verbose():
+                for e in result["errors"][:10]:
+                    print(f"    ✗ {table} record {e['record_id']}: {e['error']}")
             failure = cast.TypingErrors(
                 f"{table}: {result['failed_records']} record(s) have errors; nothing was changed in {clean_schema} "
                 f"(the previous {table} stays as it was). Details: {audit.schema}.ERRORS, run {audit.run_id}", {table: result["failed_records"]})
             failure.errors = result["errors"][:20]      # kept in the run state, so the reason survives the run
+            failure.lines = list(result.get("lines") or []) + ["✗ " + l for l in cast.group_errors(result["errors"])]
             raise failure
-        print(f"    V3 type check OK ({result['skipped_records']} skipped, {len(result['changes'])} values changed or listed"
-              f"{', user names looked up' if users else ''}; "
-              f"schema file {structure.source})")
+        if _verbose():
+            print(f"    V3 type check OK ({result['skipped_records']} skipped, {len(result['changes'])} values changed or listed"
+                  f"{', user names looked up' if users else ''}; "
+                  f"schema file {structure.source})")
+        else:
+            cast.say_once("structure", f"V3 structure: {len(structure.cols)} tables from {structure.source}")
         # build next to the old object, then swap: the old one is only replaced once the new one exists
         was = existing_object_type(cursor, clean_schema, table)
         backup = backup_table(cursor, clean_schema, table) if was == "table" else None
@@ -483,8 +701,14 @@ def _flatten_checked(cursor, raw_schema: str, clean_schema: str, table: str, exp
             if was == "view":
                 cursor.execute(f"DROP VIEW {clean_schema}.{table}")
             cursor.execute(f"ALTER TABLE {clean_schema}.{new} RENAME TO {clean_schema}.{table}")
+        if fingerprint:
+            try:
+                audit.save_build(table, fingerprint["hash"], fingerprint)
+            except Exception as e:         # noqa: BLE001 - the table is built; without the record it is only built again next run
+                print(f"    WARNING: could not record this build ({e}); the table will be built again next run")
         return {"object": "table", "was": was, "backup": backup, "typed": True,
-                "skipped": result["skipped_records"], "changes": len(result["changes"])}
+                "skipped": result["skipped_records"], "changes": len(result["changes"]),
+                "lines": result.get("lines"), "rows": result.get("rows")}
     finally:
         for name in made:
             try:
@@ -512,7 +736,8 @@ def flatten_table(cursor, raw_schema: str, clean_schema: str, table: str, expand
         raise ValueError(f"materialize must be one of {MATERIALIZE_MODES}, not {materialize!r}")
     checked = _flatten_checked(cursor, raw_schema, clean_schema, table, expanded_fields, dedup_facility=facility, audit=audit)
     if checked is not None:
-        prune_backups(cursor, clean_schema, table)
+        if not checked.get("unchanged"):
+            prune_backups(cursor, clean_schema, table)
         return checked
     was = existing_object_type(cursor, clean_schema, table)
     target = materialize if materialize != "auto" else ("table" if was == "table" else "view")
@@ -602,11 +827,14 @@ def cleanup_leftovers(cursor, clean_schema: str) -> list[str]:
 # Main function to orchestrate the flattening process for all tables in all schema pairs.
 # It iterates through each raw/clean schema pair, discovers tables, fields, expands objects, builds SQL, and executes it to create the flattened views. 
 # It also keeps track of successes and failures for reporting, and saves them in the run state (see RUN STATE).
-def flatten_all(conn, retry_failed: bool = False) -> dict:
+def flatten_all(conn, retry_failed: bool = False, force: bool = False) -> dict:
     """Flattens every table of every schema pair. retry_failed=True runs only the tables the last run did not finish OK.
+    A table whose RAW data, parents, dedup result and scripts are unchanged since its last good build is skipped, unless force=True.
     The run state, what the V3 check found and what the run printed are stored in the audit schema (see RUN STATE).
     Returns {raw_schema: {"ok": n, "failed": [tables]}}."""
     import cast_clean_to_v3_types as cast
+    cast.reset_said()
+    _TABLE_NOTES.clear()
     cursor = conn.cursor()
     total_ok, total_fail = 0, 0
     summary: dict = {}
@@ -616,6 +844,8 @@ def flatten_all(conn, retry_failed: bool = False) -> dict:
             audit = cast.Audit(cursor, facility, raw_schema, clean_schema, source="manual")
             audit.ensure()                 # fails here, before anything is touched, if the audit schema cannot be written
             ok, failed, state = 0, [], None
+            failed_records: dict[str, int] = {}
+            started, skipped_total, changed_total = time.perf_counter(), 0, 0
             with audit.capture_log():
                 print(f"\n=== {raw_schema} → {clean_schema} ===")
                 tables = get_source_tables(cursor, raw_schema)
@@ -649,26 +879,81 @@ def flatten_all(conn, retry_failed: bool = False) -> dict:
                         raise
                     state["dedup"] = STATUS_OK
                     save_state(audit, state)
+                share_lookups(cursor, raw_schema, clean_schema, build_run_fingerprints(cursor, audit, cast, raw_schema, facility, force))
                 for table in todo:
                     audit.flush_log()
                     audit.current_table = table
                     mark_table(audit, state, table, "running")
+                    t0 = time.perf_counter()
                     try:
                         done = flatten_table(cursor, raw_schema, clean_schema, table, expanded[table],
                                              facility=facility, audit=audit)
-                        print(f"  ✓ {table} ({len(expanded[table])} cols, {done['object']}"
-                              f"{', backup ' + done['backup'] if done['backup'] else ''})")
+                        took = _took(time.perf_counter() - t0)
+                        reason = _decision_reason(cursor, raw_schema, clean_schema, table)
+                        if _verbose():
+                            if done.get("unchanged"):
+                                print(f"  ↷ {table} unchanged, not rebuilt")
+                            else:
+                                print(f"  ✓ {table} ({len(expanded[table])} cols, {done['object']}"
+                                      f"{', backup ' + done['backup'] if done['backup'] else ''})")
+                        elif done.get("unchanged"):
+                            print(f"  ↷ {table}  unchanged since the last good build · {took}")
+                        else:
+                            bits = [f"rebuilt ({reason})" if reason else done["object"]]
+                            if done.get("rows") is not None:
+                                bits.append(f"{done['rows']} rows")
+                            bits += [f"{len(expanded[table])} cols", took]
+                            print(f"  ✓ {table}  " + " · ".join(bits))
+                            for l in [_TABLE_NOTES.pop(table, None)] + list(done.get("lines") or []):
+                                if l:
+                                    print("      " + l)
+                        skipped_total += done.get("skipped") or 0
+                        changed_total += done.get("changes") or 0
                         mark_table(audit, state, table, STATUS_OK, object=done["object"])
                         ok += 1
                     except Exception as e:
-                        print(f"  ✗ {table}: {e}")
+                        if _verbose() or not isinstance(e, cast.TypingErrors):
+                            print(f"  ✗ {table}: {e}")
+                        else:
+                            n = (e.tables or {}).get(table, "?")
+                            print(f"  ✗ {table}  {n} record(s) have errors; CLEAN left as it was · {_took(time.perf_counter() - t0)}")
+                            for l in getattr(e, "lines", []):
+                                print("      " + l)
+                            failed_records.update(e.tables or {})
+                        _TABLE_NOTES.pop(table, None)
                         mark_table(audit, state, table, "failed", error=str(e)[:2000])
                         failed.append(table)
                 audit.current_table = None
-                print(f"  {raw_schema} done: {ok} ok, {len(failed)} failed")
-                if failed:
-                    print(f"  To run only the failed tables again after fixing them: python flatten_jsons_schemas.py --retry-failed")
-                    print(f"  Why they failed: SELECT * FROM {audit.schema}.ERRORS WHERE RUN_ID = '{audit.run_id}' AND FACILITY = '{audit.facility}'")
+                decisions = take_decisions(cursor, raw_schema, clean_schema)
+                release_lookups(cursor, raw_schema, clean_schema)
+                if decisions:
+                    try:
+                        audit.save_history(decisions)
+                    except Exception as e:     # noqa: BLE001 - only the record of why is lost
+                        print(f"  WARNING: could not store the rebuilt/skipped record ({e})")
+                    n_skip = sum(1 for d in decisions if d["decision"] == "skipped")
+                    if _verbose():
+                        print(f"  {n_skip} table(s) unchanged and skipped, {len(decisions) - n_skip} rebuilt"
+                              f" (why: SELECT * FROM {audit.schema}.BUILD_HISTORY WHERE RUN_ID = '{audit.run_id}' AND FACILITY = '{audit.facility}')")
+                    else:
+                        decisions_line = f"{n_skip} unchanged and skipped, {len(decisions) - n_skip} rebuilt"
+                where = f"WHERE RUN_ID = '{audit.run_id}' AND FACILITY = '{audit.facility}'"
+                if _verbose():
+                    print(f"  {raw_schema} done: {ok} ok, {len(failed)} failed")
+                    if failed:
+                        print(f"  To run only the failed tables again after fixing them: python flatten_jsons_schemas.py --retry-failed")
+                        print(f"  Why they failed: SELECT * FROM {audit.schema}.ERRORS {where}")
+                else:
+                    print(f"\n  {raw_schema}: {ok} ok, {len(failed)} failed"
+                          + (f", {decisions_line}" if decisions else "") + f" · {_took(time.perf_counter() - started)}")
+                    if failed:
+                        print("  failed: " + ", ".join(f"{t} ({failed_records[t]} records)" if t in failed_records else t for t in failed))
+                        print(f"    why:   SELECT * FROM {audit.schema}.ERRORS {where}")
+                        print(f"    retry: python flatten_jsons_schemas.py --retry-failed")
+                    if skipped_total or changed_total:
+                        print(f"  records skipped / values changed: SELECT * FROM {audit.schema}.CHANGES {where}")
+                    if decisions:
+                        print(f"  why tables were rebuilt or skipped: SELECT * FROM {audit.schema}.BUILD_HISTORY {where}")
             save_state(audit, state, status=f"failed: {len(failed)} table(s)" if failed else STATUS_OK, finished=True)
             audit.prune()
             total_ok += ok
@@ -685,11 +970,18 @@ def main(argv: list[str] | None = None) -> None:
     ap = argparse.ArgumentParser(description="Flatten RAW.EVENTS_RAW into CLEAN for every schema pair.")
     ap.add_argument("--retry-failed", action="store_true",
                     help="run only the tables the last run did not finish OK (each is checked and built again from scratch)")
+    ap.add_argument("--force", action="store_true",
+                    help="build every table, even those unchanged since their last good build")
+    ap.add_argument("--verbose", "-v", action="store_true",
+                    help="print everything (the full column table for every table), not only what needs a look")
     args = ap.parse_args(argv)
+    if args.verbose:
+        import cast_clean_to_v3_types
+        cast_clean_to_v3_types.set_verbose(True)
     conn = None
     try:
         conn = _snowflake_connect()
-        summary = flatten_all(conn, retry_failed=args.retry_failed)
+        summary = flatten_all(conn, retry_failed=args.retry_failed, force=args.force)
     finally:
         if conn:
             conn.close()

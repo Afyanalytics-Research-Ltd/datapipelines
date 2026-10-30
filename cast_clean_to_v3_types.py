@@ -28,6 +28,9 @@ USAGE
 OUTPUT, in Snowflake, schema HOSPITALS.V3_CAST_AUDIT (created on first use; set V3_AUDIT_SCHEMA to use another):
   RUNS           one row per run: facility, schema pair, start/finish, status, RAW row count, dedup status
   TABLE_STATE    one row per table per run: ok / failed / running / pending, the reason, the object built
+  BUILDS         one row per table: the fingerprint of its last good build (what the flattener compares to skip a table that
+                 has not changed). Never deleted; delete a row to force that table to be rebuilt.
+  BUILD_HISTORY  one row per table per run: rebuilt or skipped, and why (kept 90 days like the rest)
   COLUMN_REPORT  one row per column: what was converted, defaulted, filled, failed
   ERRORS         records with errors: table, record id, why, original values. A table with errors makes the script fail.
   CHANGES        audit list: every value changed or left empty, and every record skipped (a record it points to is
@@ -482,6 +485,101 @@ def get_v3_structure(path: str | None = None) -> V3Structure:
     return v
 
 
+# ── WHAT A RUN PRINTS ─────────────────────────────────────────────────────────
+# Compact by default: one line per table, and detail only for columns that need a look. `--verbose` (or V3_VERBOSE=1) prints
+# everything as before. Nothing stored changes: the COLUMN_REPORT, ERRORS and CHANGES tables are the same either way.
+VERBOSE_ENV = "V3_VERBOSE"
+_verbose: bool | None = None
+_SAID: set = set()
+
+
+def verbose() -> bool:
+    """True when the full output is wanted (set_verbose, else the V3_VERBOSE environment variable)."""
+    if _verbose is not None:
+        return _verbose
+    return os.getenv(VERBOSE_ENV, "").strip().lower() in ("1", "true", "yes", "y")
+
+
+def set_verbose(on: bool | None) -> None:
+    """Turns the full output on or off (None = follow the environment variable)."""
+    global _verbose
+    _verbose = None if on is None else bool(on)
+
+
+def reset_said() -> None:
+    """Forgets which once-per-run lines were printed (call at the start of a run)."""
+    _SAID.clear()
+
+
+def say_once(key: str, message: str) -> None:
+    """Prints a line the first time only (the same mapping file or schema file is not repeated for every table)."""
+    if key not in _SAID:
+        _SAID.add(key)
+        print(message)
+
+
+def compact_lines(report: list[dict], *, groups: dict | None = None, n_values: int = 0, values_cut: bool = False,
+                  max_columns: int = 6) -> list[str]:
+    """The few lines worth reading for one table: V3-required columns that CLEAN lacks, columns where something failed, was
+    set empty, defaulted or filled, why records were skipped, and how many values changed. Nothing when all is plain."""
+    lines: list[str] = []
+    missing = [r["column"] for r in report if str(r["status"]).startswith("V3 REQUIRES")]
+    if missing:
+        lines.append(f"⚠ V3 requires {len(missing)} column(s) that CLEAN does not have: "
+                     f"{', '.join(missing[:6])}{' ...' if len(missing) > 6 else ''}")
+    rows = [r for r in report if not str(r["status"]).startswith("V3 REQUIRES") and r["column"] != "(required columns)"]
+
+    def num(v) -> int:
+        return v if isinstance(v, int) else 0
+    notable = [r for r in rows if r["status"] != "OK" or num(r["failed"]) or num(r["defaulted"]) or num(r["filled_from_other_columns"])]
+    notable.sort(key=lambda r: -num(r["failed"]))
+    for r in notable[:max_columns]:
+        parts, status = [], str(r["status"])
+        if status.startswith("SET EMPTY"):
+            parts.append(f"{num(r['failed'])} of {r['values_before']} set empty" + (f" ({r['note']})" if r.get("note") else ""))
+        elif num(r["failed"]):
+            parts.append(f"{num(r['failed'])} of {r['values_before']} could not be converted")
+        if num(r["defaulted"]):
+            parts.append(f"{num(r['defaulted'])} defaulted")
+        if num(r["filled_from_other_columns"]):
+            parts.append(f"{num(r['filled_from_other_columns'])} filled from other columns")
+        if num(r["rounded"]):
+            parts.append(f"{num(r['rounded'])} rounded")
+        if num(r["too_long"]):
+            parts.append(f"{num(r['too_long'])} too long")
+        if status not in ("OK",) and not status.startswith("SET EMPTY") and not (num(r["failed"]) and status.startswith("ERROR: value")):
+            parts.append(status)
+        examples = [e for e in str(r.get("failed_examples") or "").split(" | ") if e][:3]
+        lines.append(f"{r['column']}: " + ", ".join(parts) + (f"   e.g. {', '.join(examples)}" if examples else ""))
+    if len(notable) > max_columns:
+        lines.append(f"... and {len(notable) - max_columns} more column(s): see COLUMN_REPORT")
+    skipped = max([num(r.get("records_skipped")) for r in report] or [0])
+    if skipped:
+        total = report[0]["rows"] if report else "?"
+        why = "; ".join(f"{k} ({n})" for k, n in sorted((groups or {}).items(), key=lambda kv: -kv[1])[:3])
+        lines.append(f"{skipped} of {total} records skipped (not migrated)" + (f": {why}" if why else ""))
+    if n_values:
+        lines.append(f"{n_values}{'+' if values_cut else ''} value(s) changed in kept records (list: CHANGES)")
+    return lines
+
+
+def group_errors(errors: list[dict], max_groups: int = 4) -> list[str]:
+    """Record errors grouped by their wording (values and ids taken out): '48 x COLUMN: ... (e.g. record 12: <the full text>)'."""
+    groups: dict[str, list] = {}
+    for e in errors:
+        if str(e.get("record_id")) == "(LIST CUT OFF)":
+            continue
+        key = re.sub(r"\b\d+\b", "#", re.sub(r'"[^"]*"', '"..."', str(e.get("error"))))
+        groups.setdefault(key, []).append(e)
+    out = []
+    ranked = sorted(groups.values(), key=lambda g: -len(g))
+    for g in ranked[:max_groups]:
+        out.append(f"{len(g)} x {g[0]['error']}   (e.g. record {g[0]['record_id']})")
+    if len(ranked) > max_groups:
+        out.append(f"... and {len(ranked) - max_groups} more kind(s) of error: see ERRORS")
+    return out
+
+
 def load_mapping(facility: str, path: str | None = None) -> tuple[dict[str, str], set]:
     """Reads the mapping JSON: which V3 service each V3 table belongs to, and which (table, field) are not plain copies of a source column."""
     env_dir = os.getenv(V3_MAPPINGS_ENV, "").strip()
@@ -489,14 +587,14 @@ def load_mapping(facility: str, path: str | None = None) -> tuple[dict[str, str]
         raise FileNotFoundError(f"mapping folder not found: {env_dir} (set by ${V3_MAPPINGS_ENV})")
     path = Path(path) if path else mapping_path(facility)
     if not path.is_file():
-        print(f"Mapping file: none found at {path} - tables are matched to V3 by name only")
+        say_once(f"map-none:{path}", f"WARNING: no mapping file at {path} - these tables are NOT type-checked against V3 (matched by name only)")
         return {}, set()
     doc = json.loads(path.read_text(encoding="utf-8-sig"))
     mapped = {str(t["v3 table"]).lower(): t["v3 service"] for t in doc.get("tables", [])
               if t.get("v3 table") and t.get("v3 service")}
     derived = {(str(f["v3_table"]).lower(), str(f["field"]).lower()) for f in doc.get("fields", [])
                if f.get("kind") not in (None, "", "copied")}
-    print(f"Mapping file: {len(mapped)} V3 tables from {path}")
+    say_once(f"map:{path}", f"Mapping file: {len(mapped)} V3 tables from {path}")
     return mapped, derived
 
 
@@ -805,8 +903,11 @@ def plan_columns(table: str, columns: list[dict], structure: V3Structure, servic
         p.empty_if_unfit = p.converted and (table.lower(), name.lower()) in EMPTY_WHEN_UNFIT and tgt.nullable is not False
         p.fail_is_error = (p.converted and not p.empty_if_unfit
                            and not (p.default is not None and not p.zero_default))
-        if p.user_lookup:
-            p.fail_is_error = True        # a username nobody has is an error, never replaced by user 1
+        if p.user_lookup:                 # a username nobody has is never replaced by user 1:
+            if tgt.nullable is False:     #   V3 needs a user here: the record is an error, for review
+                p.fail_is_error, p.empty_if_unfit = True, False
+            else:                         #   V3 allows it empty: left empty and listed, the name stays in <COLUMN>_NAME
+                p.fail_is_error, p.empty_if_unfit = False, True
         p.skip_if_empty = (table.lower(), name.lower()) in SKIP_WHEN_EMPTY and tgt.source == "v3"
         plans.append(p)
     return plans
@@ -1052,6 +1153,8 @@ def change_sql(facility: str, table: str, plans: list[ColPlan], limit: int) -> s
             unreadable = ""
         placeholder = f"WHEN {q(p.name + '__C')} IS NULL THEN 'placeholder text (n/a, -, null) treated as empty' " if p.converted else ""
         emptied = ("moved to another column" if p.fallback and not p.converted
+                   else f"no user has that username: left empty (the name is kept in {p.name}{'_NAME' if p.name.isupper() else '_name'})"
+                   if p.user_lookup and p.empty_if_unfit
                    else "unreadable value: error, table fails" if p.fail_is_error
                    else "value could not be converted, left empty")
         label_sql = (f"IFF({orig} RLIKE '{_ZONE}', {lit('time zone converted to ' + TIME_ZONE.split('/')[1] + ' time')}, {lit(label)})"
@@ -1152,7 +1255,8 @@ def verify(cur, facility: str, table: str, plans: list[ColPlan], route: str = "u
                        "defaulted": defaulted, "filled_from_other_columns": filled, "rounded": rounded,
                        "too_long": too_long, "date_order": p.date_order + (" (assumed)" if p.date_assumed else ""),
                        "records_with_errors": held, "records_skipped": skipped, "failed_examples": examples,
-                       "status": status})
+                       "status": status,
+                       "note": "no user has that username" if (p.user_lookup and p.empty_if_unfit) else ""})
     if not report and (held or skipped):
         report.append({"table": table, "route": route, "column": "(required columns)", "from": "", "to": "",
                        "type_source": "v3", "rows": rows_n, "values_before": "", "converted": "", "failed": "",
@@ -1321,11 +1425,17 @@ def compare_and_cast(cur, facility: str, table: str, columns: list[dict], struct
                      *, print_sql: bool, route: str, service: str | None = None,
                      parents: dict | None = None, links: dict | None = None,
                      skipped_out: dict | None = None, plans_out: list | None = None,
-                     users: dict | None = None) -> tuple[list[dict], list[dict], list[dict]]:
-    """Checks one table: plans it, counts what converts and what fails, and lists the errors and, for the audit, every changed value and skipped record. Creates nothing in Snowflake."""
+                     users: dict | None = None, lines_out: list | None = None) -> tuple[list[dict], list[dict], list[dict]]:
+    """Checks one table: plans it, counts what converts and what fails, and lists the errors and, for the audit, every changed value and skipped record. Creates nothing in Snowflake.
+    The lines worth reading go to lines_out (printed here when it is not given); verbose() prints everything as it happens."""
+    loud = verbose() or print_sql
+    lines: list[str] = [] if lines_out is None else lines_out
     if structure and structure.key(table, service) is None:
-        print(f"\n>> {table}: not found in the V3 structure, or the name exists in several V3 services "
-              f"and the mapping file does not say which - using GUESSED types for this table")
+        if loud:
+            print(f"\n>> {table}: not found in the V3 structure, or the name exists in several V3 services "
+                  f"and the mapping file does not say which - using GUESSED types for this table")
+        else:
+            lines.append("⚠ not found in the V3 structure (or in several services): GUESSED types")
     plans = plan_columns(table, columns, structure, service, parents, None, links, users)
     if not print_sql:
         orders = detect_date_orders(cur, facility, table, plans)
@@ -1334,7 +1444,16 @@ def compare_and_cast(cur, facility: str, table: str, columns: list[dict], struct
             plans = plan_columns(table, columns, structure, service, parents, orders, links, users)
             for p in plans:
                 p.date_assumed = p.name.lower() in assumed
-            for name, order in orders.items():
+            if not loud:
+                for order, word in (("DMY", "day-first"), ("MDY", "month-first")):
+                    names = [n for n, o in orders.items() if o == order and n in assumed]
+                    if names:
+                        lines.append(f"dates read {word} by the {facility.upper()} convention (ASSUMED, no date proves it): "
+                                     f"{', '.join(names[:6])}{' ...' if len(names) > 6 else ''}")
+                mixed = [n for n, o in orders.items() if o == "MIXED"]
+                if mixed:
+                    lines.append(f"day/month order MIXED in: {', '.join(mixed[:6])}")
+            for name, order in (orders.items() if loud else ()):
                 if order in ("DMY", "MDY") and name in assumed:
                     print(f"   {name}: dates are read {'day-first' if order == 'DMY' else 'month-first'} by the {facility.upper()} convention "
                           f"(ASSUMED - no date in this column proves it)")
@@ -1344,13 +1463,17 @@ def compare_and_cast(cur, facility: str, table: str, columns: list[dict], struct
     if plans_out is not None:
         plans_out[:] = plans
     extra = [p.name for p in plans if p.target.source == "not in V3"]
-    if extra:
+    if extra and loud:
         print(f"\n>> {table}: {len(extra)} column(s) V3 does not have (not sent as such): "
               f"{', '.join(extra[:12])}{' ...' if len(extra) > 12 else ''}")
+    elif [n for n in extra if n.upper() != "SOURCE_SCHEMA"]:
+        shown = [n for n in extra if n.upper() != "SOURCE_SCHEMA"]
+        lines.append(f"{len(shown)} column(s) V3 does not have (not sent): {', '.join(shown[:6])}{' ...' if len(shown) > 6 else ''}")
     changed = [p for p in plans if p.converted or p.limited or p.enum_values or p.fallback or p.default is not None]
     reason = error_reason_sql(plans)
-    print(f"\n>> {facility.upper()}.{table}  [{route}]  {len(plans)} columns, {len(changed)} to convert"
-          f"{', required columns checked' if reason else ''}")
+    if loud:
+        print(f"\n>> {facility.upper()}.{table}  [{route}]  {len(plans)} columns, {len(changed)} to convert"
+              f"{', required columns checked' if reason else ''}")
     if print_sql:
         for sql in (typed_select_sql(facility, table, plans), error_sample_sql(facility, table, plans, ERROR_SAMPLE_LIMIT),
                     skipped_sample_sql(facility, table, plans, ERROR_SAMPLE_LIMIT),
@@ -1360,7 +1483,8 @@ def compare_and_cast(cur, facility: str, table: str, columns: list[dict], struct
         return [], [], []
     report = verify(cur, facility, table, plans, route)
     report += absent_rows(table, route, columns, structure, service)
-    print_report(report)
+    if loud:
+        print_report(report)
     errors, changes = [], []
     id_plan = next((p for p in plans if p.name.lower() == "id"), None)
     if skipped_out is not None and id_plan and any(r.get("records_skipped") for r in report):
@@ -1378,32 +1502,42 @@ def compare_and_cast(cur, facility: str, table: str, columns: list[dict], struct
         if total > len(errors):
             errors.append({"table": table, "record_id": "(LIST CUT OFF)", "original_values": "",
                            "error": f"only the first {len(errors)} of {total} records with errors are listed"})
+    groups: dict[str, int] = {}
     if any(r.get("records_skipped") for r in report):
         cur.execute(skipped_sample_sql(facility, table, plans, ERROR_SAMPLE_LIMIT))
         changes = [{"table": table, "record_id": rid, "column": "(whole record)", "original": row,
                     "new_value": "skipped, not migrated", "what_happened": why} for rid, why, row in cur.fetchall()]
-        groups: dict[str, int] = {}
         for c in changes:           # why records were skipped, grouped (ids and values taken out), biggest first
             key = re.sub(r"\b\d+\b", "#", re.sub(r'"[^"]*"', '"..."', c["what_happened"]))
             groups[key] = groups.get(key, 0) + 1
-        print("  skipped because:")
-        for key, n in sorted(groups.items(), key=lambda kv: -kv[1])[:6]:
-            print(f"    {n:>6}  {key}")
-        print(f"    (every skipped record, with its original values, is in the audit CHANGES list: what_happened / new_value = 'skipped, not migrated')")
+        if loud:
+            print("  skipped because:")
+            for key, n in sorted(groups.items(), key=lambda kv: -kv[1])[:6]:
+                print(f"    {n:>6}  {key}")
+            print(f"    (every skipped record, with its original values, is in the audit CHANGES list: what_happened / new_value = 'skipped, not migrated')")
         total = max(int(r.get("records_skipped") or 0) for r in report)
         if total > len(changes):
             changes.append({"table": table, "record_id": "(LIST CUT OFF)", "column": "(whole record)", "original": "",
                             "new_value": "", "what_happened": f"only the first {len(changes)} of {total} skipped records are listed"})
     sql = change_sql(facility, table, plans, CHANGE_LOG_LIMIT)
+    values: list[dict] = []
+    n_values, cut = 0, False
     if sql:
         cur.execute(sql)
         values = [{"table": table, "record_id": rid, "column": col, "original": old, "new_value": new, "what_happened": what}
                   for rid, col, old, new, what in cur.fetchall()]
-        print(f"  values changed in kept records: {len(values)}{' (list is cut off at the limit)' if len(values) >= CHANGE_LOG_LIMIT else ''}")
+        if loud:
+            print(f"  values changed in kept records: {len(values)}{' (list is cut off at the limit)' if len(values) >= CHANGE_LOG_LIMIT else ''}")
+        n_values, cut = len(values), len(values) >= CHANGE_LOG_LIMIT
         if len(values) >= CHANGE_LOG_LIMIT:
             values.append({"table": table, "record_id": "(LIST CUT OFF)", "column": "", "original": "", "new_value": "",
                            "what_happened": f"only the first {CHANGE_LOG_LIMIT} changed values of this table are listed; more exist"})
         changes += values
+    if not loud:
+        lines += compact_lines(report, groups=groups, n_values=n_values, values_cut=cut)
+        if lines_out is None:
+            for l in lines:
+                print("    " + l)
     return report, errors, changes
 
 
@@ -1437,7 +1571,7 @@ def parents_first(tables: list[str], links: dict) -> list[str]:
 #   RUNS, TABLE_STATE   the run and the state of each table (this is what --retry-failed reads)
 #   COLUMN_REPORT, ERRORS, CHANGES, LOG   what the check found / did / printed
 # A write that fails stops the run with a clear message, before the table is built (the LOG alone is best effort).
-# The rows that hold real values (all but RUNS and TABLE_STATE) are deleted after V3_AUDIT_KEEP_DAYS; RUNS and TABLE_STATE
+# The rows that hold real values (all but RUNS, TABLE_STATE and BUILDS) are deleted after V3_AUDIT_KEEP_DAYS; RUNS and TABLE_STATE
 # rows older than that go too, except the latest run of each schema (a retry needs it).
 AUDIT_SCHEMA_ENV = "V3_AUDIT_SCHEMA"
 DEFAULT_AUDIT_SCHEMA = "HOSPITALS.V3_CAST_AUDIT"
@@ -1455,6 +1589,8 @@ _AUDIT_TABLES = {
     "CHANGES": "RUN_ID STRING, FACILITY STRING, TABLE_NAME STRING, RECORD_ID STRING, COLUMN_NAME STRING, ORIGINAL STRING, NEW_VALUE STRING, "
                "WHAT_HAPPENED STRING, LOGGED_AT TIMESTAMP_TZ",
     "LOG": "RUN_ID STRING, FACILITY STRING, TABLE_NAME STRING, LOGGED_AT TIMESTAMP_TZ, LINE STRING",
+    "BUILDS": "FACILITY STRING, TABLE_NAME STRING, FINGERPRINT STRING, DETAILS STRING, RUN_ID STRING, BUILT_AT TIMESTAMP_TZ",
+    "BUILD_HISTORY": "RUN_ID STRING, FACILITY STRING, TABLE_NAME STRING, DECISION STRING, REASON STRING, LOGGED_AT TIMESTAMP_TZ",
 }
 _AUDIT_READY: set[str] = set()
 _INSERT_CHUNK = 2000
@@ -1613,6 +1749,37 @@ class Audit:
                 "started_at": started.isoformat(timespec="seconds") if hasattr(started, "isoformat") else str(started),
                 "raw_rows": raw_rows, "dedup": dedup or "pending", "tables": tables}
 
+    # what was built, so an unchanged table can be skipped next time
+    def load_builds(self) -> dict:
+        """The last good build of each table of this facility: {table (lower case): {"fingerprint", "details", "run_id", "built_at"}}."""
+        self.ensure()
+        self.cur.execute(f"SELECT TABLE_NAME, FINGERPRINT, DETAILS, RUN_ID, BUILT_AT FROM {self.schema}.BUILDS WHERE FACILITY = %s", (self.facility,))
+        out = {}
+        for name, fingerprint, details, run_id, built_at in self.cur.fetchall():
+            try:
+                parsed = json.loads(details) if details else {}
+            except ValueError:
+                parsed = {}
+            out[str(name).lower()] = {"fingerprint": fingerprint, "details": parsed, "run_id": run_id, "built_at": built_at}
+        return out
+
+    def save_build(self, table: str, fingerprint: str, details: dict) -> None:
+        """Records the fingerprint of a table that was just built (replaces its earlier row)."""
+        t = f"{self.schema}.BUILDS"
+        self._write([
+            (f"DELETE FROM {t} WHERE FACILITY = %s AND LOWER(TABLE_NAME) = %s", (self.facility, table.lower())),
+            (f"INSERT INTO {t} (FACILITY, TABLE_NAME, FINGERPRINT, DETAILS, RUN_ID, BUILT_AT) VALUES (%s, %s, %s, %s, %s, %s)",
+             (self.facility, table, fingerprint, json.dumps(details, sort_keys=True), self.run_id, _now()))])
+
+    def save_history(self, rows: list[dict]) -> None:
+        """Stores, for each table of the run, whether it was rebuilt or skipped and why."""
+        if not rows:
+            return
+        now = _now()
+        self._write([(f"INSERT INTO {self.schema}.BUILD_HISTORY (RUN_ID, FACILITY, TABLE_NAME, DECISION, REASON, LOGGED_AT) "
+                      f"VALUES (%s, %s, %s, %s, %s, %s)",
+                      [(self.run_id, self.facility, r["table"], r["decision"], r["reason"], now) for r in rows])])
+
     # what the check found
     def save_reports(self, rows: list[dict], errors: list[dict], changes: list[dict]) -> dict:
         """Stores the column report, the errors and the changes of the tables in them. A table checked again in the same run
@@ -1645,8 +1812,9 @@ class Audit:
         if statements:
             self._write(statements)
         out = {"report": len(rows), "errors": len(errors), "changes": len(changes)}
-        print(f"Stored in {self.schema} (run {rid}): {out['report']} report rows, {out['errors']} errors, {out['changes']} changes/skips")
-        if any(c.get("new_value") == "skipped, not migrated" for c in changes):
+        if verbose():
+            print(f"Stored in {self.schema} (run {rid}): {out['report']} report rows, {out['errors']} errors, {out['changes']} changes/skips")
+        if verbose() and any(c.get("new_value") == "skipped, not migrated" for c in changes):
             print(f"  Why records were skipped: SELECT * FROM {sch}.CHANGES WHERE RUN_ID = '{rid}' AND FACILITY = '{fac}' "
                   f"AND NEW_VALUE = 'skipped, not migrated'")
         return out
@@ -1690,7 +1858,7 @@ class Audit:
         old_runs = (f"SELECT RUN_ID, FACILITY FROM {sch}.RUNS WHERE STARTED_AT < %s AND (RUN_ID, FACILITY) NOT IN "
                     f"(SELECT MAX_BY(RUN_ID, STARTED_AT), FACILITY FROM {sch}.RUNS GROUP BY COALESCE(RAW_SCHEMA, FACILITY), FACILITY)")
         try:
-            stmts = [(f"DELETE FROM {sch}.{name} WHERE LOGGED_AT < %s", (cutoff,)) for name in ("COLUMN_REPORT", "ERRORS", "CHANGES", "LOG")]
+            stmts = [(f"DELETE FROM {sch}.{name} WHERE LOGGED_AT < %s", (cutoff,)) for name in ("COLUMN_REPORT", "ERRORS", "CHANGES", "LOG", "BUILD_HISTORY")]
             stmts.append((f"DELETE FROM {sch}.TABLE_STATE WHERE (RUN_ID, FACILITY) IN ({old_runs})", (cutoff,)))
             stmts.append((f"DELETE FROM {sch}.RUNS WHERE STARTED_AT < %s AND (RUN_ID, FACILITY) NOT IN "
                           f"(SELECT MAX_BY(RUN_ID, STARTED_AT), FACILITY FROM {sch}.RUNS GROUP BY COALESCE(RAW_SCHEMA, FACILITY), FACILITY)", (cutoff,)))
@@ -1717,9 +1885,11 @@ def check_table_for_flatten(cur, facility: str, table: str, source: str, columns
         links[col] = {**l, "parent": raw_parents[l["table"]]["table"], "id": raw_parents[l["table"]]["id"]}
     SOURCE_OVERRIDE[(facility.upper(), table.lower())] = source
     plans: list[ColPlan] = []
+    lines: list[str] = []
     try:
         rows, errors, changes = compare_and_cast(cur, facility, table, columns, structure, print_sql=False, route="mapping",
-                                                 service=service, parents=parents, links=links, plans_out=plans, users=users)
+                                                 service=service, parents=parents, links=links, plans_out=plans, users=users,
+                                                 lines_out=lines)
         failed = max([int(r.get("records_with_errors") or 0) for r in rows] or [0])
         skipped = max([int(r.get("records_skipped") or 0) for r in rows] or [0])
         select_sql = None if failed else typed_select_sql(facility, table, plans)
@@ -1729,8 +1899,9 @@ def check_table_for_flatten(cur, facility: str, table: str, source: str, columns
         audit = Audit(cur, facility, source="standalone")
         audit.save_run("single table", finished=True)
     audit.save_reports(rows, errors, changes)
+    n_rows = next((r["rows"] for r in rows if isinstance(r.get("rows"), int)), None)
     return {"ok": not failed, "select_sql": select_sql, "failed_records": failed, "skipped_records": skipped,
-            "errors": errors, "changes": changes}
+            "errors": errors, "changes": changes, "lines": lines, "rows": n_rows}
 
 
 def run(facility: str, tables: list[str] | None = None, conf: dict | None = None,
@@ -1738,6 +1909,7 @@ def run(facility: str, tables: list[str] | None = None, conf: dict | None = None
         mapping_path: str | None = None, print_sql: bool = False) -> list[dict]:
     """Entry point for the command line and the flatten step: checks every table given, stores what it found in the audit
     schema (nothing is stored with print_sql), then raises TypingErrors if any has errors."""
+    reset_said()
     structure = get_v3_structure(structure_path)
     print(f"V3 structure: {len(structure.cols)} tables loaded from {structure.source}" if structure else
           "V3 structure: NOT FOUND - target types are GUESSES from column names (verified = false)")
@@ -1773,10 +1945,19 @@ def run(facility: str, tables: list[str] | None = None, conf: dict | None = None
                     audit.current_table = table
                 service = mapped.get(table.lower())               # the mapping file names the V3 table and service
                 links = {c: {**l, "excluded": skipped.get(l["table"], [])} for c, l in links_by[table].items()}
+                table_lines: list[str] = []
                 rows, errors, changes = compare_and_cast(
                     cur, facility, table, cols[table], structure, print_sql=print_sql,
                     route="mapping" if service else "not in mapping", service=service, parents=parents,
-                    links=links, skipped_out=skipped, users=users)
+                    links=links, skipped_out=skipped, users=users, lines_out=table_lines)
+                if not verbose() and not print_sql:
+                    held = max([int(r.get("records_with_errors") or 0) for r in rows] or [0])
+                    n_rows = next((r["rows"] for r in rows if isinstance(r.get("rows"), int)), "?")
+                    print(f"  {'✗' if held else '✓'} {table}: {n_rows} rows" + (f", {held} with errors" if held else ""))
+                    for l in table_lines:
+                        print("      " + l)
+                    for l in group_errors(errors):
+                        print("      ✗ " + l)
                 all_rows += rows
                 all_errors += errors
                 all_changes += changes
@@ -1813,7 +1994,10 @@ def main() -> None:
     ap.add_argument("--structure", help="V3's structure (default: dags/jsons/v3-schema.json)")
     ap.add_argument("--mapping", help="the mapping JSON (default: dags/jsons/<facility>_data_mappings.json)")
     ap.add_argument("--print-sql", action="store_true", help="print the SQL and stop (reads column names only)")
+    ap.add_argument("--verbose", "-v", action="store_true", help="print everything (the full column table for every table), not only what needs a look")
     a = ap.parse_args()
+    if a.verbose:
+        set_verbose(True)
     try:
         run(a.facility, tables=a.table, structure_path=a.structure, skip=a.skip,
             mapping_path=a.mapping, print_sql=a.print_sql)
