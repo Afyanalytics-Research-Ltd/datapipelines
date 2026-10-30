@@ -48,11 +48,13 @@ DAG_ID = "v3_org_softdelete"
         "ids": Param("mapping/softdelete/org168_20261019.json", type="string", title="Id list",
                      description="Repo path: JSON {\"<service>.<table>\": [ids]}, or a directory / zip of "
                                  "*_softdelete.sql. Ignored when rollback is set."),
-        "tables": Param([], type="array", items={"type": "string"}, title="Only these tables",
+        # optional fields are nullable: the trigger form sends an empty field as null, and a plain
+        # "string" / "array" then fails validation and greys out the Trigger button
+        "tables": Param([], type=["null", "array"], items={"type": "string"}, title="Only these tables (optional)",
                         description="e.g. finance.invoices. Empty: every table in the list."),
-        "deleted_at": Param("", type="string", title="deleted_at",
+        "deleted_at": Param(None, type=["null", "string"], title="deleted_at (optional)",
                             description="Wall time to stamp (Africa/Nairobi). Empty: now."),
-        "rollback": Param("", type="string", title="Rollback from backup CSV",
+        "rollback": Param(None, type=["null", "string"], title="Rollback from backup CSV (optional)",
                           description="output/v3_org_softdelete/<target>-<time>-backup.csv. Empty: soft delete."),
         "workers": Param(12, type="integer", minimum=1, maximum=48, title="Parallel V3 writes"),
         "dry_run": Param(True, type="boolean", title="Dry run",
