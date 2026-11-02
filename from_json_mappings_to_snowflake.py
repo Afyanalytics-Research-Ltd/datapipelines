@@ -261,13 +261,40 @@ class Mappings:
     models: list[V3Model]
 
     @classmethod
-    def load(cls, path: Path) -> "Mappings":
-        doc = json.loads(Path(path).read_text())
+    def load(cls, path) -> "Mappings":
+        # Accept a file path (str or Path) or the already-parsed mapping dict (sent inline by LAP).
+        if isinstance(path, dict):
+            doc = path
+            path_name = "<inline mapping>"
+        else:
+            doc = json.loads(Path(path).read_text())
+            path_name = Path(path).name
+
+        # Validate structure up front so failures name the problem, not a generic KeyError.
+        missing = [k for k in ("connection", "tables", "fields") if k not in doc]
+        if missing:
+            raise ValueError(f"{path_name}: mapping is missing required keys: {missing}")
+        conn = doc["connection"]
+        if not isinstance(conn.get("id"), (int, float)):
+            raise ValueError(f"{path_name}: mapping connection.id is missing or not a number (got {conn.get('id')!r})")
+        if not doc["tables"]:
+            raise ValueError(f"{path_name}: mapping has no table entries")
+        for i, t in enumerate(doc["tables"]):
+            for k in ("source table", "v3 model"):
+                if k not in t:
+                    raise ValueError(f"{path_name}: tables[{i}] is missing required key '{k}'")
+        for i, f in enumerate(doc["fields"]):
+            for k in ("table", "field"):
+                if k not in f:
+                    raise ValueError(f"{path_name}: fields[{i}] is missing required key '{k}'")
+            if not f.get("model") and not f.get("v3_table"):
+                raise ValueError(f"{path_name}: fields[{i}] (table={f.get('table')!r}, field={f.get('field')!r}) has neither 'model' nor 'v3_table'")
+
         # A field belongs to a table entry by (source table, V3 table); fields
         # exported without a v3_table by (source table, model), where model is
         # the full namespace or, in older exports, its last part.
         fields = defaultdict(list)
-        for f in doc.get("fields", []):
+        for f in doc["fields"]:
             fields[(f["table"], f.get("v3_table") or f["model"])].append(f)
 
         def fields_for(t: dict) -> list[dict]:
@@ -279,7 +306,7 @@ class Mappings:
                           fields_for(t), t.get("where")) for t in doc["tables"]]
         dupes = sorted(n for n, c in Counter(m.table for m in models).items() if c > 1)
         if dupes:
-            raise SystemExit(f"{Path(path).name}: several entries map to the same V3 table: {dupes}")
+            raise SystemExit(f"{path_name}: several entries map to the same V3 table: {dupes}")
         for mdl in models:
             for target, cols in mdl.shared_targets.items():
                 log.warning("%s → %s: %s all map to %r — the first with a value is used",
