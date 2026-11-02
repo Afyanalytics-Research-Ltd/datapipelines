@@ -123,13 +123,19 @@ def run_validate(cur) -> int:
 
 
 def run_write(cur) -> dict:
-    """DELETE stale rows then INSERT patient + visit rows. Returns row counts."""
-    cur.execute(DELETE_SQL)
-    deleted = cur.rowcount
-    cur.execute(PATIENT_INSERT_SQL)
-    patients = cur.rowcount
-    cur.execute(VISIT_INSERT_SQL)
-    visits = cur.rowcount
+    """DELETE stale rows then INSERT patient + visit rows atomically. Returns row counts."""
+    cur.execute("BEGIN")
+    try:
+        cur.execute(DELETE_SQL)
+        deleted = cur.rowcount
+        cur.execute(PATIENT_INSERT_SQL)
+        patients = cur.rowcount
+        cur.execute(VISIT_INSERT_SQL)
+        visits = cur.rowcount
+        cur.execute("COMMIT")
+    except Exception:
+        cur.execute("ROLLBACK")
+        raise
     log.info(
         "Deleted %d stale row(s); inserted %d patient + %d visit row(s) into %s",
         deleted, patients, visits, DST,

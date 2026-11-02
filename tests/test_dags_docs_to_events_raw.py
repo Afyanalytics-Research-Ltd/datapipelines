@@ -24,13 +24,17 @@ class FakeCursor:
     """Records every SQL string passed to execute(); supports configurable
     fetchone() results keyed by a substring of the SQL."""
 
-    def __init__(self, fetchone_map: dict | None = None, rowcount: int = 5):
+    def __init__(self, fetchone_map: dict | None = None, rowcount: int = 5,
+                 fail_on: str | None = None):
         self._fetchone_map = fetchone_map or {}
         self.rowcount = rowcount
+        self.fail_on = fail_on
         self.executed: list[str] = []
 
     def execute(self, sql, params=None):
         self.executed.append(sql.strip())
+        if self.fail_on and self.fail_on in sql:
+            raise RuntimeError(f"Simulated failure on: {self.fail_on}")
         return self
 
     def fetchone(self):
@@ -97,16 +101,26 @@ def test_run_write_returns_counts():
 def test_run_write_delete_before_inserts():
     cur = FakeCursor()
     dag.run_write(cur)
-    assert len(cur.executed) == 3
-    assert "DELETE" in cur.executed[0]
-    assert "source_table = 'patients'" in cur.executed[1] or "'patients'" in cur.executed[1]
-    assert "source_table = 'visits'" in cur.executed[2] or "'visits'" in cur.executed[2]
+    # BEGIN, DELETE, patient INSERT, visit INSERT, COMMIT
+    assert cur.executed[0] == "BEGIN"
+    assert "DELETE" in cur.executed[1]
+    assert "'patients'" in cur.executed[2]
+    assert "'visits'" in cur.executed[3]
+    assert cur.executed[4] == "COMMIT"
+
+
+def test_run_write_rolls_back_on_failure():
+    cur = FakeCursor(fail_on="'visits'")
+    with pytest.raises(RuntimeError):
+        dag.run_write(cur)
+    assert "ROLLBACK" in cur.executed
+    assert "COMMIT" not in cur.executed
 
 
 def test_run_write_delete_filters_by_file_id():
     cur = FakeCursor()
     dag.run_write(cur)
-    delete_sql = cur.executed[0]
+    delete_sql = cur.executed[1]   # executed[0] = BEGIN
     assert "payload:file_id::STRING" in delete_sql
     assert "module_source = 'reception-service'" in delete_sql
     assert "source_table IN ('patients', 'visits')" in delete_sql
@@ -115,7 +129,7 @@ def test_run_write_delete_filters_by_file_id():
 def test_run_write_patient_payload_fields():
     cur = FakeCursor()
     dag.run_write(cur)
-    patient_sql = cur.executed[1]
+    patient_sql = cur.executed[2]  # BEGIN, DELETE, patient INSERT
     for field in ("'id'", "'file_id'", "'last_name'", "'patient_no'", "'date_of_birth'",
                   "'age'", "'sex'", "'phone'", "'address'"):
         assert field in patient_sql, f"Missing field {field} in patient INSERT"
@@ -127,27 +141,27 @@ def test_run_write_patient_payload_fields():
 def test_run_write_visit_payload_fields():
     cur = FakeCursor()
     dag.run_write(cur)
-    visit_sql = cur.executed[2]
+    visit_sql = cur.executed[3]    # BEGIN, DELETE, patient INSERT, visit INSERT
     for field in ("'id'", "'file_id'", "'patient_id'", "'date'", "'notes'"):
         assert field in visit_sql, f"Missing field {field} in visit INSERT"
-    assert "RECORD_KEY || '_v'" in visit_sql   # visit id is distinct from patient id
+    assert "RECORD_KEY || '_v'" in visit_sql   # visit id distinct from patient id
     assert "RECORD_KEY" in visit_sql            # patient_id links back to patient row
 
 
 def test_visit_id_distinct_from_patient_id():
     cur = FakeCursor()
     dag.run_write(cur)
-    patient_sql = cur.executed[1]
-    visit_sql = cur.executed[2]
-    # Patient uses bare RECORD_KEY; visit appends '_v'
-    assert "'id',            RECORD_KEY," in patient_sql or "'id',\n" in patient_sql or "RECORD_KEY," in patient_sql
+    patient_sql = cur.executed[2]   # after BEGIN, DELETE
+    visit_sql = cur.executed[3]
+    # Patient id = bare RECORD_KEY; visit id = RECORD_KEY || '_v'
+    assert "RECORD_KEY || '_v'" not in patient_sql   # patient never gets _v suffix
     assert "RECORD_KEY || '_v'" in visit_sql
 
 
 def test_run_write_module_source_is_reception_service():
     cur = FakeCursor()
     dag.run_write(cur)
-    for sql in cur.executed[1:]:   # both INSERTs
+    for sql in cur.executed[2:4]:  # patient INSERT + visit INSERT
         assert "'reception-service'" in sql
 
 
