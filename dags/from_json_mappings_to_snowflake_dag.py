@@ -60,8 +60,10 @@ def _mappings_path(value: str) -> Path:
     tags=["snowflake", "extraction", "ingest"],
     default_args={"owner": "data-eng", "retries": 1, "retry_delay": timedelta(minutes=2)},
     params={
-        "mappings": Param("silverwood_data_mappings.json", type="string", title="Mappings JSON",
-                          description="File in the repo root, or an absolute path."),
+        "mappings": Param("silverwood_data_mappings.json", type=["string", "object"], title="Mappings JSON",
+                          description="File name in the repo root, an absolute path, or a pre-parsed mapping dict."),
+        "name": Param("", type="string", title="Schema name",
+                      description="Explicit schema name (skips extraction-API lookup). Leave blank for file-path runs."),
         "tables": Param([], type="array", items={"type": "string"}, title="Source tables",
                         description="Only these source tables (one per line). Empty = all in the file."),
         "dry_run": Param(False, type="boolean", title="Dry run", description="Extract and map; write nothing."),
@@ -75,15 +77,22 @@ def from_json_mappings_to_snowflake():
         import from_json_mappings_to_snowflake as fj
 
         p = get_current_context()["params"]
-        path = _mappings_path(p["mappings"])
-        spec = fj.Mappings.load(path)
+        mappings_val = p["mappings"]
+        # Validate file existence when a path string is given; dicts are validated inside Mappings.load().
+        if isinstance(mappings_val, str):
+            mappings_val = _mappings_path(mappings_val)
+        spec = fj.Mappings.load(mappings_val)
         wanted = clean_list(p["tables"])
         unknown = sorted(set(wanted) - set(spec.source_tables))
         if unknown:
-            raise AirflowFailException(f"Not in {path.name}: {unknown}")
+            raise AirflowFailException(f"Not in {spec.exported_name}: {unknown}")
         tables = [t for t in spec.source_tables if not wanted or t in wanted]
 
-        name = fj.resolve_name(spec, fj.ExtractionClient(spec.connection_id))
+        # Use explicit name when provided (API connections pass airflow_key here); else ask the extraction API.
+        name = (p.get("name") or "").strip() or fj.resolve_name(spec, fj.ExtractionClient(spec.connection_id))
+        if not fj.slug(name):
+            raise AirflowFailException(
+                f"Schema name {name!r} produces an empty slug — set a valid 'name' param (letters, digits, underscores)")
         wh = fj.Warehouse(name)
         if not p["dry_run"]:
             with fj.SnowflakeClient() as sf:
@@ -91,7 +100,8 @@ def from_json_mappings_to_snowflake():
         run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         log.info("connection %s (%s) → %s / %s · %d source tables · run %s%s", spec.connection_id, name,
                  wh.raw, wh.clean, len(tables), run_id, " (dry run)" if p["dry_run"] else "")
-        return [{"mappings": str(path), "name": name, "run_id": run_id, "source_table": t,
+        # items carry no mappings key — extract_load reads params directly to avoid XCom bloat
+        return [{"name": name, "run_id": run_id, "source_table": t,
                  "dry_run": bool(p["dry_run"])} for t in tables]
 
     @task(max_active_tis_per_dagrun=int_env("EXTRACTION_PARALLEL_TABLES", 6))
@@ -99,7 +109,12 @@ def from_json_mappings_to_snowflake():
         use_pipelines_dir()
         import from_json_mappings_to_snowflake as fj
 
-        spec = fj.Mappings.load(Path(item["mappings"]))
+        # Read mappings from DAG params (string path or inline dict); Mappings.load() handles both.
+        # String paths are run through _mappings_path() to get a validated absolute Path — same as plan().
+        mappings_val = get_current_context()["params"]["mappings"]
+        if isinstance(mappings_val, str):
+            mappings_val = _mappings_path(mappings_val)
+        spec = fj.Mappings.load(mappings_val)
         client = fj.ExtractionClient(spec.connection_id, page_workers=int_env("EXTRACTION_PAGE_WORKERS", 4))
         result = fj.process_table(spec, fj.Warehouse(item["name"]), client, item["source_table"],
                                   run_id=item["run_id"], dry_run=item["dry_run"])
