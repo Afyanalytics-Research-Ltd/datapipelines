@@ -18,6 +18,8 @@ Trigger form options:
             {"mappings": {"connection": {"id": 35}, "tables": […], "fields": […]}}).
             Inline JSON is checked in `plan` and saved once under
             output/inline_mappings/<content hash>.json for the per-table tasks.
+  name      explicit schema name (skips the extraction-API lookup). Blank =
+            the connection's name in the extraction tool.
   tables    only these source tables (one per line). Empty = all in the file.
   dry_run   extract and map, write nothing
 
@@ -105,6 +107,9 @@ def _save_inline(doc: dict) -> Path:
         "mappings": Param("silverwood_data_mappings.json", type=["string", "object"], title="Mappings JSON",
                           description='File in the repo root, an absolute path, or the mappings JSON itself '
                                       '({"connection": {"id": …}, "tables": […], "fields": […]}).'),
+        "name": Param("", type=["null", "string"], title="Schema name",
+                      description="Explicit schema name (skips the extraction-API lookup). "
+                                  "Blank = the connection's name in the extraction tool."),
         "tables": Param([], type="array", items={"type": "string"}, title="Source tables",
                         description="Only these source tables (one per line). Empty = all in the file."),
         "dry_run": Param(False, type="boolean", title="Dry run", description="Extract and map; write nothing."),
@@ -126,10 +131,14 @@ def from_json_mappings_to_snowflake():
         wanted = clean_list(p["tables"])
         unknown = sorted(set(wanted) - set(spec.source_tables))
         if unknown:
-            raise AirflowFailException(f"Not in {path.name}: {unknown}")
+            raise AirflowFailException(f"Not in {spec.label}: {unknown}")
         tables = [t for t in spec.source_tables if not wanted or t in wanted]
 
-        name = fj.resolve_name(spec, fj.ExtractionClient(spec.connection_id))
+        # An explicit name (API callers such as LAP pass their airflow_key) skips the lookup.
+        name = (p.get("name") or "").strip() or fj.resolve_name(spec, fj.ExtractionClient(spec.connection_id))
+        if not fj.slug(name):
+            raise AirflowFailException(
+                f"Schema name {name!r} produces an empty slug — set a valid 'name' param (letters, digits, underscores)")
         wh = fj.Warehouse(name)
         if not p["dry_run"]:
             with fj.SnowflakeClient() as sf:
