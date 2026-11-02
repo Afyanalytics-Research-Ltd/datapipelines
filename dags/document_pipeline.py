@@ -117,6 +117,58 @@ NOTE ON AIRFLOW VARIABLES
   ~30s by default) and makes the file unimportable outside Airflow, which
   would break the --inspect CLI above.
 
+PARAMS (Trigger DAG w/ config, or `airflow dags trigger -c '<json>'`)
+  Every param is optional; a blank one falls back to the environment
+  variable / Airflow Variable the DAG used before, so a plain trigger behaves
+  exactly as it always did.
+
+  Schemas -- each one inline OR from a file; inline wins when both are set:
+    schema                 extraction schema as a JSON object or JSON text
+                           (a plain path typed here is read as a file too)
+    schema_path            JSON file for the above (default $SCHEMA_PATH,
+                           ./dags/jsons/schema.json)
+    boundary_schema        the per-page record-boundary schema, same rules
+    boundary_schema_path   JSON file for the above; both blank = the built-in
+                           BOUNDARY_SCHEMA. Keep its field names
+                           (is_first_page_of_record, patient_name, patient_id,
+                           page_number_in_record, total_pages_in_record) --
+                           the splitter reads those; extra fields are fine.
+    Relative paths resolve against the working dir, the repo root and dags/.
+    Changing a schema re-runs what it affects: a new boundary schema drops the
+    cached page_meta, a new extraction schema re-extracts records (and files
+    already marked done) instead of skipping them.
+
+  Which files:  source_folder_id / dest_folder_id (blank = the
+    GDRIVE_*_FOLDER_ID Variables), file_ids (just these Drive files),
+    name_contains, max_files (0 = all), move_processed (false = leave files in
+    the source folder -- handy for test runs).
+  Splitting:    record_start_markers, record_start_min_matches,
+    max_pages_per_record, boundary_score_threshold,
+    boundary_only_when_ambiguous.
+  Throughput:   page_parse_workers, boundary_workers, record_workers,
+    max_retries. (The file-level cap, FILE_CONCURRENCY / the pool, is fixed
+    when the DAG file is parsed and is not a param.)
+  Output:       output_dir, json_output_dir, state_dir, save_json,
+    parse_model, extract_model.
+  Snowflake:    push_to_snowflake (default on; env PUSH_TO_SNOWFLAKE=0 turns
+    the default off), snowflake_database (blank = $SNOWFLAKE_DATABASE),
+    snowflake_schema (blank = the extraction schema's title, e.g.
+    SIMPLE_NEONATAL_NOTE_EXTRACTION), snowflake_table (blank =
+    EXTRACTED_RECORDS).
+
+SNOWFLAKE LOAD (task load_snowflake, after every file task)
+  The schema and table are created when missing and used as they are when
+  present. A new table gets record metadata columns (RECORD_KEY, FILE_ID,
+  FILENAME, PAGE_RANGE, ... EXTRACTION variant, LOADED_AT) plus one column per
+  top-level extraction-schema property (string -> VARCHAR, integer -> NUMBER,
+  number -> FLOAT, boolean -> BOOLEAN, object/array -> VARIANT). An existing
+  table only gains the columns it lacks; values are cast to whatever type its
+  columns already have, and unparseable values land as NULL (the raw value is
+  always in EXTRACTION). Each load replaces every row of the run's files
+  (DELETE by FILE_ID + INSERT, one transaction), so reruns never duplicate.
+  It reads the records from the state files, so files finished in earlier
+  runs are (re)loaded too.
+
 Install dependencies:
     pip install "apache-airflow>=2.3" requests pypdf google-api-python-client \
                 google-auth pendulum
@@ -126,11 +178,16 @@ One-time setup:
 
 Trigger a run:
     airflow dags trigger gdrive_landingai_extract
+    airflow dags trigger gdrive_landingai_extract -c '{
+        "schema_path": "dags/jsons/schema.json",
+        "boundary_schema": {"type": "object", "properties": {...}},
+        "name_contains": "siaya", "max_files": 2, "move_processed": false}'
 """
 
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
 import logging
 import os
@@ -141,6 +198,7 @@ import tempfile
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass, field
 from datetime import timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -150,8 +208,13 @@ from pypdf import PdfReader, PdfWriter
 
 try:  # keep the --inspect CLI usable without Airflow installed
     import pendulum
-    from airflow.decorators import dag, task
-    from airflow.models import Variable
+    try:
+        from airflow.sdk import Param, Variable, dag, get_current_context, task
+    except ImportError:  # Airflow 2.x
+        from airflow.decorators import dag, task
+        from airflow.models import Variable
+        from airflow.models.param import Param
+        from airflow.operators.python import get_current_context
     AIRFLOW_AVAILABLE = True
 except ImportError:  # pragma: no cover
     AIRFLOW_AVAILABLE = False
@@ -166,6 +229,8 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s [%(threadName)s] %(message)s",
 )
 log = logging.getLogger("landingai_extract")
+
+DAGS_DIR = Path(__file__).resolve().parent
 
 # ==========================================================================
 # CONFIG
@@ -217,6 +282,11 @@ MAX_PAGES_PER_RECORD = int(os.getenv("MAX_PAGES_PER_RECORD", "8"))
 MAX_PLAUSIBLE_RUN = int(os.getenv("MAX_PLAUSIBLE_RUN", "30"))
 BOUNDARY_ONLY_WHEN_AMBIGUOUS = os.getenv("BOUNDARY_ONLY_WHEN_AMBIGUOUS", "1") == "1"
 BOUNDARY_SCORE_THRESHOLD = int(os.getenv("BOUNDARY_SCORE_THRESHOLD", "2"))
+
+# ---- Snowflake load ------------------------------------------------------
+PUSH_TO_SNOWFLAKE = os.getenv("PUSH_TO_SNOWFLAKE", "1") == "1"
+SNOWFLAKE_DEFAULT_SCHEMA = "LANDINGAI_EXTRACT"
+SNOWFLAKE_DEFAULT_TABLE = "EXTRACTED_RECORDS"
 
 FAILED_PAGE_PREFIX = "<!-- page"
 
@@ -394,12 +464,12 @@ def call_with_retry(fn, *args, max_retries: int = MAX_RETRIES, **kwargs):
 # ==========================================================================
 # CHECKPOINT STATE (per Drive file, keyed by file_id)
 # ==========================================================================
-def _state_path(file_id: str) -> Path:
-    return Path(STATE_DIR) / f"{file_id}.json"
+def _state_path(file_id: str, state_dir: str = STATE_DIR) -> Path:
+    return Path(state_dir) / f"{file_id}.json"
 
 
-def load_state(file_id: str, filename: str) -> Dict[str, Any]:
-    path = _state_path(file_id)
+def load_state(file_id: str, filename: str, state_dir: str = STATE_DIR) -> Dict[str, Any]:
+    path = _state_path(file_id, state_dir)
     if path.exists():
         with open(path, "r") as f:
             state = json.load(f)
@@ -420,9 +490,9 @@ def load_state(file_id: str, filename: str) -> Dict[str, Any]:
     }
 
 
-def save_state(state: Dict[str, Any]) -> None:
-    os.makedirs(STATE_DIR, exist_ok=True)
-    path = _state_path(state["file_id"])
+def save_state(state: Dict[str, Any], state_dir: str = STATE_DIR) -> None:
+    os.makedirs(state_dir, exist_ok=True)
+    path = _state_path(state["file_id"], state_dir)
     tmp_path = path.with_name(path.name + ".tmp")
     with open(tmp_path, "w") as f:
         json.dump(state, f)
@@ -511,14 +581,18 @@ def split_pdf_into_pages(pdf_path: Path, out_dir: Path) -> List[Path]:
     return page_paths
 
 
-def parse_single_page(page_path: Path, page_num: int) -> Dict[str, Any]:
+def parse_single_page(
+    page_path: Path, page_num: int, cfg: Optional[PipelineConfig] = None
+) -> Dict[str, Any]:
+    cfg = cfg or DEFAULT_CONFIG
+
     def _do_parse():
         with open(page_path, "rb") as fh:
             resp = requests.post(
                 "https://api.va.landing.ai/v1/ade/parse",
                 headers=landing_headers(),
                 files={"document": (page_path.name, fh, "application/pdf")},
-                data={"model": PARSE_MODEL},
+                data={"model": cfg.parse_model},
                 timeout=REQUEST_TIMEOUT,
             )
         if resp.status_code == 206:
@@ -530,9 +604,9 @@ def parse_single_page(page_path: Path, page_num: int) -> Dict[str, Any]:
         return resp.json()
 
     try:
-        data = call_with_retry(_do_parse)
+        data = call_with_retry(_do_parse, max_retries=cfg.max_retries)
     except Exception as e:
-        log.error("Page %d could not be parsed after %d attempt(s): %s", page_num, MAX_RETRIES, e)
+        log.error("Page %d could not be parsed after %d attempt(s): %s", page_num, cfg.max_retries, e)
         return {"page": page_num, "markdown": None, "error": str(e)}
 
     markdown = data.get("markdown", "")
@@ -542,15 +616,17 @@ def parse_single_page(page_path: Path, page_num: int) -> Dict[str, Any]:
 
 
 def parse_pdf_per_page_resumable(
-    pdf_local_path: Path, work_dir: Path, state: Dict[str, Any]
+    pdf_local_path: Path, work_dir: Path, state: Dict[str, Any],
+    cfg: Optional[PipelineConfig] = None,
 ) -> List[Dict[str, Any]]:
+    cfg = cfg or DEFAULT_CONFIG
     reader = PdfReader(str(pdf_local_path))
     total_pages = len(reader.pages)
 
     with STATE_LOCK:
         state["total_pages"] = total_pages
         state.setdefault("page_errors", {})
-        save_state(state)
+        save_state(state, cfg.state_dir)
 
     cached_pages = state.get("pages", {})
     missing_page_nums = [i for i in range(1, total_pages + 1) if str(i) not in cached_pages]
@@ -567,8 +643,8 @@ def parse_pdf_per_page_resumable(
         )
         page_paths = split_pdf_into_pages(pdf_local_path, work_dir)
         targets = {i: page_paths[i - 1] for i in missing_page_nums}
-        with ThreadPoolExecutor(max_workers=PAGE_PARSE_WORKERS) as executor:
-            futures = {executor.submit(parse_single_page, p, i): i for i, p in targets.items()}
+        with ThreadPoolExecutor(max_workers=cfg.page_parse_workers) as executor:
+            futures = {executor.submit(parse_single_page, p, i, cfg): i for i, p in targets.items()}
             for future in as_completed(futures):
                 page_num = futures[future]
                 try:
@@ -585,7 +661,7 @@ def parse_pdf_per_page_resumable(
                         state["page_errors"].pop(str(page_num), None)
                         # a re-parsed page invalidates its cached classification
                         state.get("page_meta", {}).pop(str(page_num), None)
-                    save_state(state)
+                    save_state(state, cfg.state_dir)
 
     page_results = []
     for i in range(1, total_pages + 1):
@@ -644,6 +720,240 @@ BOUNDARY_SCHEMA: Dict[str, Any] = {
     "required": ["is_first_page_of_record"],
 }
 
+# The boundary-schema fields detect_boundaries() reads. A custom boundary
+# schema may add fields, but one without these gives the splitter nothing.
+BOUNDARY_FIELDS = (
+    "is_first_page_of_record",
+    "patient_name",
+    "patient_id",
+    "page_number_in_record",
+    "total_pages_in_record",
+)
+
+
+# ==========================================================================
+# RUN CONFIG -- defaults from the environment, overridden per run by params
+# ==========================================================================
+def json_hash(obj: Any) -> str:
+    return hashlib.sha256(json.dumps(obj, sort_keys=True).encode("utf-8")).hexdigest()[:16]
+
+
+@dataclass
+class PipelineConfig:
+    """Everything one run can tune. The defaults are the environment-derived
+    constants above; a DAG run overrides them with config_from_params()."""
+
+    schema: Dict[str, Any] = field(default_factory=dict)
+    boundary_schema: Dict[str, Any] = field(default_factory=lambda: BOUNDARY_SCHEMA)
+    source_folder_id: Optional[str] = None
+    dest_folder_id: Optional[str] = None
+    file_ids: List[str] = field(default_factory=list)
+    name_contains: str = ""
+    max_files: int = 0
+    move_processed: bool = True
+    save_json: bool = True
+    output_dir: str = OUTPUT_DIR
+    json_output_dir: str = JSON_OUTPUT_DIR
+    state_dir: str = STATE_DIR
+    parse_model: str = PARSE_MODEL
+    extract_model: str = EXTRACT_MODEL
+    page_parse_workers: int = PAGE_PARSE_WORKERS
+    boundary_workers: int = BOUNDARY_WORKERS
+    record_workers: int = RECORD_WORKERS
+    max_retries: int = MAX_RETRIES
+    record_start_markers: List[str] = field(default_factory=lambda: list(RECORD_START_MARKERS))
+    record_start_min_matches: int = RECORD_START_MIN_KEYWORD_MATCHES
+    max_pages_per_record: int = MAX_PAGES_PER_RECORD
+    max_plausible_run: int = MAX_PLAUSIBLE_RUN
+    boundary_only_when_ambiguous: bool = BOUNDARY_ONLY_WHEN_AMBIGUOUS
+    boundary_score_threshold: int = BOUNDARY_SCORE_THRESHOLD
+    push_to_snowflake: bool = PUSH_TO_SNOWFLAKE
+    snowflake_database: str = ""
+    snowflake_schema: str = ""
+    snowflake_table: str = ""
+
+    def __post_init__(self) -> None:
+        self.record_start_markers = [
+            m.strip().lower() for m in self.record_start_markers if m and m.strip()
+        ]
+        self.record_start_min_matches = max(
+            1, min(int(self.record_start_min_matches), len(self.record_start_markers) or 1)
+        )
+
+    @property
+    def schema_hash(self) -> str:
+        return json_hash(self.schema)
+
+    @property
+    def boundary_schema_hash(self) -> str:
+        return json_hash(self.boundary_schema)
+
+    @property
+    def snowflake_target(self) -> Tuple[str, str, str]:
+        """(database, schema, table). Blank params: $SNOWFLAKE_DATABASE, the
+        extraction schema's title, EXTRACTED_RECORDS."""
+        database = sf_identifier(self.snowflake_database or os.getenv("SNOWFLAKE_DATABASE", ""))
+        if not database:
+            raise ValueError("snowflake_database: not set and no SNOWFLAKE_DATABASE in the environment")
+        schema = (
+            sf_identifier(self.snowflake_schema)
+            or sf_identifier(str(self.schema.get("title") or ""))
+            or SNOWFLAKE_DEFAULT_SCHEMA
+        )
+        return database, schema, sf_identifier(self.snowflake_table) or SNOWFLAKE_DEFAULT_TABLE
+
+    def describe(self) -> str:
+        boundary = "built-in" if self.boundary_schema == BOUNDARY_SCHEMA else "custom"
+        return (
+            f"schema {len(self.schema.get('properties', {}))} field(s) #{self.schema_hash}; "
+            f"boundary schema {boundary} #{self.boundary_schema_hash}; "
+            f"files {self.file_ids or (self.name_contains and repr(self.name_contains)) or 'all'}"
+            f"{f' (max {self.max_files})' if self.max_files else ''}; "
+            f"move_processed={self.move_processed}; markers={self.record_start_markers} "
+            f"(min {self.record_start_min_matches}); max_pages_per_record={self.max_pages_per_record}; "
+            f"threshold={self.boundary_score_threshold}; workers "
+            f"{self.page_parse_workers}/{self.boundary_workers}/{self.record_workers}; "
+            f"state_dir={self.state_dir}; output_dir={self.output_dir}; "
+            f"snowflake={self._snowflake_label()}"
+        )
+
+    def _snowflake_label(self) -> str:
+        if not self.push_to_snowflake:
+            return "off"
+        try:
+            return ".".join(self.snowflake_target)
+        except ValueError as e:
+            return f"not configured ({e})"
+
+
+DEFAULT_CONFIG = PipelineConfig()
+DEFAULT_BOUNDARY_SCHEMA_HASH = json_hash(BOUNDARY_SCHEMA)
+
+
+def _resolve_path(path: str) -> Path:
+    p = Path(path).expanduser()
+    if p.is_absolute():
+        return p
+    for base in (Path.cwd(), DAGS_DIR.parent, DAGS_DIR):
+        if (base / p).exists():
+            return base / p
+    return p
+
+
+def load_json_param(
+    blob: Any, path: Optional[str], label: str,
+    default: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """A JSON schema given inline (`blob`: a dict, or JSON text) or read from
+    a file (`path`). The blob wins when both are set; a blob that is plain
+    text rather than JSON is taken as a file path. Falls back to `default`."""
+    value: Any = None
+    if isinstance(blob, str):
+        text = blob.strip()
+        if text[:1] in ("{", "[", '"'):
+            try:
+                value = json.loads(text)
+                if isinstance(value, str):  # double-encoded JSON text
+                    value = json.loads(value)
+            except json.JSONDecodeError as e:
+                raise ValueError(f"{label}: not valid JSON ({e})") from None
+        elif text:
+            path = text
+    elif blob:
+        value = blob
+
+    if value is None and path and str(path).strip():
+        resolved = _resolve_path(str(path).strip())
+        if not resolved.is_file():
+            raise ValueError(
+                f"{label}: file not found: {path} "
+                f"(looked in {Path.cwd()}, {DAGS_DIR.parent} and {DAGS_DIR})"
+            )
+        with open(resolved, "r", encoding="utf-8") as f:
+            try:
+                value = json.load(f)
+            except json.JSONDecodeError as e:
+                raise ValueError(f"{label}: {resolved} is not valid JSON ({e})") from None
+        log.info("%s: loaded from %s", label, resolved)
+
+    if value is None:
+        if default is None:
+            raise ValueError(f"{label}: give it inline as JSON, or as a JSON file path")
+        return default
+    if not isinstance(value, dict) or not isinstance(value.get("properties"), dict):
+        raise ValueError(f"{label}: expected a JSON schema object with a 'properties' map")
+    return value
+
+
+def _as_list(value: Any) -> List[str]:
+    """A list param, or the same typed as one comma/newline separated string."""
+    if value is None:
+        return []
+    if isinstance(value, str):
+        value = re.split(r"[,\n]", value)
+    return [str(v).strip() for v in value if str(v).strip()]
+
+
+def _as_bool(value: Any) -> bool:
+    if isinstance(value, str):
+        return value.strip().lower() in ("1", "true", "yes", "y", "on")
+    return bool(value)
+
+
+def config_from_params(params: Optional[Dict[str, Any]]) -> PipelineConfig:
+    """Build the run config from DAG params. Blank params (None / "" / [])
+    keep the environment default, so an empty conf is the old behaviour."""
+    p = {k: v for k, v in (params or {}).items() if v not in (None, "", [])}
+    d = DEFAULT_CONFIG
+
+    def _int(name: str, minimum: int = 0) -> int:
+        return max(minimum, int(p.get(name, getattr(d, name))))
+
+    cfg = PipelineConfig(
+        schema=load_json_param(p.get("schema"), p.get("schema_path", SCHEMA_PATH), "schema"),
+        boundary_schema=load_json_param(
+            p.get("boundary_schema"), p.get("boundary_schema_path"), "boundary_schema",
+            default=BOUNDARY_SCHEMA,
+        ),
+        source_folder_id=p.get("source_folder_id"),
+        dest_folder_id=p.get("dest_folder_id"),
+        file_ids=_as_list(p.get("file_ids")),
+        name_contains=str(p.get("name_contains", "")).strip(),
+        max_files=_int("max_files"),
+        move_processed=_as_bool(p.get("move_processed", d.move_processed)),
+        save_json=_as_bool(p.get("save_json", d.save_json)),
+        output_dir=p.get("output_dir", d.output_dir),
+        json_output_dir=p.get("json_output_dir", d.json_output_dir),
+        state_dir=p.get("state_dir", d.state_dir),
+        parse_model=p.get("parse_model", d.parse_model),
+        extract_model=p.get("extract_model", d.extract_model),
+        page_parse_workers=_int("page_parse_workers", 1),
+        boundary_workers=_int("boundary_workers", 1),
+        record_workers=_int("record_workers", 1),
+        max_retries=_int("max_retries", 1),
+        record_start_markers=_as_list(p.get("record_start_markers")) or d.record_start_markers,
+        record_start_min_matches=_int("record_start_min_matches", 1),
+        max_pages_per_record=_int("max_pages_per_record", 1),
+        boundary_only_when_ambiguous=_as_bool(
+            p.get("boundary_only_when_ambiguous", d.boundary_only_when_ambiguous)
+        ),
+        boundary_score_threshold=_int("boundary_score_threshold", 1),
+        push_to_snowflake=_as_bool(p.get("push_to_snowflake", d.push_to_snowflake)),
+        snowflake_database=str(p.get("snowflake_database", "")).strip(),
+        snowflake_schema=str(p.get("snowflake_schema", "")).strip(),
+        snowflake_table=str(p.get("snowflake_table", "")).strip(),
+    )
+
+    missing = [f for f in BOUNDARY_FIELDS if f not in cfg.boundary_schema["properties"]]
+    if missing:
+        log.warning(
+            "boundary_schema has no %s -- the record splitter reads those fields, so "
+            "without them it falls back to the printed page numbers and header markers.",
+            ", ".join(missing),
+        )
+    return cfg
+
+
 _PAGE_OF_TOTAL = re.compile(
     r"\bp(?:a?ge?)?\.?\s*(\d{1,2})\s*(?:of|/|\\|out\s+of)\s*(\d{1,2})\b", re.IGNORECASE
 )
@@ -669,13 +979,15 @@ def is_failed_page(markdown: Optional[str]) -> bool:
     return md.startswith(FAILED_PAGE_PREFIX) and "FAILED TO PARSE" in md
 
 
-def marker_hits(markdown: Optional[str]) -> int:
+def marker_hits(markdown: Optional[str], cfg: Optional[PipelineConfig] = None) -> int:
+    cfg = cfg or DEFAULT_CONFIG
     nz = _normalize(markdown)
-    return sum(1 for m in RECORD_START_MARKERS if _normalize(m) in nz)
+    return sum(1 for m in cfg.record_start_markers if _normalize(m) in nz)
 
 
-def is_record_start_page(markdown: Optional[str]) -> bool:
-    return marker_hits(markdown) >= RECORD_START_MIN_KEYWORD_MATCHES
+def is_record_start_page(markdown: Optional[str], cfg: Optional[PipelineConfig] = None) -> bool:
+    cfg = cfg or DEFAULT_CONFIG
+    return marker_hits(markdown, cfg) >= cfg.record_start_min_matches
 
 
 def extract_patient_name(markdown: Optional[str]) -> Optional[str]:
@@ -692,13 +1004,16 @@ def extract_patient_name(markdown: Optional[str]) -> Optional[str]:
     return None
 
 
-def parse_page_of_total(markdown: Optional[str]) -> Tuple[Optional[int], Optional[int]]:
+def parse_page_of_total(
+    markdown: Optional[str], cfg: Optional[PipelineConfig] = None
+) -> Tuple[Optional[int], Optional[int]]:
     """Return (current, total) from a printed 'Page 2 of 4', else (None, None)."""
+    cfg = cfg or DEFAULT_CONFIG
     m = _PAGE_OF_TOTAL.search(markdown or "")
     if not m:
         return None, None
     cur, tot = int(m.group(1)), int(m.group(2))
-    if tot < 1 or tot > MAX_PLAUSIBLE_RUN or cur < 1 or cur > tot:
+    if tot < 1 or tot > cfg.max_plausible_run or cur < 1 or cur > tot:
         return None, None
     return cur, tot
 
@@ -718,41 +1033,45 @@ def same_person(a: Optional[str], b: Optional[str]) -> bool:
     return shared >= 2 or shared == min(len(ta), len(tb))
 
 
-def classify_one_page(markdown: str) -> Dict[str, Any]:
+def classify_one_page(markdown: str, cfg: Optional[PipelineConfig] = None) -> Dict[str, Any]:
+    cfg = cfg or DEFAULT_CONFIG
     if not markdown or not markdown.strip() or is_failed_page(markdown):
         return {}
     try:
-        raw = extract_structured_data(markdown, BOUNDARY_SCHEMA) or {}
+        raw = extract_structured_data(markdown, cfg.boundary_schema, cfg) or {}
     except Exception as e:  # never fatal -- deterministic signals still apply
         log.warning("Boundary classification failed: %s", e)
         return {}
     return raw.get("extraction") or {}
 
 
-def needs_classification(markdown: Optional[str]) -> bool:
+def needs_classification(markdown: Optional[str], cfg: Optional[PipelineConfig] = None) -> bool:
     """False when the free signals already settle the page."""
-    if not BOUNDARY_ONLY_WHEN_AMBIGUOUS:
+    cfg = cfg or DEFAULT_CONFIG
+    if not cfg.boundary_only_when_ambiguous:
         return True
     if is_failed_page(markdown):
         return False
-    cur, _ = parse_page_of_total(markdown)
+    cur, _ = parse_page_of_total(markdown, cfg)
     if cur is not None:
         return False
-    if marker_hits(markdown) >= RECORD_START_MIN_KEYWORD_MATCHES:
+    if is_record_start_page(markdown, cfg):
         return False
     return True
 
 
 def classify_pages_resumable(
-    page_results: List[Dict[str, Any]], state: Dict[str, Any]
+    page_results: List[Dict[str, Any]], state: Dict[str, Any],
+    cfg: Optional[PipelineConfig] = None,
 ) -> Dict[str, Dict[str, Any]]:
     """One cached ade/extract call per ambiguous page. Safe to re-run: pages
     already present in state["page_meta"] are never re-sent."""
+    cfg = cfg or DEFAULT_CONFIG
     meta: Dict[str, Dict[str, Any]] = state.setdefault("page_meta", {})
 
     todo = [
         p for p in page_results
-        if str(p["page"]) not in meta and needs_classification(p.get("markdown"))
+        if str(p["page"]) not in meta and needs_classification(p.get("markdown"), cfg)
     ]
     if not todo:
         log.info(
@@ -765,9 +1084,9 @@ def classify_pages_resumable(
         "%s: classifying %d ambiguous page(s) of %d.",
         state.get("filename"), len(todo), len(page_results),
     )
-    with ThreadPoolExecutor(max_workers=BOUNDARY_WORKERS) as ex:
+    with ThreadPoolExecutor(max_workers=cfg.boundary_workers) as ex:
         futures = {
-            ex.submit(classify_one_page, p.get("markdown") or ""): p["page"] for p in todo
+            ex.submit(classify_one_page, p.get("markdown") or "", cfg): p["page"] for p in todo
         }
         for future in as_completed(futures):
             page_num = futures[future]
@@ -778,18 +1097,19 @@ def classify_pages_resumable(
                 result = {}
             with STATE_LOCK:
                 meta[str(page_num)] = result
-                save_state(state)
+                save_state(state, cfg.state_dir)
     return meta
 
 
 def detect_boundaries(
-    page_results: List[Dict[str, Any]], page_meta: Dict[str, Dict[str, Any]]
+    page_results: List[Dict[str, Any]], page_meta: Dict[str, Dict[str, Any]],
+    cfg: Optional[PipelineConfig] = None,
 ) -> Tuple[List[int], Dict[int, int]]:
     """Return (sorted start indices, {start_index: score}).
 
     A printed 'Page N of M' is authoritative and suppresses every other signal
     for the pages it covers."""
-    n = len(page_results)
+    cfg = cfg or DEFAULT_CONFIG
     starts: Dict[int, int] = {}
     covered_to = -1
     last_name: Optional[str] = None
@@ -799,10 +1119,10 @@ def detect_boundaries(
         md = p.get("markdown") or ""
         meta = page_meta.get(str(p["page"])) or {}
 
-        cur, tot = parse_page_of_total(md)
+        cur, tot = parse_page_of_total(md, cfg)
         if cur is None:
             mc, mt = meta.get("page_number_in_record"), meta.get("total_pages_in_record")
-            if isinstance(mc, int) and isinstance(mt, int) and 1 <= mc <= mt <= MAX_PLAUSIBLE_RUN:
+            if isinstance(mc, int) and isinstance(mt, int) and 1 <= mc <= mt <= cfg.max_plausible_run:
                 cur, tot = mc, mt
 
         if cur is not None:
@@ -831,8 +1151,8 @@ def detect_boundaries(
         score = 0
         if meta.get("is_first_page_of_record") is True:
             score += 2
-        hits = marker_hits(md)
-        score += 2 if hits >= RECORD_START_MIN_KEYWORD_MATCHES else (1 if hits else 0)
+        hits = marker_hits(md, cfg)
+        score += 2 if hits >= cfg.record_start_min_matches else (1 if hits else 0)
         if pid and last_id and _normalize(pid) != _normalize(last_id):
             score += 3
         if name and last_name and not same_person(name, last_name):
@@ -840,7 +1160,7 @@ def detect_boundaries(
 
         if i == 0:
             starts[i] = max(starts.get(i, 0), score)
-        elif score >= BOUNDARY_SCORE_THRESHOLD:
+        elif score >= cfg.boundary_score_threshold:
             starts[i] = score
 
         if name:
@@ -886,6 +1206,7 @@ def _make_record(pages, page_meta, method, score, last_name, last_id):
 def group_pages_into_records(
     page_results: List[Dict[str, Any]],
     page_meta: Optional[Dict[str, Dict[str, Any]]] = None,
+    cfg: Optional[PipelineConfig] = None,
 ) -> List[Dict[str, Any]]:
     """Group pages into records.
 
@@ -893,15 +1214,16 @@ def group_pages_into_records(
         {pages, page_numbers, patient_name_hint, patient_id_hint,
          name_is_carried, split_method, boundary_score}
     """
+    cfg = cfg or DEFAULT_CONFIG
     page_meta = page_meta or {}
     n = len(page_results)
     if n == 0:
         return []
 
-    starts, scores = detect_boundaries(page_results, page_meta)
+    starts, scores = detect_boundaries(page_results, page_meta, cfg)
 
     # Whole-file fallback: a long document that produced no usable boundary.
-    if len(starts) <= 1 and n > MAX_PAGES_PER_RECORD:
+    if len(starts) <= 1 and n > cfg.max_pages_per_record:
         log.warning(
             "No usable record boundary found across %d page(s) -- falling back to "
             "one record per page with patient carry-forward.", n,
@@ -919,11 +1241,11 @@ def group_pages_into_records(
 
         # Localised fallback: this one record is implausibly long, but the
         # records detected around it are probably fine -- explode only this one.
-        if len(pages) > MAX_PAGES_PER_RECORD:
+        if len(pages) > cfg.max_pages_per_record:
             log.warning(
                 "Record starting at page %s spans %d page(s) (max %d) -- splitting "
                 "it per page with carry-forward.",
-                pages[0]["page"], len(pages), MAX_PAGES_PER_RECORD,
+                pages[0]["page"], len(pages), cfg.max_pages_per_record,
             )
             for p in pages:
                 rec, last_name, last_id = _make_record(
@@ -1007,20 +1329,24 @@ def record_length_histogram(records: List[Dict[str, Any]]) -> str:
 # ==========================================================================
 # EXTRACT
 # ==========================================================================
-def extract_structured_data(markdown_content: str, schema: Dict[str, Any]) -> Dict[str, Any]:
+def extract_structured_data(
+    markdown_content: str, schema: Dict[str, Any], cfg: Optional[PipelineConfig] = None
+) -> Dict[str, Any]:
+    cfg = cfg or DEFAULT_CONFIG
+
     def _do_extract():
         resp = requests.post(
             "https://api.va.landing.ai/v1/ade/extract",
             headers=landing_headers(),
             files={"markdown": ("document.md", markdown_content, "text/markdown")},
-            data={"schema": json.dumps(schema), "model": EXTRACT_MODEL},
+            data={"schema": json.dumps(schema), "model": cfg.extract_model},
             timeout=REQUEST_TIMEOUT,
         )
         if not resp.ok:
             raise RuntimeError(f"extract failed: {resp.status_code} - {resp.text}")
         return resp.json()
 
-    return call_with_retry(_do_extract)
+    return call_with_retry(_do_extract, max_retries=cfg.max_retries)
 
 
 # ==========================================================================
@@ -1028,16 +1354,20 @@ def extract_structured_data(markdown_content: str, schema: Dict[str, Any]) -> Di
 # ==========================================================================
 def _process_one_record(
     file_name: str, file_id: str, idx: int, rec: Dict[str, Any],
-    schema: Dict[str, Any], json_output_dir: str, csv_path: str, save_json: bool,
-    state: Dict[str, Any],
+    cfg: PipelineConfig, csv_path: str, state: Dict[str, Any],
 ) -> Optional[Dict[str, Any]]:
     key = str(idx)
-    record_pages = rec["pages"]
     page_numbers = rec["page_numbers"]
     page_range = f"{min(page_numbers)}-{max(page_numbers)}"
 
+    # Done only counts for the same pages under the same schema; records
+    # saved before schema hashes were kept count as the current schema.
     existing = state["records"].get(key)
-    if existing and existing.get("status") == "done":
+    if (
+        existing and existing.get("status") == "done"
+        and existing.get("page_range") == page_range
+        and existing.get("schema_hash", cfg.schema_hash) == cfg.schema_hash
+    ):
         log.info("%s record %d (pages %s) already done -- skipping.", file_name, idx, page_range)
         return None
 
@@ -1046,13 +1376,13 @@ def _process_one_record(
 
     try:
         md = build_record_markdown(rec)
-        extracted = extract_structured_data(md, schema)
+        extracted = extract_structured_data(md, cfg.schema, cfg)
         apply_carry_forward(extracted, rec)
 
         json_filename = f"{Path(file_name).stem}_record{idx:02d}_p{page_range}.json"
         json_path = None
-        if save_json:
-            json_path = save_json_locally(json_filename, extracted, json_output_dir)
+        if cfg.save_json:
+            json_path = save_json_locally(json_filename, extracted, cfg.json_output_dir)
 
         patient_label = (
             (extracted.get("extraction") or {}).get("patient_name")
@@ -1076,9 +1406,10 @@ def _process_one_record(
                 "boundary_score": rec.get("boundary_score"),
                 "missing_pages": missing_pages,
                 "json_path": json_path,
+                "schema_hash": cfg.schema_hash,
                 "extracted_json": extracted,
             }
-            save_state(state)
+            save_state(state, cfg.state_dir)
 
         # NOTE: the full extracted JSON is written to disk (CSV + local JSON)
         # but deliberately NOT returned -- Airflow persists task return values
@@ -1110,7 +1441,7 @@ def _process_one_record(
                 "page_range": page_range, "status": "failed", "error": str(e),
                 "split_method": rec.get("split_method"),
             }
-            save_state(state)
+            save_state(state, cfg.state_dir)
         return {
             "ok": False, "filename": file_name, "file_id": file_id,
             "record_index": idx, "page_range": page_range, "error": str(e),
@@ -1120,13 +1451,36 @@ def _process_one_record(
 # ==========================================================================
 # PER-FILE PIPELINE -- one Airflow task instance per file via .expand()
 # ==========================================================================
+def select_files(service, cfg: PipelineConfig) -> List[Dict[str, Any]]:
+    """The run's files: the listed file_ids, or the source folder's PDFs,
+    then filtered by name_contains and capped at max_files (in name order)."""
+    if cfg.file_ids:
+        files = [
+            service.files().get(fileId=fid, fields="id, name, parents, mimeType").execute()
+            for fid in cfg.file_ids
+        ]
+    else:
+        files = list_source_files(service, cfg.source_folder_id or get_source_folder_id())
+    if cfg.name_contains:
+        needle = cfg.name_contains.lower()
+        files = [f for f in files if needle in f["name"].lower()]
+    files.sort(key=lambda f: f["name"])
+    if cfg.max_files:
+        files = files[: cfg.max_files]
+    log.info("Selected %d file(s): %s", len(files), ", ".join(f["name"] for f in files))
+    return files
+
+
 def process_one_file(
-    service, file_meta: Dict[str, Any], schema: Dict[str, Any], dest_folder_id: str,
-    json_output_dir: str, csv_path: str, save_json: bool = True,
+    service, file_meta: Dict[str, Any], dest_folder_id: Optional[str],
+    cfg: Optional[PipelineConfig] = None,
 ) -> List[Dict[str, Any]]:
+    """dest_folder_id None leaves the file in the source folder."""
+    cfg = cfg or DEFAULT_CONFIG
     file_id = file_meta["id"]
     file_name = file_meta["name"]
     mime_type = file_meta.get("mimeType", "")
+    csv_path = get_csv_path(cfg.output_dir)
 
     if mime_type != "application/pdf":
         return [{
@@ -1134,18 +1488,32 @@ def process_one_file(
             "page_range": None, "error": f"Unsupported mimeType: {mime_type}",
         }]
 
-    state = load_state(file_id, file_name)
+    state = load_state(file_id, file_name, cfg.state_dir)
 
     if state.get("file_done"):
-        log.info(
-            "%s already marked done in a previous run -- confirming it's out of the source folder.",
-            file_name,
-        )
-        try:
-            move_file(service, file_id, dest_folder_id)
-        except Exception:
-            pass
-        return []
+        if state.get("schema_hash", cfg.schema_hash) == cfg.schema_hash:
+            log.info(
+                "%s already marked done in a previous run -- confirming it's out of the source folder.",
+                file_name,
+            )
+            if dest_folder_id:
+                try:
+                    move_file(service, file_id, dest_folder_id)
+                except Exception:
+                    pass
+            return []
+        log.info("%s was done under another schema -- extracting it again.", file_name)
+        state["file_done"] = False
+
+    # Page classifications belong to the boundary schema that produced them.
+    if state.get("boundary_schema_hash", DEFAULT_BOUNDARY_SCHEMA_HASH) != cfg.boundary_schema_hash:
+        if state.get("page_meta"):
+            log.info(
+                "%s: boundary schema changed -- dropping %d cached page classification(s).",
+                file_name, len(state["page_meta"]),
+            )
+        state["page_meta"] = {}
+    state["boundary_schema_hash"] = cfg.boundary_schema_hash
 
     tmp_dir = Path(tempfile.mkdtemp(prefix="landingai_"))
     local_path = tmp_dir / file_name
@@ -1170,17 +1538,21 @@ def process_one_file(
         else:
             log.info("Downloading %s (%s)", file_name, file_id)
             download_file(service, file_id, local_path)
-            page_results = parse_pdf_per_page_resumable(local_path, tmp_dir, state)
+            page_results = parse_pdf_per_page_resumable(local_path, tmp_dir, state, cfg)
 
-        page_meta = classify_pages_resumable(page_results, state)
-        records = group_pages_into_records(page_results, page_meta)
+        page_meta = classify_pages_resumable(page_results, state, cfg)
+        records = group_pages_into_records(page_results, page_meta, cfg)
         log.info("%s: %d page(s) -> %s", file_name, len(page_results), record_length_histogram(records))
+        with STATE_LOCK:
+            # records above this index are left over from an older grouping
+            state["record_count"] = len(records)
+            save_state(state, cfg.state_dir)
 
-        with ThreadPoolExecutor(max_workers=RECORD_WORKERS) as record_executor:
+        with ThreadPoolExecutor(max_workers=cfg.record_workers) as record_executor:
             record_futures = {
                 record_executor.submit(
                     _process_one_record, file_name, file_id, idx, rec,
-                    schema, json_output_dir, csv_path, save_json, state,
+                    cfg, csv_path, state,
                 ): idx
                 for idx, rec in enumerate(records, start=1)
             }
@@ -1202,8 +1574,10 @@ def process_one_file(
         if all_done:
             with STATE_LOCK:
                 state["file_done"] = True
-                save_state(state)
-            move_file(service, file_id, dest_folder_id)
+                state["schema_hash"] = cfg.schema_hash
+                save_state(state, cfg.state_dir)
+            if dest_folder_id:
+                move_file(service, file_id, dest_folder_id)
         else:
             log.warning("%s left in source folder: at least one record still needs a retry.", file_name)
 
@@ -1221,8 +1595,423 @@ def process_one_file(
 
 
 # ==========================================================================
+# SNOWFLAKE LOAD -- one table per extraction schema, built from its properties
+# ==========================================================================
+# Record metadata columns, ahead of one column per extraction-schema property.
+# FILE_ID is the reload key: each load replaces every row of the files it
+# carries, so reruns and re-extractions never duplicate.
+SF_META_COLUMNS: Dict[str, str] = {
+    "RECORD_KEY": "VARCHAR",
+    "FILE_ID": "VARCHAR",
+    "FILENAME": "VARCHAR",
+    "RECORD_INDEX": "NUMBER(38,0)",
+    "PAGE_RANGE": "VARCHAR",
+    "PATIENT_LABEL": "VARCHAR",
+    "STATUS": "VARCHAR",
+    "SPLIT_METHOD": "VARCHAR",
+    "NAME_IS_CARRIED": "BOOLEAN",
+    "BOUNDARY_SCORE": "NUMBER(38,0)",
+    "MISSING_PAGES": "VARCHAR",
+    "SCHEMA_HASH": "VARCHAR",
+    "EXTRACTION": "VARIANT",  # the whole extraction, extra keys included
+    "LOADED_AT": "TIMESTAMP_NTZ",
+}
+_JSON_TO_SF = {
+    "string": "VARCHAR",
+    "integer": "NUMBER(38,0)",
+    "number": "FLOAT",
+    "boolean": "BOOLEAN",
+    "object": "VARIANT",
+    "array": "VARIANT",
+}
+SF_INSERT_BATCH_CHARS = 400_000  # keep each multi-row INSERT well under the statement limit
+
+
+def sf_identifier(name: str) -> str:
+    """An unquoted Snowflake identifier: 'Birth weight (kg)' -> BIRTH_WEIGHT_KG."""
+    ident = re.sub(r"[^A-Za-z0-9_]+", "_", name or "").strip("_").upper()
+    return f"_{ident}" if ident[:1].isdigit() else ident
+
+
+def sf_type_for(prop: Dict[str, Any]) -> str:
+    types = prop.get("type")
+    types = [t for t in (types if isinstance(types, list) else [types]) if t and t != "null"]
+    if not types and "enum" in prop:
+        return "VARCHAR"
+    return _JSON_TO_SF.get(types[0], "VARIANT") if len(types) == 1 else "VARIANT"
+
+
+def schema_columns(schema: Dict[str, Any]) -> List[Tuple[str, str, str]]:
+    """(column, property name, Snowflake type) per top-level property. A
+    property whose name collides with a metadata column, or with an earlier
+    property after cleaning, gets an F_ prefix / numeric suffix."""
+    columns: List[Tuple[str, str, str]] = []
+    taken = set(SF_META_COLUMNS)
+    for name, prop in schema.get("properties", {}).items():
+        col = sf_identifier(name) or "FIELD"
+        if col in SF_META_COLUMNS:
+            col = f"F_{col}"
+        base, n = col, 2
+        while col in taken:
+            col, n = f"{base}_{n}", n + 1
+        taken.add(col)
+        columns.append((col, name, sf_type_for(prop if isinstance(prop, dict) else {})))
+    return columns
+
+
+def _sql_str(value: str) -> str:
+    return "'" + value.replace("\\", "\\\\").replace("'", "''") + "'"
+
+
+def sf_cast(v: str, data_type: str, scale: Optional[int] = None) -> str:
+    """SQL turning VARIANT expression `v` into a column of `data_type`
+    (INFORMATION_SCHEMA spelling). Unparseable values become NULL rather than
+    failing the load; JSON nulls become SQL NULL."""
+    t = data_type.upper()
+    text = f"IFF(IS_NULL_VALUE({v}), NULL, IFF(IS_VARCHAR({v}), {v}::VARCHAR, TO_JSON({v})))"
+    if t == "VARIANT":
+        return f"IFF(IS_NULL_VALUE({v}), NULL, {v})"
+    if t == "OBJECT":
+        return f"IFF(IS_OBJECT({v}), {v}::OBJECT, NULL)"
+    if t == "ARRAY":
+        return f"IFF(IS_ARRAY({v}), {v}::ARRAY, NULL)"
+    if t == "BOOLEAN":
+        return f"IFF(IS_BOOLEAN({v}), {v}::BOOLEAN, TRY_TO_BOOLEAN({text}))"
+    if t in ("NUMBER", "DECIMAL", "NUMERIC", "INT", "INTEGER", "BIGINT", "SMALLINT"):
+        return f"TRY_TO_NUMBER({text}, 38, {int(scale or 0)})"
+    if t in ("FLOAT", "DOUBLE", "REAL", "FLOAT4", "FLOAT8", "DOUBLE PRECISION"):
+        return f"TRY_TO_DOUBLE({text})"
+    if t == "DATE":
+        return f"TRY_TO_DATE({text})"
+    if t.startswith("TIMESTAMP"):
+        return f"TRY_TO_TIMESTAMP({text})"
+    return text
+
+
+class SnowflakeClient:
+    """Key-pair auth from the SNOWFLAKE_* environment, as the other DAGs here
+    do (dags/flatten_jsons_schemas.py); password when there is no key file."""
+
+    def __init__(self, database: str):
+        import snowflake.connector
+
+        auth: Dict[str, Any] = {}
+        key_path = os.getenv("SNOWFLAKE_PRIVATE_KEY_PATH", "").strip()
+        if key_path:
+            auth["private_key_file"] = key_path
+        else:
+            auth["password"] = os.getenv("SNOWFLAKE_PASSWORD", "")
+        if os.getenv("SNOWFLAKE_ROLE", "").strip():
+            auth["role"] = os.getenv("SNOWFLAKE_ROLE").strip()
+        self._conn = snowflake.connector.connect(
+            user=os.getenv("SNOWFLAKE_USER", "").strip(),
+            account=os.getenv("SNOWFLAKE_ACCOUNT", "").strip(),
+            warehouse=os.getenv("SNOWFLAKE_WAREHOUSE", "").strip(),
+            database=database,
+            **auth,
+        )
+
+    def execute(self, sql: str, params: Any = None) -> int:
+        log.info("snowflake: %.200s", " ".join(sql.split()))
+        with self._conn.cursor() as cur:
+            cur.execute(sql, params)
+            return cur.rowcount
+
+    def executemany(self, sql: str, rows: List[Tuple[Any, ...]]) -> int:
+        with self._conn.cursor() as cur:
+            cur.executemany(sql, rows)
+            return cur.rowcount
+
+    def fetchall(self, sql: str, params: Any = None) -> List[Tuple[Any, ...]]:
+        with self._conn.cursor() as cur:
+            return cur.execute(sql, params).fetchall()
+
+    def commit(self) -> None:
+        self._conn.commit()
+
+    def rollback(self) -> None:
+        self._conn.rollback()
+
+    def close(self) -> None:
+        self._conn.close()
+
+
+def ensure_snowflake_table(
+    sf, database: str, schema: str, table: str, columns: List[Tuple[str, str, str]]
+) -> Dict[str, Tuple[str, Optional[int]]]:
+    """Use the schema and table when they exist, create them when they don't,
+    and add any column the table lacks (existing columns keep their types).
+    Returns {column: (data_type, numeric_scale)} as Snowflake has it."""
+    wanted = {**SF_META_COLUMNS, **{col: typ for col, _, typ in columns}}
+
+    if sf.fetchall(
+        f"SELECT 1 FROM {database}.INFORMATION_SCHEMA.SCHEMATA WHERE SCHEMA_NAME = %s", (schema,)
+    ):
+        log.info("Snowflake schema %s.%s exists -- using it.", database, schema)
+    else:
+        log.info("Snowflake schema %s.%s not found -- creating it.", database, schema)
+        sf.execute(f"CREATE SCHEMA IF NOT EXISTS {database}.{schema}")
+
+    def _existing() -> Dict[str, Tuple[str, Optional[int]]]:
+        rows = sf.fetchall(
+            f"SELECT COLUMN_NAME, DATA_TYPE, NUMERIC_SCALE FROM {database}.INFORMATION_SCHEMA.COLUMNS "
+            f"WHERE TABLE_SCHEMA = %s AND TABLE_NAME = %s ORDER BY ORDINAL_POSITION",
+            (schema, table),
+        )
+        return {r[0]: (r[1], r[2]) for r in rows}
+
+    fq = f"{database}.{schema}.{table}"
+    existing = _existing()
+    if not existing:
+        log.info("Creating %s with %d column(s).", fq, len(wanted))
+        sf.execute(
+            f"CREATE TABLE IF NOT EXISTS {fq} ("
+            + ", ".join(f"{col} {typ}" for col, typ in wanted.items())
+            + ")"
+        )
+    else:
+        missing = [col for col in wanted if col not in existing]
+        log.info(
+            "Table %s exists (%d column(s)) -- using it%s.", fq, len(existing),
+            f", adding {', '.join(missing)}" if missing else "",
+        )
+        for col in missing:
+            sf.execute(f"ALTER TABLE {fq} ADD COLUMN {col} {wanted[col]}")
+        if not missing:
+            return existing
+    return _existing()
+
+
+def snowflake_docs(cfg: PipelineConfig, file_ids: List[str]) -> List[Dict[str, Any]]:
+    """One document per extracted record of these files, from their state:
+    current grouping only, extracted under the current schema."""
+    docs: List[Dict[str, Any]] = []
+    for file_id in file_ids:
+        path = _state_path(file_id, cfg.state_dir)
+        if not path.exists():
+            continue
+        with open(path, "r", encoding="utf-8") as f:
+            state = json.load(f)
+        count = state.get("record_count")
+        for idx_str, rec in sorted(state.get("records", {}).items(), key=lambda kv: int(kv[0])):
+            if rec.get("status") not in ("done", "done_with_missing_pages"):
+                continue
+            if count is not None and int(idx_str) > count:
+                continue
+            if rec.get("schema_hash", cfg.schema_hash) != cfg.schema_hash:
+                continue
+            docs.append({
+                "record_key": f"{file_id}:{idx_str}",
+                "file_id": file_id,
+                "filename": state.get("filename"),
+                "record_index": int(idx_str),
+                "page_range": rec.get("page_range"),
+                "patient_label": rec.get("patient_label"),
+                "status": rec.get("status"),
+                "split_method": rec.get("split_method"),
+                "name_is_carried": rec.get("name_is_carried"),
+                "boundary_score": rec.get("boundary_score"),
+                "missing_pages": ",".join(str(p) for p in rec.get("missing_pages") or []) or None,
+                "schema_hash": cfg.schema_hash,
+                "extraction": (rec.get("extracted_json") or {}).get("extraction") or {},
+            })
+    return docs
+
+
+def _batches(rows: List[str], max_chars: int) -> List[List[str]]:
+    out: List[List[str]] = [[]]
+    size = 0
+    for row in rows:
+        if out[-1] and size + len(row) > max_chars:
+            out.append([])
+            size = 0
+        out[-1].append(row)
+        size += len(row)
+    return [b for b in out if b]
+
+
+def load_to_snowflake(cfg: PipelineConfig, file_ids: List[str], sf=None) -> Dict[str, Any]:
+    """Replace these files' rows in the run's Snowflake table. Rows are staged
+    as JSON text in a temporary table, then typed per the target's actual
+    columns in one DELETE + INSERT transaction."""
+    database, schema, table = cfg.snowflake_target
+    fq = f"{database}.{schema}.{table}"
+    docs = snowflake_docs(cfg, file_ids)
+    if not docs:
+        log.info("Snowflake: no extracted records for %d file(s) -- nothing to load.", len(file_ids))
+        return {"table": fq, "rows": 0, "files": 0}
+
+    columns = schema_columns(cfg.schema)
+    own = sf is None
+    sf = sf or SnowflakeClient(database)
+    try:
+        types = ensure_snowflake_table(sf, database, schema, table, columns)
+
+        tmp = f"{database}.{schema}.LANDINGAI_LOAD_{os.getpid()}_{threading.get_ident()}"
+        sf.execute(f"CREATE OR REPLACE TEMPORARY TABLE {tmp} (DOC VARCHAR)")
+        for batch in _batches([json.dumps(d, default=str) for d in docs], SF_INSERT_BATCH_CHARS):
+            sf.executemany(f"INSERT INTO {tmp} (DOC) VALUES (%s)", [(b,) for b in batch])
+
+        targets: List[Tuple[str, str]] = []
+        for col in SF_META_COLUMNS:
+            if col == "LOADED_AT":
+                targets.append((col, "CURRENT_TIMESTAMP()::TIMESTAMP_NTZ"))
+            elif col == "EXTRACTION":
+                targets.append((col, sf_cast("d:extraction", *types[col])))
+            else:
+                targets.append((col, sf_cast(f"d:{col.lower()}", *types[col])))
+        for col, name, _ in columns:
+            targets.append((col, sf_cast(f"GET(d:extraction, {_sql_str(name)})", *types[col])))
+
+        sf.execute("BEGIN")
+        deleted = sf.execute(
+            f"DELETE FROM {fq} WHERE FILE_ID IN "
+            f"(SELECT DISTINCT PARSE_JSON(DOC):file_id::VARCHAR FROM {tmp})"
+        )
+        inserted = sf.execute(
+            f"INSERT INTO {fq} ({', '.join(c for c, _ in targets)}) "
+            f"SELECT {', '.join(e for _, e in targets)} "
+            f"FROM (SELECT PARSE_JSON(DOC) AS d FROM {tmp})"
+        )
+        sf.commit()
+        sf.execute(f"DROP TABLE IF EXISTS {tmp}")
+    except Exception:
+        try:
+            sf.rollback()
+        except Exception:
+            pass
+        raise
+    finally:
+        if own:
+            sf.close()
+
+    files = len({d["file_id"] for d in docs})
+    log.info(
+        "Snowflake: %s -- replaced %d old row(s) with %d row(s) from %d file(s).",
+        fq, deleted, inserted, files,
+    )
+    return {"table": fq, "rows": inserted, "replaced": deleted, "files": files}
+
+
+# ==========================================================================
 # AIRFLOW DAG
 # ==========================================================================
+JSON_BLOB = ["null", "object", "string"]  # a pasted JSON object, JSON text, or a path
+
+
+def dag_params() -> Dict[str, Any]:
+    """The trigger form. Defaults mirror DEFAULT_CONFIG, so what you see is
+    what runs; see PARAMS in the module docstring."""
+    d = DEFAULT_CONFIG
+    return {
+        # -- schemas -------------------------------------------------------
+        "schema": Param(
+            None, type=JSON_BLOB, title="Extraction schema (JSON)", section="Schemas",
+            description="Paste the extraction JSON schema here. Leave empty to read schema_path.",
+        ),
+        "schema_path": Param(
+            SCHEMA_PATH, type="string", title="Extraction schema file", section="Schemas",
+            description="JSON file used when the schema above is empty. Relative paths resolve "
+                        "against the working dir, the repo root and dags/.",
+        ),
+        "boundary_schema": Param(
+            None, type=JSON_BLOB, title="Boundary schema (JSON)", section="Schemas",
+            description="Per-page record-boundary schema. Keep the fields is_first_page_of_record, "
+                        "patient_name, patient_id, page_number_in_record, total_pages_in_record. "
+                        "Empty = boundary_schema_path, else the built-in one.",
+        ),
+        "boundary_schema_path": Param(
+            "", type=["null", "string"], title="Boundary schema file", section="Schemas",
+            description="JSON file used when the boundary schema above is empty.",
+        ),
+        # -- which files ---------------------------------------------------
+        "source_folder_id": Param(
+            "", type=["null", "string"], title="Source Drive folder", section="Files",
+            description="Empty = the GDRIVE_SOURCE_FOLDER_ID Variable.",
+        ),
+        "dest_folder_id": Param(
+            "", type=["null", "string"], title="Done Drive folder", section="Files",
+            description="Empty = the GDRIVE_DEST_FOLDER_ID Variable.",
+        ),
+        "file_ids": Param(
+            [], type=["null", "array"], items={"type": "string"}, title="Only these Drive file ids",
+            section="Files", description="One per line. Empty = every PDF in the source folder.",
+        ),
+        "name_contains": Param(
+            "", type=["null", "string"], title="File name contains", section="Files",
+            description="Case-insensitive filter on the file name.",
+        ),
+        "max_files": Param(
+            0, type="integer", minimum=0, title="Max files", section="Files",
+            description="0 = all. Files are taken in name order.",
+        ),
+        "move_processed": Param(
+            d.move_processed, type="boolean", title="Move finished files", section="Files",
+            description="Off = leave them in the source folder (test runs).",
+        ),
+        # -- record splitting ----------------------------------------------
+        "record_start_markers": Param(
+            d.record_start_markers, type="array", items={"type": "string"},
+            title="Record start markers", section="Record splitting",
+            description="Header phrases that open a record, one per line.",
+        ),
+        "record_start_min_matches": Param(
+            d.record_start_min_matches, type="integer", minimum=1,
+            title="Markers needed on a first page", section="Record splitting",
+        ),
+        "max_pages_per_record": Param(
+            d.max_pages_per_record, type="integer", minimum=1,
+            title="Max pages per record", section="Record splitting",
+            description="Longer detected records are split one per page.",
+        ),
+        "boundary_score_threshold": Param(
+            d.boundary_score_threshold, type="integer", minimum=1,
+            title="Boundary score threshold", section="Record splitting",
+        ),
+        "boundary_only_when_ambiguous": Param(
+            d.boundary_only_when_ambiguous, type="boolean",
+            title="Classify only ambiguous pages", section="Record splitting",
+            description="Off = one boundary call per page.",
+        ),
+        # -- throughput ----------------------------------------------------
+        "page_parse_workers": Param(d.page_parse_workers, type="integer", minimum=1, maximum=32,
+                                    title="Page parse threads per file", section="Throughput"),
+        "boundary_workers": Param(d.boundary_workers, type="integer", minimum=1, maximum=32,
+                                  title="Boundary threads per file", section="Throughput"),
+        "record_workers": Param(d.record_workers, type="integer", minimum=1, maximum=32,
+                                title="Record extract threads per file", section="Throughput"),
+        "max_retries": Param(d.max_retries, type="integer", minimum=1, maximum=10,
+                             title="API attempts per call", section="Throughput"),
+        # -- output --------------------------------------------------------
+        "parse_model": Param(d.parse_model, type="string", title="Parse model", section="Output"),
+        "extract_model": Param(d.extract_model, type="string", title="Extract model", section="Output"),
+        "output_dir": Param(d.output_dir, type="string", title="Output dir (results.csv)", section="Output"),
+        "json_output_dir": Param(d.json_output_dir, type="string", title="Per-record JSON dir", section="Output"),
+        "state_dir": Param(d.state_dir, type="string", title="State dir", section="Output",
+                           description="Checkpoints; a fresh dir re-parses everything."),
+        "save_json": Param(d.save_json, type="boolean", title="Write per-record JSON files", section="Output"),
+        # -- snowflake -----------------------------------------------------
+        "push_to_snowflake": Param(
+            d.push_to_snowflake, type="boolean", title="Load records into Snowflake", section="Snowflake",
+            description="After extraction, replace the run's files' rows in the table below.",
+        ),
+        "snowflake_database": Param(
+            "", type=["null", "string"], title="Database", section="Snowflake",
+            description="Empty = $SNOWFLAKE_DATABASE.",
+        ),
+        "snowflake_schema": Param(
+            "", type=["null", "string"], title="Schema", section="Snowflake",
+            description="Created when missing, used as-is when it exists. Empty = the extraction "
+                        f"schema's title (e.g. SIMPLE_NEONATAL_NOTE_EXTRACTION), else {SNOWFLAKE_DEFAULT_SCHEMA}.",
+        ),
+        "snowflake_table": Param(
+            "", type=["null", "string"], title="Table", section="Snowflake",
+            description=f"Empty = {SNOWFLAKE_DEFAULT_TABLE}. Created from the extraction schema's "
+                        "properties when missing; an existing table is kept and only gains missing columns.",
+        ),
+    }
+
+
 if AIRFLOW_AVAILABLE:
 
     @dag(
@@ -1233,13 +2022,16 @@ if AIRFLOW_AVAILABLE:
         max_active_tasks=max(FILE_CONCURRENCY, 8),
         tags=["landingai", "gdrive", "extraction"],
         doc_md=__doc__,
+        params=dag_params(),
     )
     def gdrive_landingai_extract():
 
         @task
         def list_files() -> List[Dict[str, Any]]:
-            service = get_drive_service()
-            return list_source_files(service, get_source_folder_id())
+            # Resolving here fails a bad schema / path before any file task starts.
+            cfg = config_from_params(get_current_context()["params"])
+            log.info("Run config: %s", cfg.describe())
+            return select_files(get_drive_service(), cfg)
 
         @task(
             pool="landingai_api_pool",  # airflow pools set landingai_api_pool 8 "..."
@@ -1249,14 +2041,11 @@ if AIRFLOW_AVAILABLE:
             execution_timeout=timedelta(minutes=45),
         )
         def process_file(file_meta: Dict[str, Any]) -> List[Dict[str, Any]]:
-            service = get_drive_service()
-            with open(SCHEMA_PATH, "r") as f:
-                schema = json.load(f)
-            csv_path = get_csv_path(OUTPUT_DIR)
-            return process_one_file(
-                service, file_meta, schema, get_dest_folder_id(),
-                JSON_OUTPUT_DIR, csv_path,
-            )
+            # Each file task rebuilds the config rather than pulling the
+            # schemas through XCom once per file.
+            cfg = config_from_params(get_current_context()["params"])
+            dest = (cfg.dest_folder_id or get_dest_folder_id()) if cfg.move_processed else None
+            return process_one_file(get_drive_service(), file_meta, dest, cfg)
 
         @task
         def summarize_run(results: List[List[Dict[str, Any]]]) -> None:
@@ -1280,7 +2069,7 @@ if AIRFLOW_AVAILABLE:
                 if total and fallback / max(ok, 1) > 0.25:
                     log.warning(
                         "%d/%d records came from the per-page fallback (>25%%). "
-                        "Check RECORD_START_MARKERS and MAX_PAGES_PER_RECORD -- "
+                        "Check the record_start_markers and max_pages_per_record params -- "
                         "boundary detection is probably missing a form header.",
                         fallback, ok,
                     )
@@ -1293,9 +2082,26 @@ if AIRFLOW_AVAILABLE:
                         f.get("page_range"), f.get("error"),
                     )
 
+        @task(trigger_rule="all_done", retries=2, retry_delay=timedelta(minutes=2))
+        def load_snowflake() -> Dict[str, Any]:
+            # all_done: one failed file task must not keep the others out of
+            # Snowflake. The file list is pulled here rather than passed in, so
+            # a failed list_files means "nothing to load", not a retry loop.
+            context = get_current_context()
+            files = context["ti"].xcom_pull(task_ids="list_files")
+            if not files:
+                log.info("No files listed this run -- nothing to load into Snowflake.")
+                return {}
+            cfg = config_from_params(context["params"])
+            if not cfg.push_to_snowflake:
+                log.info("push_to_snowflake is off -- skipping the Snowflake load.")
+                return {}
+            return load_to_snowflake(cfg, [f["id"] for f in files])
+
         files = list_files()
         per_file_results = process_file.expand(file_meta=files)
         summarize_run(per_file_results)
+        per_file_results >> load_snowflake()
 
     gdrive_landingai_extract()
 
