@@ -76,7 +76,7 @@ def test_run_validate_raises_when_empty():
 
 
 def test_run_validate_returns_count():
-    cur = FakeCursor(fetchone_map={"COUNT(*)": (10,), "PATIENT_NAME IS NULL": (0,)})
+    cur = FakeCursor(fetchone_map={"PATIENT_NAME IS NULL": (0,), "COUNT(*)": (10,)})
     assert dag.run_validate(cur) == 10
 
 
@@ -110,7 +110,7 @@ def test_run_write_delete_before_inserts():
 
 
 def test_run_write_rolls_back_on_failure():
-    cur = FakeCursor(fail_on="'visits'")
+    cur = FakeCursor(fail_on="NURSES_TRIAGE_NOTES")  # unique to visit INSERT
     with pytest.raises(RuntimeError):
         dag.run_write(cur)
     assert "ROLLBACK" in cur.executed
