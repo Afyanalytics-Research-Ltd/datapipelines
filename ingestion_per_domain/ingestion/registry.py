@@ -1,8 +1,5 @@
 from __future__ import annotations
 
-import importlib
-import pkgutil
-
 _REGISTRY: dict[str, type] = {}
 
 
@@ -36,11 +33,3 @@ def get_ingestor_cls(key: str) -> type:
 def list_registered() -> dict[str, type]:
     """Read-only snapshot, e.g. for a DAG factory looping over every pipeline."""
     return dict(_REGISTRY)
-
-
-def discover_domains() -> None:
-    """Import every module in ingestion.domains so its @register runs."""
-    from . import domains
-
-    for m in pkgutil.iter_modules(domains.__path__):
-        importlib.import_module(f"{domains.__name__}.{m.name}")

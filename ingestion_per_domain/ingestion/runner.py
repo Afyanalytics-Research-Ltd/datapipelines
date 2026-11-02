@@ -3,18 +3,30 @@ only causes its *dependents* to be skipped; everything else still runs."""
 from __future__ import annotations
 
 import argparse
+import importlib
 import logging
 from graphlib import TopologicalSorter
 
 from .config import load_configs
 from .context import IngestResult
 from .hooks import Hooks
-from .registry import discover_domains, get_ingestor_cls
+from .registry import get_ingestor_cls
+
+_INGESTOR_MODULES = {
+    "generic_sql": ".domains.generic_sql",
+    "patients": ".domains.patients",
+}
 
 
 def run_all(config_path: str, only: list[str] | None = None, hooks: Hooks | None = None) -> list[IngestResult]:
-    discover_domains()
     configs = load_configs(config_path)
+    for name, cfg in configs.items():
+        if not cfg.enabled or (only and name not in only):
+            continue
+        module = _INGESTOR_MODULES.get(cfg.ingestor)
+        if module:
+            importlib.import_module(module, package=__package__)
+
     graph = {n: set(c.depends_on) for n, c in configs.items()}
     results: dict[str, IngestResult] = {}
 
