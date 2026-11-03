@@ -122,7 +122,12 @@ def run_validate(cur) -> int:
     row = cur.execute(f"SELECT COUNT(*) FROM {SRC}").fetchone()
     count = int(row[0]) if row else 0
     if not count:
-        raise AirflowFailException(f"{SRC} is empty — run gdrive_landingai_extract first.")
+        raise AirflowFailException(
+            f"{SRC} is empty. gdrive_landingai_extract must run first and write records here. "
+            f"If it ran but this table is still empty, check: (1) the GDRIVE_SOURCE_FOLDER_ID "
+            f"Airflow Variable points at the correct Siaya PDF folder, and (2) the DAG conf "
+            f"passed snowflake_schema=SIAYA_DOCS and snowflake_table=EXTRACTED_FORMS."
+        )
     check_null_names(cur)
     log.info("%s: %d row(s) to process", SRC, count)
     return count
@@ -142,11 +147,55 @@ def run_write(cur) -> dict:
     except Exception:
         cur.execute("ROLLBACK")
         raise
+    if patients == 0 or visits == 0:
+        raise AirflowFailException(
+            f"INSERT produced 0 rows: patients={patients}, visits={visits}. "
+            f"{SRC} had rows but none transferred — check column mapping between "
+            f"EXTRACTED_FORMS and {DST}."
+        )
     log.info(
         "Deleted %d stale row(s); inserted %d patient + %d visit row(s) into %s",
         deleted, patients, visits, DST,
     )
     return {"deleted": deleted, "patients": patients, "visits": visits}
+
+
+VERIFY_SQL = f"""
+    SELECT source_table, COUNT(*) AS n
+    FROM {DST}
+    WHERE facility_id = '{FACILITY}'
+      AND module_source = '{MODULE_SOURCE}'
+      AND source_table IN ('patients', 'visits')
+    GROUP BY source_table
+"""
+
+
+def run_verify(cur) -> dict:
+    """Confirm patients and visits rows landed in EVENTS_RAW with the right module_source.
+
+    Raises if either table is missing — that would mean the INSERT succeeded
+    but the rows are unreadable by downstream steps.
+    If this passes, the data is correctly staged for snowflake_flatten_clean and
+    snowflake_to_v3_migration. If those steps succeed but records don't appear in V3,
+    the next thing to check is that the V3 gateway catalog has 'reception/patients'
+    and 'reception/visits' registered — that is outside this pipeline's control.
+    """
+    rows = cur.execute(VERIFY_SQL).fetchall()
+    counts = {r[0]: int(r[1]) for r in rows}
+    missing = [t for t in ("patients", "visits") if counts.get(t, 0) == 0]
+    if missing:
+        raise AirflowFailException(
+            f"{DST} has no rows for source_table={missing} with "
+            f"module_source='{MODULE_SOURCE}' after the write step. "
+            f"The INSERT reported success but rows are not visible — "
+            f"check Snowflake session isolation or transaction commit."
+        )
+    log.info(
+        "%s: verified %d patient row(s) and %d visit row(s) staged "
+        "with module_source='%s' for snowflake_to_v3_migration.",
+        DST, counts["patients"], counts["visits"], MODULE_SOURCE,
+    )
+    return counts
 
 
 @dag(
@@ -183,7 +232,17 @@ def docs_to_events_raw():
         finally:
             conn.close()
 
-    write(validate())
+    @task
+    def verify(counts: dict) -> None:
+        use_pipelines_dir()
+        import flatten_jsons_schemas as fl
+        conn = fl._snowflake_connect()
+        try:
+            run_verify(conn.cursor())
+        finally:
+            conn.close()
+
+    verify(write(validate()))
 
 
 docs_to_events_raw()

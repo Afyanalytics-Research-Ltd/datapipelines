@@ -83,7 +83,7 @@ def test_run_setup_creates_both_schemas():
 
 def test_run_validate_raises_when_empty():
     cur = FakeCursor(fetchone_map={"COUNT(*)" : (0,)})
-    with pytest.raises(Exception, match="empty"):
+    with pytest.raises(Exception, match="GDRIVE_SOURCE_FOLDER_ID"):
         dag.run_validate(cur)
 
 
@@ -175,6 +175,55 @@ def test_run_write_module_source_is_reception_service():
     dag.run_write(cur)
     for sql in cur.executed[2:4]:  # patient INSERT + visit INSERT
         assert "'reception-service'" in sql
+
+
+def test_run_write_raises_when_insert_produces_zero_rows():
+    cur = FakeCursor(rowcount=0)
+    with pytest.raises(Exception, match="0 rows"):
+        dag.run_write(cur)
+
+
+# ---------------------------------------------------------------------------
+# run_verify
+# ---------------------------------------------------------------------------
+
+class FakeVerifyCursor(FakeCursor):
+    """Returns configurable per-source_table counts from the VERIFY_SQL GROUP BY."""
+
+    def __init__(self, patient_count: int = 5, visit_count: int = 5):
+        super().__init__()
+        self._results = [("patients", patient_count), ("visits", visit_count)]
+
+    def fetchall(self):
+        return [(r[0], r[1]) for r in self._results if r[1] > 0]
+
+
+def test_run_verify_passes_when_both_tables_present():
+    cur = FakeVerifyCursor(patient_count=3, visit_count=3)
+    result = dag.run_verify(cur)
+    assert result["patients"] == 3
+    assert result["visits"] == 3
+
+
+def test_run_verify_raises_when_patients_missing():
+    cur = FakeVerifyCursor(patient_count=0, visit_count=4)
+    with pytest.raises(Exception, match="patients"):
+        dag.run_verify(cur)
+
+
+def test_run_verify_raises_when_visits_missing():
+    cur = FakeVerifyCursor(patient_count=4, visit_count=0)
+    with pytest.raises(Exception, match="visits"):
+        dag.run_verify(cur)
+
+
+def test_run_verify_sql_filters_by_facility_and_module_source():
+    cur = FakeVerifyCursor()
+    dag.run_verify(cur)
+    verify_sql = cur.executed[0]
+    assert f"facility_id = '{dag.FACILITY}'" in verify_sql
+    assert f"module_source = '{dag.MODULE_SOURCE}'" in verify_sql
+    assert "source_table IN ('patients', 'visits')" in verify_sql
 
 
 # ---------------------------------------------------------------------------
