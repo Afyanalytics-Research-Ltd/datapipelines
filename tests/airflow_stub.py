@@ -483,8 +483,54 @@ def install() -> dict[str, types.ModuleType]:
 
     exceptions_mod = types.ModuleType("airflow.exceptions")
     exceptions_mod.AirflowException = RuntimeError
+    exceptions_mod.AirflowFailException = RuntimeError
     exceptions_mod.AirflowNotFoundException = AirflowVariableNotFound
     exceptions_mod.AirflowSkipException = RuntimeError
+
+    # airflow.sdk — Airflow 3.x SDK-style decorators (@dag, @task, Param, get_current_context).
+    # Tests only call module-level helpers, not task internals, so these are pass-throughs.
+    class _Param:
+        def __init__(self, default=None, **kwargs):
+            self.default = default
+
+    def _dag_deco(**dag_kwargs):
+        def decorator(fn):
+            def factory(*args, **kw):
+                d = DAG(dag_id=dag_kwargs.get("dag_id", fn.__name__), **{
+                    k: v for k, v in dag_kwargs.items() if k != "dag_id"
+                })
+                with d:
+                    fn(*args, **kw)
+                return d
+            factory.__name__ = fn.__name__
+            return factory
+        return decorator
+
+    def _task_deco(fn=None, *, task_id=None, **kwargs):
+        def decorator(f):
+            def wrapper(*args, **kw):
+                op = PythonOperator(task_id=task_id or f.__name__, python_callable=f)
+                for arg in args:
+                    if isinstance(arg, XComArgStub):
+                        op.set_upstream(arg.task)
+                return op.output
+            wrapper.__name__ = f.__name__
+            wrapper.__wrapped__ = f
+            return wrapper
+        return decorator(fn) if fn is not None else decorator
+
+    def _get_current_context():
+        return {"params": {}}
+
+    sdk_mod = types.ModuleType("airflow.sdk")
+    sdk_mod.dag = _dag_deco
+    sdk_mod.task = _task_deco
+    sdk_mod.Param = _Param
+    sdk_mod.get_current_context = _get_current_context
+
+    sdk_exceptions_mod = types.ModuleType("airflow.sdk.exceptions")
+    sdk_exceptions_mod.AirflowFailException = RuntimeError
+    sdk_exceptions_mod.AirflowSkipException = RuntimeError
 
     modules = {
         "airflow": airflow_mod,
@@ -502,6 +548,8 @@ def install() -> dict[str, types.ModuleType]:
         "airflow.utils": utils_mod,
         "airflow.utils.trigger_rule": trigger_rule_mod,
         "airflow.exceptions": exceptions_mod,
+        "airflow.sdk": sdk_mod,
+        "airflow.sdk.exceptions": sdk_exceptions_mod,
     }
 
     # wire parent -> child attributes so both `import airflow.models` and
@@ -520,6 +568,8 @@ def install() -> dict[str, types.ModuleType]:
     airflow_mod.utils = utils_mod
     utils_mod.trigger_rule = trigger_rule_mod
     airflow_mod.exceptions = exceptions_mod
+    airflow_mod.sdk = sdk_mod
+    sdk_mod.exceptions = sdk_exceptions_mod
 
     sys.modules.update(modules)
     return modules
