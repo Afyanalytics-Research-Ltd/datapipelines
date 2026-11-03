@@ -69,11 +69,12 @@ def test_check_null_names_logs_warning_when_nulls_present(caplog):
 # run_setup
 # ---------------------------------------------------------------------------
 
-def test_run_setup_creates_both_schemas():
+def test_run_setup_creates_both_schemas_and_events_raw_table():
     cur = FakeCursor()
     dag.run_setup(cur)
     assert any("SIAYA_DOCS" in s for s in cur.executed)
     assert any("SIAYA_RAW" in s for s in cur.executed)
+    assert any("EVENTS_RAW" in s and "CREATE TABLE" in s for s in cur.executed)
     assert all("IF NOT EXISTS" in s for s in cur.executed)
 
 
@@ -85,6 +86,16 @@ def test_run_validate_raises_when_empty():
     cur = FakeCursor(fetchone_map={"COUNT(*)" : (0,)})
     with pytest.raises(Exception, match="GDRIVE_SOURCE_FOLDER_ID"):
         dag.run_validate(cur)
+
+
+def test_run_validate_raises_when_table_does_not_exist():
+    class MissingTableCursor(FakeCursor):
+        def execute(self, sql, params=None):
+            if "COUNT(*)" in sql:
+                raise RuntimeError("SQL compilation error: Object 'HOSPITALS.SIAYA_DOCS.EXTRACTED_FORMS' does not exist or not authorized")
+            return super().execute(sql, params)
+    with pytest.raises(Exception, match="does not exist"):
+        dag.run_validate(MissingTableCursor())
 
 
 def test_run_validate_returns_count():
@@ -181,6 +192,24 @@ def test_run_write_raises_when_insert_produces_zero_rows():
     cur = FakeCursor(rowcount=0)
     with pytest.raises(Exception, match="0 rows"):
         dag.run_write(cur)
+    assert "ROLLBACK" in cur.executed
+    assert "COMMIT" not in cur.executed
+
+
+def test_run_write_raises_and_rolls_back_on_partial_failure():
+    """visits INSERT produces 0 rows while patients succeeds — must ROLLBACK, not COMMIT."""
+    counts = iter([5, 5, 0])  # deleted=5, patients=5, visits=0
+
+    class PartialCursor(FakeCursor):
+        @property
+        def rowcount(self):
+            return next(counts, 0)
+
+    cur = PartialCursor()
+    with pytest.raises(Exception, match="0 rows"):
+        dag.run_write(cur)
+    assert "ROLLBACK" in cur.executed
+    assert "COMMIT" not in cur.executed
 
 
 # ---------------------------------------------------------------------------
