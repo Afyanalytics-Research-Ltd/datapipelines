@@ -93,10 +93,23 @@ VISIT_INSERT_SQL = f"""
 """
 
 
+CREATE_EVENTS_RAW_SQL = f"""
+    CREATE TABLE IF NOT EXISTS {DST} (
+        facility_id    VARCHAR,
+        ingested_at    TIMESTAMP_TZ,
+        module_source  VARCHAR,
+        source_table   VARCHAR,
+        namespace      VARCHAR,
+        payload        VARIANT
+    )
+"""
+
+
 def run_setup(cur) -> None:
-    """Create source and destination schemas if they do not exist."""
+    """Create source and destination schemas and EVENTS_RAW table if they do not exist."""
     cur.execute("CREATE SCHEMA IF NOT EXISTS HOSPITALS.SIAYA_DOCS")
     cur.execute("CREATE SCHEMA IF NOT EXISTS HOSPITALS.SIAYA_RAW")
+    cur.execute(CREATE_EVENTS_RAW_SQL)
 
 
 def check_null_names(cur) -> int:
@@ -119,7 +132,18 @@ def check_null_names(cur) -> int:
 
 def run_validate(cur) -> int:
     """Return total row count; raise AirflowFailException if EXTRACTED_FORMS is empty."""
-    row = cur.execute(f"SELECT COUNT(*) FROM {SRC}").fetchone()
+    try:
+        row = cur.execute(f"SELECT COUNT(*) FROM {SRC}").fetchone()
+    except Exception as e:
+        msg = str(e)
+        if "does not exist" in msg or "not authorized" in msg:
+            raise AirflowFailException(
+                f"{SRC} does not exist or is not accessible. "
+                f"Step 1 (gdrive_landingai_extract) must run successfully before this step. "
+                f"Check: (1) step 1 completed without error, (2) its conf included "
+                f"push_to_snowflake=true, snowflake_schema=SIAYA_DOCS, snowflake_table=EXTRACTED_FORMS."
+            ) from e
+        raise
     count = int(row[0]) if row else 0
     if not count:
         raise AirflowFailException(
@@ -143,16 +167,17 @@ def run_write(cur) -> dict:
         patients = cur.rowcount
         cur.execute(VISIT_INSERT_SQL)
         visits = cur.rowcount
+        if patients == 0 or visits == 0:
+            cur.execute("ROLLBACK")
+            raise AirflowFailException(
+                f"INSERT produced 0 rows: patients={patients}, visits={visits}. "
+                f"{SRC} had rows but none transferred — check column mapping between "
+                f"EXTRACTED_FORMS and {DST}."
+            )
         cur.execute("COMMIT")
     except Exception:
         cur.execute("ROLLBACK")
         raise
-    if patients == 0 or visits == 0:
-        raise AirflowFailException(
-            f"INSERT produced 0 rows: patients={patients}, visits={visits}. "
-            f"{SRC} had rows but none transferred — check column mapping between "
-            f"EXTRACTED_FORMS and {DST}."
-        )
     log.info(
         "Deleted %d stale row(s); inserted %d patient + %d visit row(s) into %s",
         deleted, patients, visits, DST,
