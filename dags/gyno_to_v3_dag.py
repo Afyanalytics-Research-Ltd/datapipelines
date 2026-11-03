@@ -155,8 +155,9 @@ def gyno_to_v3():
                 log.info("%-16s %s", step, res)
         if bad:
             log.warning("refused / errored: %s", bad)
-        ctx = get_current_context()
-        failed = [t.task_id for t in ctx["dag_run"].get_task_instances() if t.state == "failed"]
+        # Airflow 3 tasks can't query the DB for task states; a failed / upstream_failed task
+        # has no return XCom, so it arrives here as None (successful ones return a dict, even {}).
+        failed = [n for n, r in zip([*GROUPS, "chosen_steps"], results) if r is None]
         if failed:
             raise AirflowFailException(f"groups that failed (re-run; only_missing resumes them): {failed}")
 

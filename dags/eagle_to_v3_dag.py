@@ -153,7 +153,9 @@ def eagle_to_v3():
                     bad[step] = res.get("failed") or res.get("error")
         if bad:
             log.warning("refused / errored: %s", bad)
-        failed = [t.task_id for t in get_current_context()["dag_run"].get_task_instances() if t.state == "failed"]
+        # Airflow 3 tasks can't query the DB for task states; a failed / upstream_failed task
+        # has no return XCom, so it arrives here as None (successful ones return a dict, even {}).
+        failed = [n for n, r in zip(["chosen_steps", "base", *GROUPS], results) if r is None]
         if failed:
             raise AirflowFailException(f"tasks that failed (re-run; only_missing resumes them): {failed}")
 
