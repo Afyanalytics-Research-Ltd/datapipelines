@@ -66,6 +66,18 @@ def test_check_null_names_logs_warning_when_nulls_present(caplog):
 
 
 # ---------------------------------------------------------------------------
+# run_setup
+# ---------------------------------------------------------------------------
+
+def test_run_setup_creates_both_schemas():
+    cur = FakeCursor()
+    dag.run_setup(cur)
+    assert any("SIAYA_DOCS" in s for s in cur.executed)
+    assert any("SIAYA_RAW" in s for s in cur.executed)
+    assert all("IF NOT EXISTS" in s for s in cur.executed)
+
+
+# ---------------------------------------------------------------------------
 # run_validate
 # ---------------------------------------------------------------------------
 

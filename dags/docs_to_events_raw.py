@@ -93,6 +93,12 @@ VISIT_INSERT_SQL = f"""
 """
 
 
+def run_setup(cur) -> None:
+    """Create source and destination schemas if they do not exist."""
+    cur.execute("CREATE SCHEMA IF NOT EXISTS HOSPITALS.SIAYA_DOCS")
+    cur.execute("CREATE SCHEMA IF NOT EXISTS HOSPITALS.SIAYA_RAW")
+
+
 def check_null_names(cur) -> int:
     """Return count of rows with NULL PATIENT_NAME and log a warning if any.
 
@@ -161,7 +167,9 @@ def docs_to_events_raw():
         import flatten_jsons_schemas as fl
         conn = fl._snowflake_connect()
         try:
-            return run_validate(conn.cursor())
+            cur = conn.cursor()
+            run_setup(cur)
+            return run_validate(cur)
         finally:
             conn.close()
 
