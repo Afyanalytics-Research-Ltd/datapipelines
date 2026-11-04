@@ -766,7 +766,10 @@ _SERVICE_OVERRIDE: dict[str, str] = {"reception_visit": "evaluation", "settings_
 # Upsert column per transform when it isn't uuid. kisumu patients have no
 # uuid; patient_no ("kisumu_v3-org4-<no>-<v2 id>") is unique per patient and
 # enabled as a match_on column for `patient`, so a re-post updates in place.
-_MATCH_ON_OVERRIDE: dict[str, str] = {"reception_patient": "patient_no"}
+# v3:patients (v3_passthrough): same treatment — a patient already in V3 from
+# another source collides on patient_no_unique; match_on="patient_no" turns the
+# duplicate into an update and writes the V3 id to the ID map so visits resolve.
+_MATCH_ON_OVERRIDE: dict[str, str] = {"reception_patient": "patient_no", "v3:patients": "patient_no"}
 
 # Final V3 column names, applied to the payload right before posting (AFTER
 # _remap_fks_via_uuid, which works on the transform's renamed names like
