@@ -149,18 +149,20 @@ def test_run_validate_calls_check_null_names(monkeypatch):
 def test_run_write_returns_counts():
     cur = FakeCursor(rowcount=7)
     result = dag.run_write(cur, SRC, DST, FACILITY)
-    assert result == {"deleted": 7, "patients": 7, "visits": 7}
+    assert result == {"deleted": 7, "patients": 7, "visits": 7, "vitals": 7, "doctor_notes": 7}
 
 
 def test_run_write_delete_before_inserts():
     cur = FakeCursor()
     dag.run_write(cur, SRC, DST, FACILITY)
-    # BEGIN, DELETE, patient INSERT, visit INSERT, COMMIT
+    # BEGIN, DELETE, patient INSERT, visit INSERT, vitals INSERT, doctor_notes INSERT, COMMIT
     assert cur.executed[0] == "BEGIN"
     assert "DELETE" in cur.executed[1]
     assert "'patients'" in cur.executed[2]
     assert "'visits'" in cur.executed[3]
-    assert cur.executed[4] == "COMMIT"
+    assert "'vitals'" in cur.executed[4]
+    assert "'doctor_notes'" in cur.executed[5]
+    assert cur.executed[6] == "COMMIT"
 
 
 def test_run_write_rolls_back_on_failure():
@@ -176,8 +178,8 @@ def test_run_write_delete_filters_by_file_id():
     dag.run_write(cur, SRC, DST, FACILITY)
     delete_sql = cur.executed[1]   # executed[0] = BEGIN
     assert "payload:file_id::STRING" in delete_sql
-    assert "module_source = 'reception-service'" in delete_sql
-    assert "source_table IN ('patients', 'visits')" in delete_sql
+    assert "module_source" not in delete_sql
+    assert "source_table IN ('patients', 'visits', 'vitals', 'doctor_notes')" in delete_sql
 
 
 def test_run_write_patient_payload_fields():
@@ -202,6 +204,85 @@ def test_run_write_visit_payload_fields():
     assert "RECORD_KEY || '_v'" in visit_sql
     assert "RECORD_KEY" in visit_sql
     assert "COALESCE(NURSES_TRIAGE_NOTES, HISTORY_OF_PRESENT_ILLNESS, DOCTORS_NOTES)" in visit_sql
+
+
+def test_run_write_vitals_payload_fields():
+    cur = FakeCursor()
+    dag.run_write(cur, SRC, DST, FACILITY)
+    vitals_sql = cur.executed[4]   # BEGIN, DELETE, patient, visit, vitals
+    for field in ("'visit_id'", "'patient_id'", "'temperature'", "'systolic_bp'",
+                  "'diastolic_bp'", "'pulse'", "'weight'", "'height'", "'bmi'",
+                  "'respiratory_rate'", "'oxygen_saturation'"):
+        assert field in vitals_sql, f"Missing field {field} in vitals INSERT"
+    assert "TRY_CAST" in vitals_sql
+    assert "SPLIT_PART" in vitals_sql
+    assert "BLOOD_PRESSURE" in vitals_sql
+    assert "RECORD_KEY || '_vitals'" in vitals_sql
+    assert "RECORD_KEY || '_v'" in vitals_sql
+
+
+def test_run_write_doctor_notes_payload_fields():
+    cur = FakeCursor()
+    dag.run_write(cur, SRC, DST, FACILITY)
+    dn_sql = cur.executed[5]       # BEGIN, DELETE, patient, visit, vitals, doctor_notes
+    for field in ("'visit_id'", "'patient_id'", "'chief_complaints'",
+                  "'history_of_present_illness'", "'examination'", "'surgical_history'", "'plan'"):
+        assert field in dn_sql, f"Missing field {field} in doctor_notes INSERT"
+    assert "EXTRACTION:chief_complaints" in dn_sql
+    assert "RECORD_KEY || '_dn'" in dn_sql
+    assert "RECORD_KEY || '_v'" in dn_sql
+
+
+def test_run_write_delete_covers_vitals_and_doctor_notes():
+    cur = FakeCursor()
+    dag.run_write(cur, SRC, DST, FACILITY)
+    delete_sql = cur.executed[1]
+    assert "'vitals'" in delete_sql
+    assert "'doctor_notes'" in delete_sql
+
+
+def test_run_write_delete_does_not_filter_module_source():
+    cur = FakeCursor()
+    dag.run_write(cur, SRC, DST, FACILITY)
+    delete_sql = cur.executed[1]
+    assert "module_source" not in delete_sql
+
+
+def test_run_write_rollback_on_vitals_insert_failure():
+    cur = FakeCursor(fail_on="BODY_MASS_INDEX")
+    with pytest.raises(RuntimeError):
+        dag.run_write(cur, SRC, DST, FACILITY)
+    assert "ROLLBACK" in cur.executed
+    assert "COMMIT" not in cur.executed
+
+
+def test_run_write_rollback_on_doctor_notes_insert_failure():
+    cur = FakeCursor(fail_on="EXTRACTION:chief_complaints")
+    with pytest.raises(RuntimeError):
+        dag.run_write(cur, SRC, DST, FACILITY)
+    assert "ROLLBACK" in cur.executed
+    assert "COMMIT" not in cur.executed
+
+
+def test_run_write_null_vitals_does_not_rollback():
+    """0-row vitals INSERT is not fatal — only patients/visits must have rows."""
+    counts = iter([5, 5, 5, 0, 5])  # deleted, patients, visits, vitals=0, doctor_notes
+
+    class PartialVitalsCursor(FakeCursor):
+        def __init__(self):
+            self._fetchone_map = {}
+            self.fail_on = None
+            self.executed = []
+
+        @property
+        def rowcount(self):
+            return next(counts, 0)
+
+    cur = PartialVitalsCursor()
+    result = dag.run_write(cur, SRC, DST, FACILITY)
+    assert result["vitals"] == 0
+    assert "COMMIT" in cur.executed
+    assert "ROLLBACK" not in cur.executed
 
 
 def test_visit_id_distinct_from_patient_id():
@@ -252,8 +333,15 @@ def test_run_write_raises_and_rolls_back_on_partial_failure():
 def test_run_write_uses_facility_in_sql():
     cur = FakeCursor()
     dag.run_write(cur, SRC, DST, FACILITY)
-    for sql in cur.executed[2:4]:
+    for sql in cur.executed[2:6]:  # patient, visit, vitals, doctor_notes INSERTs
         assert f"'{FACILITY}'" in sql
+
+
+def test_run_write_evaluation_inserts_use_patient_evaluation_service():
+    cur = FakeCursor()
+    dag.run_write(cur, SRC, DST, FACILITY)
+    for sql in cur.executed[4:6]:  # vitals INSERT + doctor_notes INSERT
+        assert "'patient-evaluation-service'" in sql
 
 
 # ---------------------------------------------------------------------------
@@ -261,14 +349,19 @@ def test_run_write_uses_facility_in_sql():
 # ---------------------------------------------------------------------------
 
 class FakeVerifyCursor(FakeCursor):
-    """Returns configurable per-source_table counts from the verify GROUP BY."""
+    """Returns configurable per-source_table counts from the two verify GROUP BY queries."""
 
-    def __init__(self, patient_count: int = 5, visit_count: int = 5):
+    def __init__(self, patient_count: int = 5, visit_count: int = 5,
+                 vitals_count: int = 5, doctor_notes_count: int = 5):
         super().__init__()
-        self._results = [("patients", patient_count), ("visits", visit_count)]
+        self._reception = [("patients", patient_count), ("visits", visit_count)]
+        self._evaluation = [("vitals", vitals_count), ("doctor_notes", doctor_notes_count)]
 
     def fetchall(self):
-        return [(r[0], r[1]) for r in self._results if r[1] > 0]
+        last_sql = self.executed[-1] if self.executed else ""
+        if "patient-evaluation-service" in last_sql:
+            return [(r[0], r[1]) for r in self._evaluation if r[1] > 0]
+        return [(r[0], r[1]) for r in self._reception if r[1] > 0]
 
 
 def test_run_verify_passes_when_both_tables_present():
@@ -290,13 +383,31 @@ def test_run_verify_raises_when_visits_missing():
         dag.run_verify(cur, DST, FACILITY)
 
 
+def test_run_verify_zero_vitals_does_not_raise():
+    """0-row vitals/doctor_notes is acceptable — no clinical data extracted."""
+    cur = FakeVerifyCursor(patient_count=4, visit_count=4, vitals_count=0, doctor_notes_count=0)
+    result = dag.run_verify(cur, DST, FACILITY)
+    assert result["patients"] == 4
+    assert result.get("vitals", 0) == 0
+
+
+def test_run_verify_returns_all_four_counts():
+    cur = FakeVerifyCursor(patient_count=3, visit_count=3, vitals_count=3, doctor_notes_count=3)
+    result = dag.run_verify(cur, DST, FACILITY)
+    assert set(result.keys()) == {"patients", "visits", "vitals", "doctor_notes"}
+
+
 def test_run_verify_sql_filters_by_facility_and_module_source():
     cur = FakeVerifyCursor()
     dag.run_verify(cur, DST, FACILITY)
-    verify_sql = cur.executed[0]
-    assert f"facility_id = '{FACILITY}'" in verify_sql
-    assert f"module_source = '{dag.MODULE_SOURCE}'" in verify_sql
-    assert "source_table IN ('patients', 'visits')" in verify_sql
+    reception_sql = cur.executed[0]
+    evaluation_sql = cur.executed[1]
+    assert f"facility_id = '{FACILITY}'" in reception_sql
+    assert "module_source = 'reception-service'" in reception_sql
+    assert "source_table IN ('patients', 'visits')" in reception_sql
+    assert f"facility_id = '{FACILITY}'" in evaluation_sql
+    assert "module_source = 'patient-evaluation-service'" in evaluation_sql
+    assert "source_table IN ('vitals', 'doctor_notes')" in evaluation_sql
 
 
 # ---------------------------------------------------------------------------
