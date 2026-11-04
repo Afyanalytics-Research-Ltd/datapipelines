@@ -333,8 +333,15 @@ def test_run_write_raises_and_rolls_back_on_partial_failure():
 def test_run_write_uses_facility_in_sql():
     cur = FakeCursor()
     dag.run_write(cur, SRC, DST, FACILITY)
-    for sql in cur.executed[2:4]:
+    for sql in cur.executed[2:6]:  # patient, visit, vitals, doctor_notes INSERTs
         assert f"'{FACILITY}'" in sql
+
+
+def test_run_write_evaluation_inserts_use_patient_evaluation_service():
+    cur = FakeCursor()
+    dag.run_write(cur, SRC, DST, FACILITY)
+    for sql in cur.executed[4:6]:  # vitals INSERT + doctor_notes INSERT
+        assert "'patient-evaluation-service'" in sql
 
 
 # ---------------------------------------------------------------------------
@@ -342,14 +349,19 @@ def test_run_write_uses_facility_in_sql():
 # ---------------------------------------------------------------------------
 
 class FakeVerifyCursor(FakeCursor):
-    """Returns configurable per-source_table counts from the verify GROUP BY."""
+    """Returns configurable per-source_table counts from the two verify GROUP BY queries."""
 
-    def __init__(self, patient_count: int = 5, visit_count: int = 5):
+    def __init__(self, patient_count: int = 5, visit_count: int = 5,
+                 vitals_count: int = 5, doctor_notes_count: int = 5):
         super().__init__()
-        self._results = [("patients", patient_count), ("visits", visit_count)]
+        self._reception = [("patients", patient_count), ("visits", visit_count)]
+        self._evaluation = [("vitals", vitals_count), ("doctor_notes", doctor_notes_count)]
 
     def fetchall(self):
-        return [(r[0], r[1]) for r in self._results if r[1] > 0]
+        last_sql = self.executed[-1] if self.executed else ""
+        if "patient-evaluation-service" in last_sql:
+            return [(r[0], r[1]) for r in self._evaluation if r[1] > 0]
+        return [(r[0], r[1]) for r in self._reception if r[1] > 0]
 
 
 def test_run_verify_passes_when_both_tables_present():
@@ -371,13 +383,31 @@ def test_run_verify_raises_when_visits_missing():
         dag.run_verify(cur, DST, FACILITY)
 
 
+def test_run_verify_zero_vitals_does_not_raise():
+    """0-row vitals/doctor_notes is acceptable — no clinical data extracted."""
+    cur = FakeVerifyCursor(patient_count=4, visit_count=4, vitals_count=0, doctor_notes_count=0)
+    result = dag.run_verify(cur, DST, FACILITY)
+    assert result["patients"] == 4
+    assert result.get("vitals", 0) == 0
+
+
+def test_run_verify_returns_all_four_counts():
+    cur = FakeVerifyCursor(patient_count=3, visit_count=3, vitals_count=3, doctor_notes_count=3)
+    result = dag.run_verify(cur, DST, FACILITY)
+    assert set(result.keys()) == {"patients", "visits", "vitals", "doctor_notes"}
+
+
 def test_run_verify_sql_filters_by_facility_and_module_source():
     cur = FakeVerifyCursor()
     dag.run_verify(cur, DST, FACILITY)
-    verify_sql = cur.executed[0]
-    assert f"facility_id = '{FACILITY}'" in verify_sql
-    assert f"module_source = '{dag.MODULE_SOURCE}'" in verify_sql
-    assert "source_table IN ('patients', 'visits')" in verify_sql
+    reception_sql = cur.executed[0]
+    evaluation_sql = cur.executed[1]
+    assert f"facility_id = '{FACILITY}'" in reception_sql
+    assert "module_source = 'reception-service'" in reception_sql
+    assert "source_table IN ('patients', 'visits')" in reception_sql
+    assert f"facility_id = '{FACILITY}'" in evaluation_sql
+    assert "module_source = 'patient-evaluation-service'" in evaluation_sql
+    assert "source_table IN ('vitals', 'doctor_notes')" in evaluation_sql
 
 
 # ---------------------------------------------------------------------------

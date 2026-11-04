@@ -2,9 +2,11 @@
 """
 docs_to_events_raw — bridge {facility}_DOCS.EXTRACTED_FORMS → {facility}_RAW.EVENTS_RAW
 
-Writes two V3-shaped EVENTS_RAW rows per extracted record:
-  source_table='patients', module_source='reception-service'
-  source_table='visits',   module_source='reception-service'
+Writes four V3-shaped EVENTS_RAW rows per extracted record:
+  source_table='patients',     module_source='reception-service'
+  source_table='visits',       module_source='reception-service'
+  source_table='vitals',       module_source='patient-evaluation-service'
+  source_table='doctor_notes', module_source='patient-evaluation-service'
 
 Requires 'facility' in DAG conf (e.g. {"facility": "siaya"}).
 Derives source/destination schemas from that key — no code changes per new facility.
@@ -240,37 +242,44 @@ def run_write(cur, src: str, dst: str, facility: str) -> dict:
 
 
 def run_verify(cur, dst: str, facility: str) -> dict:
-    """Confirm patients and visits rows landed in EVENTS_RAW with the right module_source.
+    """Confirm all four source_tables landed in EVENTS_RAW.
 
-    Raises if either table is missing — that would mean the INSERT succeeded
-    but the rows are unreadable by downstream steps.
-    If this passes, the data is correctly staged for snowflake_flatten_clean and
-    snowflake_to_v3_migration. If those steps succeed but records don't appear in V3,
-    the next thing to check is that the V3 gateway catalog has 'reception/patients'
-    and 'reception/visits' registered — that is outside this pipeline's control.
+    Hard-fails if patients or visits are missing (pipeline cannot proceed without them).
+    Logs vitals and doctor_notes counts as info — 0-row is acceptable if no clinical
+    data was extracted, but non-zero confirms the evaluation INSERTs ran correctly.
     """
-    verify_sql = f"""
+    reception_sql = f"""
         SELECT source_table, COUNT(*) AS n
         FROM {dst}
         WHERE facility_id = '{facility}'
-          AND module_source = '{MODULE_SOURCE}'
+          AND module_source = 'reception-service'
           AND source_table IN ('patients', 'visits')
         GROUP BY source_table
     """
-    rows = cur.execute(verify_sql).fetchall()
+    rows = cur.execute(reception_sql).fetchall()
     counts = {r[0]: int(r[1]) for r in rows}
     missing = [t for t in ("patients", "visits") if counts.get(t, 0) == 0]
     if missing:
         raise AirflowFailException(
             f"{dst} has no rows for source_table={missing} with "
-            f"module_source='{MODULE_SOURCE}' after the write step. "
+            f"module_source='reception-service' after the write step. "
             f"The INSERT reported success but rows are not visible — "
             f"check Snowflake session isolation or transaction commit."
         )
+    evaluation_sql = f"""
+        SELECT source_table, COUNT(*) AS n
+        FROM {dst}
+        WHERE facility_id = '{facility}'
+          AND module_source = 'patient-evaluation-service'
+          AND source_table IN ('vitals', 'doctor_notes')
+        GROUP BY source_table
+    """
+    eval_rows = cur.execute(evaluation_sql).fetchall()
+    counts.update({r[0]: int(r[1]) for r in eval_rows})
     log.info(
-        "%s: verified %d patient row(s) and %d visit row(s) staged "
-        "with module_source='%s' for snowflake_to_v3_migration.",
-        dst, counts["patients"], counts["visits"], MODULE_SOURCE,
+        "%s: verified patients=%d visits=%d vitals=%d doctor_notes=%d staged for snowflake_to_v3_migration.",
+        dst, counts["patients"], counts["visits"],
+        counts.get("vitals", 0), counts.get("doctor_notes", 0),
     )
     return counts
 
