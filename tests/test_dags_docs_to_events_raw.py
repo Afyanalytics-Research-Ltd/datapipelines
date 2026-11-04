@@ -185,11 +185,12 @@ def test_run_write_patient_payload_fields():
     dag.run_write(cur, SRC, DST, FACILITY)
     patient_sql = cur.executed[2]  # BEGIN, DELETE, patient INSERT
     for field in ("'id'", "'file_id'", "'last_name'", "'patient_no'", "'date_of_birth'",
-                  "'age'", "'sex'", "'phone'", "'address'"):
+                  "'age'", "'gender'", "'phone'", "'address'"):
         assert field in patient_sql, f"Missing field {field} in patient INSERT"
     assert "RECORD_KEY" in patient_sql
     assert "PATIENT_NAME" in patient_sql
     assert "COALESCE(CAMP_FILE_NUMBER, PATIENT_ID_FILE_NO)" in patient_sql
+    assert "TRY_CAST(SPLIT_PART(AGE" in patient_sql
 
 
 def test_run_write_visit_payload_fields():
@@ -198,8 +199,9 @@ def test_run_write_visit_payload_fields():
     visit_sql = cur.executed[3]    # BEGIN, DELETE, patient INSERT, visit INSERT
     for field in ("'id'", "'file_id'", "'patient_id'", "'date'", "'notes'"):
         assert field in visit_sql, f"Missing field {field} in visit INSERT"
-    assert "RECORD_KEY || '_v'" in visit_sql   # visit id distinct from patient id
-    assert "RECORD_KEY" in visit_sql            # patient_id links back to patient row
+    assert "RECORD_KEY || '_v'" in visit_sql
+    assert "RECORD_KEY" in visit_sql
+    assert "COALESCE(NURSES_TRIAGE_NOTES, HISTORY_OF_PRESENT_ILLNESS, DOCTORS_NOTES)" in visit_sql
 
 
 def test_visit_id_distinct_from_patient_id():

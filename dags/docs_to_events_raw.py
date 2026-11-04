@@ -130,8 +130,8 @@ def run_write(cur, src: str, dst: str, facility: str) -> dict:
                 'last_name',     PATIENT_NAME,
                 'patient_no',    COALESCE(CAMP_FILE_NUMBER, PATIENT_ID_FILE_NO),
                 'date_of_birth', DATE_OF_BIRTH,
-                'age',           AGE,
-                'sex',           SEX,
+                'age',           TRY_CAST(SPLIT_PART(AGE, ' ', 1) AS INTEGER),
+                'gender',        SEX,
                 'phone',         PHONE_NUMBER,
                 'address',       ADDRESS
             )
@@ -152,7 +152,7 @@ def run_write(cur, src: str, dst: str, facility: str) -> dict:
                 'file_id',    FILE_ID,
                 'patient_id', RECORD_KEY,
                 'date',       VISIT_DATE,
-                'notes',      NURSES_TRIAGE_NOTES
+                'notes',      COALESCE(NURSES_TRIAGE_NOTES, HISTORY_OF_PRESENT_ILLNESS, DOCTORS_NOTES)
             )
         FROM {src}
     """
