@@ -219,7 +219,6 @@ def run_write(cur, src: str, dst: str, facility: str) -> dict:
         cur.execute(visit_insert_sql)
         visits = cur.rowcount
         if patients == 0 or visits == 0:
-            cur.execute("ROLLBACK")
             raise AirflowFailException(
                 f"INSERT produced 0 rows: patients={patients}, visits={visits}. "
                 f"{src} had rows but none transferred — check column mapping between "
