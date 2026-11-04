@@ -26,7 +26,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from airflow.exceptions import AirflowFailException
-from airflow.sdk import dag, get_current_context, task
+from airflow.sdk import Param, dag, get_current_context, task
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from pipelines_common import use_pipelines_dir
@@ -227,6 +227,7 @@ def run_verify(cur, dst: str, facility: str) -> dict:
     max_active_runs=1,
     tags=["snowflake", "documents", "migration"],
     default_args={"owner": "data-eng", "retries": 1, "retry_delay": timedelta(minutes=2)},
+    params={"facility": Param("", type="string", title="Facility key", description='e.g. "siaya"')},
 )
 def docs_to_events_raw():
 
@@ -251,13 +252,16 @@ def docs_to_events_raw():
     def write(row_count: int) -> dict:
         ctx = get_current_context()
         facility = ctx['dag_run'].conf.get('facility', '').strip().lower()
+        _require_facility(facility)
         src = f"HOSPITALS.{facility.upper()}_DOCS.EXTRACTED_FORMS"
         dst = f"HOSPITALS.{facility.upper()}_RAW.EVENTS_RAW"
         use_pipelines_dir()
         import flatten_jsons_schemas as fl
         conn = fl._snowflake_connect()
         try:
-            return run_write(conn.cursor(), src, dst, facility)
+            cur = conn.cursor()
+            run_setup(cur, facility, dst)
+            return run_write(cur, src, dst, facility)
         finally:
             conn.close()
 
@@ -265,6 +269,7 @@ def docs_to_events_raw():
     def verify(counts: dict) -> None:
         ctx = get_current_context()
         facility = ctx['dag_run'].conf.get('facility', '').strip().lower()
+        _require_facility(facility)
         dst = f"HOSPITALS.{facility.upper()}_RAW.EVENTS_RAW"
         use_pipelines_dir()
         import flatten_jsons_schemas as fl
