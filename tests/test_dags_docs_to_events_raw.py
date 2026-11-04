@@ -1,19 +1,23 @@
 """
 dags/docs_to_events_raw.py unit tests.
 
-Tests cover the three module-level helpers (check_null_names, run_validate,
-run_write) via a fake cursor — no Snowflake connection required.
+Tests cover the module-level helpers (check_null_names, run_setup, run_validate,
+run_write, run_verify, _require_facility) via a fake cursor — no Snowflake connection required.
 
-Integration tests (real Snowflake) live in the server; the integration checklist
-is in docs/feature-21-spec.md under Task 1 → Tests.
+Integration tests (real Snowflake) live on the server.
 """
 from __future__ import annotations
 
 import pytest
+from airflow.exceptions import AirflowFailException
 
 from tests.helpers import load_dag_module
 
 dag = load_dag_module("docs_to_events_raw")
+
+FACILITY = "siaya"
+SRC = "HOSPITALS.SIAYA_DOCS.EXTRACTED_FORMS"
+DST = "HOSPITALS.SIAYA_RAW.EVENTS_RAW"
 
 
 # ---------------------------------------------------------------------------
@@ -45,13 +49,33 @@ class FakeCursor:
 
 
 # ---------------------------------------------------------------------------
+# _require_facility
+# ---------------------------------------------------------------------------
+
+def test_require_facility_raises_on_empty_string():
+    with pytest.raises(AirflowFailException, match="requires 'facility'"):
+        dag._require_facility('')
+
+
+def test_require_facility_raises_on_whitespace():
+    with pytest.raises(AirflowFailException, match="requires 'facility'"):
+        dag._require_facility('   ')
+
+
+def test_require_facility_passes_for_valid_key():
+    dag._require_facility('siaya')
+    dag._require_facility('kisumu-v3')
+    dag._require_facility('facility_name_01')
+
+
+# ---------------------------------------------------------------------------
 # check_null_names
 # ---------------------------------------------------------------------------
 
 def test_check_null_names_returns_zero_and_no_warning(caplog):
     cur = FakeCursor(fetchone_map={"PATIENT_NAME IS NULL": (0,)})
     with caplog.at_level("WARNING"):
-        result = dag.check_null_names(cur)
+        result = dag.check_null_names(cur, SRC)
     assert result == 0
     assert "PATIENT_NAME" not in caplog.text
 
@@ -59,7 +83,7 @@ def test_check_null_names_returns_zero_and_no_warning(caplog):
 def test_check_null_names_logs_warning_when_nulls_present(caplog):
     cur = FakeCursor(fetchone_map={"PATIENT_NAME IS NULL": (3,)})
     with caplog.at_level("WARNING"):
-        result = dag.check_null_names(cur)
+        result = dag.check_null_names(cur, SRC)
     assert result == 3
     assert "3 row(s)" in caplog.text
     assert "held back" in caplog.text
@@ -71,11 +95,18 @@ def test_check_null_names_logs_warning_when_nulls_present(caplog):
 
 def test_run_setup_creates_both_schemas_and_events_raw_table():
     cur = FakeCursor()
-    dag.run_setup(cur)
+    dag.run_setup(cur, FACILITY, DST)
     assert any("SIAYA_DOCS" in s for s in cur.executed)
     assert any("SIAYA_RAW" in s for s in cur.executed)
     assert any("EVENTS_RAW" in s and "CREATE TABLE" in s for s in cur.executed)
     assert all("IF NOT EXISTS" in s for s in cur.executed)
+
+
+def test_run_setup_uses_facility_key_for_schema_names():
+    cur = FakeCursor()
+    dag.run_setup(cur, 'kisumu_v3', 'HOSPITALS.KISUMU_V3_RAW.EVENTS_RAW')
+    assert any("KISUMU_V3_DOCS" in s for s in cur.executed)
+    assert any("KISUMU_V3_RAW" in s for s in cur.executed)
 
 
 # ---------------------------------------------------------------------------
@@ -83,9 +114,9 @@ def test_run_setup_creates_both_schemas_and_events_raw_table():
 # ---------------------------------------------------------------------------
 
 def test_run_validate_raises_when_empty():
-    cur = FakeCursor(fetchone_map={"COUNT(*)" : (0,)})
+    cur = FakeCursor(fetchone_map={"COUNT(*)": (0,)})
     with pytest.raises(Exception, match="GDRIVE_SOURCE_FOLDER_ID"):
-        dag.run_validate(cur)
+        dag.run_validate(cur, SRC, FACILITY)
 
 
 def test_run_validate_raises_when_table_does_not_exist():
@@ -95,19 +126,19 @@ def test_run_validate_raises_when_table_does_not_exist():
                 raise RuntimeError("SQL compilation error: Object 'HOSPITALS.SIAYA_DOCS.EXTRACTED_FORMS' does not exist or not authorized")
             return super().execute(sql, params)
     with pytest.raises(Exception, match="does not exist"):
-        dag.run_validate(MissingTableCursor())
+        dag.run_validate(MissingTableCursor(), SRC, FACILITY)
 
 
 def test_run_validate_returns_count():
     cur = FakeCursor(fetchone_map={"PATIENT_NAME IS NULL": (0,), "COUNT(*)": (10,)})
-    assert dag.run_validate(cur) == 10
+    assert dag.run_validate(cur, SRC, FACILITY) == 10
 
 
 def test_run_validate_calls_check_null_names(monkeypatch):
     calls = []
-    monkeypatch.setattr(dag, "check_null_names", lambda cur: calls.append(True) or 0)
+    monkeypatch.setattr(dag, "check_null_names", lambda cur, src: calls.append(True) or 0)
     cur = FakeCursor(fetchone_map={"COUNT(*)": (4,)})
-    dag.run_validate(cur)
+    dag.run_validate(cur, SRC, FACILITY)
     assert calls == [True]
 
 
@@ -117,13 +148,13 @@ def test_run_validate_calls_check_null_names(monkeypatch):
 
 def test_run_write_returns_counts():
     cur = FakeCursor(rowcount=7)
-    result = dag.run_write(cur)
+    result = dag.run_write(cur, SRC, DST, FACILITY)
     assert result == {"deleted": 7, "patients": 7, "visits": 7}
 
 
 def test_run_write_delete_before_inserts():
     cur = FakeCursor()
-    dag.run_write(cur)
+    dag.run_write(cur, SRC, DST, FACILITY)
     # BEGIN, DELETE, patient INSERT, visit INSERT, COMMIT
     assert cur.executed[0] == "BEGIN"
     assert "DELETE" in cur.executed[1]
@@ -135,14 +166,14 @@ def test_run_write_delete_before_inserts():
 def test_run_write_rolls_back_on_failure():
     cur = FakeCursor(fail_on="NURSES_TRIAGE_NOTES")  # unique to visit INSERT
     with pytest.raises(RuntimeError):
-        dag.run_write(cur)
+        dag.run_write(cur, SRC, DST, FACILITY)
     assert "ROLLBACK" in cur.executed
     assert "COMMIT" not in cur.executed
 
 
 def test_run_write_delete_filters_by_file_id():
     cur = FakeCursor()
-    dag.run_write(cur)
+    dag.run_write(cur, SRC, DST, FACILITY)
     delete_sql = cur.executed[1]   # executed[0] = BEGIN
     assert "payload:file_id::STRING" in delete_sql
     assert "module_source = 'reception-service'" in delete_sql
@@ -151,7 +182,7 @@ def test_run_write_delete_filters_by_file_id():
 
 def test_run_write_patient_payload_fields():
     cur = FakeCursor()
-    dag.run_write(cur)
+    dag.run_write(cur, SRC, DST, FACILITY)
     patient_sql = cur.executed[2]  # BEGIN, DELETE, patient INSERT
     for field in ("'id'", "'file_id'", "'last_name'", "'patient_no'", "'date_of_birth'",
                   "'age'", "'sex'", "'phone'", "'address'"):
@@ -163,7 +194,7 @@ def test_run_write_patient_payload_fields():
 
 def test_run_write_visit_payload_fields():
     cur = FakeCursor()
-    dag.run_write(cur)
+    dag.run_write(cur, SRC, DST, FACILITY)
     visit_sql = cur.executed[3]    # BEGIN, DELETE, patient INSERT, visit INSERT
     for field in ("'id'", "'file_id'", "'patient_id'", "'date'", "'notes'"):
         assert field in visit_sql, f"Missing field {field} in visit INSERT"
@@ -173,17 +204,16 @@ def test_run_write_visit_payload_fields():
 
 def test_visit_id_distinct_from_patient_id():
     cur = FakeCursor()
-    dag.run_write(cur)
+    dag.run_write(cur, SRC, DST, FACILITY)
     patient_sql = cur.executed[2]   # after BEGIN, DELETE
     visit_sql = cur.executed[3]
-    # Patient id = bare RECORD_KEY; visit id = RECORD_KEY || '_v'
-    assert "RECORD_KEY || '_v'" not in patient_sql   # patient never gets _v suffix
+    assert "RECORD_KEY || '_v'" not in patient_sql
     assert "RECORD_KEY || '_v'" in visit_sql
 
 
 def test_run_write_module_source_is_reception_service():
     cur = FakeCursor()
-    dag.run_write(cur)
+    dag.run_write(cur, SRC, DST, FACILITY)
     for sql in cur.executed[2:4]:  # patient INSERT + visit INSERT
         assert "'reception-service'" in sql
 
@@ -191,7 +221,7 @@ def test_run_write_module_source_is_reception_service():
 def test_run_write_raises_when_insert_produces_zero_rows():
     cur = FakeCursor(rowcount=0)
     with pytest.raises(Exception, match="0 rows"):
-        dag.run_write(cur)
+        dag.run_write(cur, SRC, DST, FACILITY)
     assert "ROLLBACK" in cur.executed
     assert "COMMIT" not in cur.executed
 
@@ -201,15 +231,27 @@ def test_run_write_raises_and_rolls_back_on_partial_failure():
     counts = iter([5, 5, 0])  # deleted=5, patients=5, visits=0
 
     class PartialCursor(FakeCursor):
+        def __init__(self):
+            self._fetchone_map = {}
+            self.fail_on = None
+            self.executed = []
+
         @property
         def rowcount(self):
             return next(counts, 0)
 
     cur = PartialCursor()
     with pytest.raises(Exception, match="0 rows"):
-        dag.run_write(cur)
+        dag.run_write(cur, SRC, DST, FACILITY)
     assert "ROLLBACK" in cur.executed
     assert "COMMIT" not in cur.executed
+
+
+def test_run_write_uses_facility_in_sql():
+    cur = FakeCursor()
+    dag.run_write(cur, SRC, DST, FACILITY)
+    for sql in cur.executed[2:4]:
+        assert f"'{FACILITY}'" in sql
 
 
 # ---------------------------------------------------------------------------
@@ -217,7 +259,7 @@ def test_run_write_raises_and_rolls_back_on_partial_failure():
 # ---------------------------------------------------------------------------
 
 class FakeVerifyCursor(FakeCursor):
-    """Returns configurable per-source_table counts from the VERIFY_SQL GROUP BY."""
+    """Returns configurable per-source_table counts from the verify GROUP BY."""
 
     def __init__(self, patient_count: int = 5, visit_count: int = 5):
         super().__init__()
@@ -229,7 +271,7 @@ class FakeVerifyCursor(FakeCursor):
 
 def test_run_verify_passes_when_both_tables_present():
     cur = FakeVerifyCursor(patient_count=3, visit_count=3)
-    result = dag.run_verify(cur)
+    result = dag.run_verify(cur, DST, FACILITY)
     assert result["patients"] == 3
     assert result["visits"] == 3
 
@@ -237,34 +279,31 @@ def test_run_verify_passes_when_both_tables_present():
 def test_run_verify_raises_when_patients_missing():
     cur = FakeVerifyCursor(patient_count=0, visit_count=4)
     with pytest.raises(Exception, match="patients"):
-        dag.run_verify(cur)
+        dag.run_verify(cur, DST, FACILITY)
 
 
 def test_run_verify_raises_when_visits_missing():
     cur = FakeVerifyCursor(patient_count=4, visit_count=0)
     with pytest.raises(Exception, match="visits"):
-        dag.run_verify(cur)
+        dag.run_verify(cur, DST, FACILITY)
 
 
 def test_run_verify_sql_filters_by_facility_and_module_source():
     cur = FakeVerifyCursor()
-    dag.run_verify(cur)
+    dag.run_verify(cur, DST, FACILITY)
     verify_sql = cur.executed[0]
-    assert f"facility_id = '{dag.FACILITY}'" in verify_sql
+    assert f"facility_id = '{FACILITY}'" in verify_sql
     assert f"module_source = '{dag.MODULE_SOURCE}'" in verify_sql
     assert "source_table IN ('patients', 'visits')" in verify_sql
 
 
 # ---------------------------------------------------------------------------
-# SQL constants sanity checks (catch accidental edits)
+# DAG constants sanity check
 # ---------------------------------------------------------------------------
-
-def test_sql_constants_reference_correct_tables():
-    assert "HOSPITALS.SIAYA_DOCS.EXTRACTED_FORMS" in dag.SRC
-    assert "HOSPITALS.SIAYA_RAW.EVENTS_RAW" in dag.DST
-    assert dag.FACILITY == "siaya"
-    assert dag.MODULE_SOURCE == "reception-service"
-
 
 def test_dag_id():
     assert dag.DAG_ID == "docs_to_events_raw"
+
+
+def test_module_source_is_reception_service():
+    assert dag.MODULE_SOURCE == "reception-service"
