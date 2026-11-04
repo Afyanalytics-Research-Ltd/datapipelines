@@ -107,12 +107,11 @@ def run_validate(cur, src: str, facility: str) -> int:
 
 
 def run_write(cur, src: str, dst: str, facility: str) -> dict:
-    """DELETE stale rows then INSERT patient + visit rows atomically. Returns row counts."""
+    """DELETE stale rows then INSERT patient + visit + vitals + doctor_notes rows atomically."""
     delete_sql = f"""
         DELETE FROM {dst}
         WHERE facility_id = '{facility}'
-          AND module_source = '{MODULE_SOURCE}'
-          AND source_table IN ('patients', 'visits')
+          AND source_table IN ('patients', 'visits', 'vitals', 'doctor_notes')
           AND payload:file_id::STRING IN (SELECT FILE_ID FROM {src})
     """
     # Full name goes in last_name; v3_passthrough._patient_names() splits it → first + last.
@@ -156,6 +155,59 @@ def run_write(cur, src: str, dst: str, facility: str) -> dict:
             )
         FROM {src}
     """
+    vitals_insert_sql = f"""
+        INSERT INTO {dst} (facility_id, ingested_at, module_source, source_table, namespace, payload)
+        SELECT
+            '{facility}',
+            CURRENT_TIMESTAMP(),
+            'patient-evaluation-service',
+            'vitals',
+            NULL,
+            OBJECT_CONSTRUCT(
+                'id',                RECORD_KEY || '_vitals',
+                'file_id',           FILE_ID,
+                'visit_id',          RECORD_KEY || '_v',
+                'patient_id',        RECORD_KEY,
+                'temperature',       TRY_CAST(SPLIT_PART(TEMPERATURE, ' ', 1) AS FLOAT),
+                'systolic_bp',       TRY_CAST(SPLIT_PART(BLOOD_PRESSURE, '/', 1) AS INTEGER),
+                'diastolic_bp',      TRY_CAST(SPLIT_PART(SPLIT_PART(BLOOD_PRESSURE, '/', 2), ' ', 1) AS INTEGER),
+                'pulse',             TRY_CAST(SPLIT_PART(HEART_RATE, ' ', 1) AS INTEGER),
+                'weight',            TRY_CAST(SPLIT_PART(WEIGHT, ' ', 1) AS FLOAT),
+                'height',            TRY_CAST(HEIGHT AS FLOAT),
+                'bmi',               TRY_CAST(BODY_MASS_INDEX AS FLOAT),
+                'respiratory_rate',  TRY_CAST(SPLIT_PART(RESPIRATORY_RATE, ' ', 1) AS INTEGER),
+                'oxygen_saturation', TRY_CAST(SPLIT_PART(OXYGEN_SATURATION, ' ', 1) AS FLOAT)
+            )
+        FROM {src}
+    """
+    doctor_notes_insert_sql = f"""
+        INSERT INTO {dst} (facility_id, ingested_at, module_source, source_table, namespace, payload)
+        SELECT
+            '{facility}',
+            CURRENT_TIMESTAMP(),
+            'patient-evaluation-service',
+            'doctor_notes',
+            NULL,
+            OBJECT_CONSTRUCT(
+                'id',                        RECORD_KEY || '_dn',
+                'file_id',                   FILE_ID,
+                'visit_id',                  RECORD_KEY || '_v',
+                'patient_id',                RECORD_KEY,
+                'chief_complaints',          ARRAY_TO_STRING(EXTRACTION:chief_complaints::ARRAY, ', '),
+                'history_of_present_illness', HISTORY_OF_PRESENT_ILLNESS,
+                'examination',               NULLIF(TRIM(CONCAT_WS(' | ',
+                                                 NULLIF(GENERAL_APPEARANCE, ''),
+                                                 NULLIF(SYSTEMIC_EXAM_CVS, ''),
+                                                 NULLIF(SYSTEMIC_EXAM_RESP, ''),
+                                                 NULLIF(SYSTEMIC_EXAM_GIT, ''),
+                                                 NULLIF(SYSTEMIC_EXAM_CNS, ''),
+                                                 NULLIF(SYSTEMIC_EXAM_MSK_SKIN, '')
+                                             )), ''),
+                'surgical_history',          PAST_MEDICAL_SURGICAL_HISTORY,
+                'plan',                      DOCTORS_NOTES
+            )
+        FROM {src}
+    """
     cur.execute("BEGIN")
     try:
         cur.execute(delete_sql)
@@ -171,15 +223,20 @@ def run_write(cur, src: str, dst: str, facility: str) -> dict:
                 f"{src} had rows but none transferred — check column mapping between "
                 f"EXTRACTED_FORMS and {dst}."
             )
+        cur.execute(vitals_insert_sql)
+        vitals = cur.rowcount
+        cur.execute(doctor_notes_insert_sql)
+        doctor_notes = cur.rowcount
         cur.execute("COMMIT")
     except Exception:
         cur.execute("ROLLBACK")
         raise
     log.info(
-        "Deleted %d stale row(s); inserted %d patient + %d visit row(s) into %s",
-        deleted, patients, visits, dst,
+        "Deleted %d stale row(s); inserted %d patient + %d visit + %d vital + %d doctor_note row(s) into %s",
+        deleted, patients, visits, vitals, doctor_notes, dst,
     )
-    return {"deleted": deleted, "patients": patients, "visits": visits}
+    return {"deleted": deleted, "patients": patients, "visits": visits,
+            "vitals": vitals, "doctor_notes": doctor_notes}
 
 
 def run_verify(cur, dst: str, facility: str) -> dict:

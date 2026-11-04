@@ -149,18 +149,20 @@ def test_run_validate_calls_check_null_names(monkeypatch):
 def test_run_write_returns_counts():
     cur = FakeCursor(rowcount=7)
     result = dag.run_write(cur, SRC, DST, FACILITY)
-    assert result == {"deleted": 7, "patients": 7, "visits": 7}
+    assert result == {"deleted": 7, "patients": 7, "visits": 7, "vitals": 7, "doctor_notes": 7}
 
 
 def test_run_write_delete_before_inserts():
     cur = FakeCursor()
     dag.run_write(cur, SRC, DST, FACILITY)
-    # BEGIN, DELETE, patient INSERT, visit INSERT, COMMIT
+    # BEGIN, DELETE, patient INSERT, visit INSERT, vitals INSERT, doctor_notes INSERT, COMMIT
     assert cur.executed[0] == "BEGIN"
     assert "DELETE" in cur.executed[1]
     assert "'patients'" in cur.executed[2]
     assert "'visits'" in cur.executed[3]
-    assert cur.executed[4] == "COMMIT"
+    assert "'vitals'" in cur.executed[4]
+    assert "'doctor_notes'" in cur.executed[5]
+    assert cur.executed[6] == "COMMIT"
 
 
 def test_run_write_rolls_back_on_failure():
@@ -176,8 +178,8 @@ def test_run_write_delete_filters_by_file_id():
     dag.run_write(cur, SRC, DST, FACILITY)
     delete_sql = cur.executed[1]   # executed[0] = BEGIN
     assert "payload:file_id::STRING" in delete_sql
-    assert "module_source = 'reception-service'" in delete_sql
-    assert "source_table IN ('patients', 'visits')" in delete_sql
+    assert "module_source" not in delete_sql
+    assert "source_table IN ('patients', 'visits', 'vitals', 'doctor_notes')" in delete_sql
 
 
 def test_run_write_patient_payload_fields():
@@ -202,6 +204,85 @@ def test_run_write_visit_payload_fields():
     assert "RECORD_KEY || '_v'" in visit_sql
     assert "RECORD_KEY" in visit_sql
     assert "COALESCE(NURSES_TRIAGE_NOTES, HISTORY_OF_PRESENT_ILLNESS, DOCTORS_NOTES)" in visit_sql
+
+
+def test_run_write_vitals_payload_fields():
+    cur = FakeCursor()
+    dag.run_write(cur, SRC, DST, FACILITY)
+    vitals_sql = cur.executed[4]   # BEGIN, DELETE, patient, visit, vitals
+    for field in ("'visit_id'", "'patient_id'", "'temperature'", "'systolic_bp'",
+                  "'diastolic_bp'", "'pulse'", "'weight'", "'height'", "'bmi'",
+                  "'respiratory_rate'", "'oxygen_saturation'"):
+        assert field in vitals_sql, f"Missing field {field} in vitals INSERT"
+    assert "TRY_CAST" in vitals_sql
+    assert "SPLIT_PART" in vitals_sql
+    assert "BLOOD_PRESSURE" in vitals_sql
+    assert "RECORD_KEY || '_vitals'" in vitals_sql
+    assert "RECORD_KEY || '_v'" in vitals_sql
+
+
+def test_run_write_doctor_notes_payload_fields():
+    cur = FakeCursor()
+    dag.run_write(cur, SRC, DST, FACILITY)
+    dn_sql = cur.executed[5]       # BEGIN, DELETE, patient, visit, vitals, doctor_notes
+    for field in ("'visit_id'", "'patient_id'", "'chief_complaints'",
+                  "'history_of_present_illness'", "'examination'", "'surgical_history'", "'plan'"):
+        assert field in dn_sql, f"Missing field {field} in doctor_notes INSERT"
+    assert "EXTRACTION:chief_complaints" in dn_sql
+    assert "RECORD_KEY || '_dn'" in dn_sql
+    assert "RECORD_KEY || '_v'" in dn_sql
+
+
+def test_run_write_delete_covers_vitals_and_doctor_notes():
+    cur = FakeCursor()
+    dag.run_write(cur, SRC, DST, FACILITY)
+    delete_sql = cur.executed[1]
+    assert "'vitals'" in delete_sql
+    assert "'doctor_notes'" in delete_sql
+
+
+def test_run_write_delete_does_not_filter_module_source():
+    cur = FakeCursor()
+    dag.run_write(cur, SRC, DST, FACILITY)
+    delete_sql = cur.executed[1]
+    assert "module_source" not in delete_sql
+
+
+def test_run_write_rollback_on_vitals_insert_failure():
+    cur = FakeCursor(fail_on="BODY_MASS_INDEX")
+    with pytest.raises(RuntimeError):
+        dag.run_write(cur, SRC, DST, FACILITY)
+    assert "ROLLBACK" in cur.executed
+    assert "COMMIT" not in cur.executed
+
+
+def test_run_write_rollback_on_doctor_notes_insert_failure():
+    cur = FakeCursor(fail_on="EXTRACTION:chief_complaints")
+    with pytest.raises(RuntimeError):
+        dag.run_write(cur, SRC, DST, FACILITY)
+    assert "ROLLBACK" in cur.executed
+    assert "COMMIT" not in cur.executed
+
+
+def test_run_write_null_vitals_does_not_rollback():
+    """0-row vitals INSERT is not fatal — only patients/visits must have rows."""
+    counts = iter([5, 5, 5, 0, 5])  # deleted, patients, visits, vitals=0, doctor_notes
+
+    class PartialVitalsCursor(FakeCursor):
+        def __init__(self):
+            self._fetchone_map = {}
+            self.fail_on = None
+            self.executed = []
+
+        @property
+        def rowcount(self):
+            return next(counts, 0)
+
+    cur = PartialVitalsCursor()
+    result = dag.run_write(cur, SRC, DST, FACILITY)
+    assert result["vitals"] == 0
+    assert "COMMIT" in cur.executed
+    assert "ROLLBACK" not in cur.executed
 
 
 def test_visit_id_distinct_from_patient_id():
