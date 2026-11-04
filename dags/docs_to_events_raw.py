@@ -130,7 +130,7 @@ def run_write(cur, src: str, dst: str, facility: str) -> dict:
                 'last_name',     PATIENT_NAME,
                 'patient_no',    COALESCE(CAMP_FILE_NUMBER, PATIENT_ID_FILE_NO),
                 'date_of_birth', DATE_OF_BIRTH,
-                'age',           AGE,
+                'age',           TRY_CAST(SPLIT_PART(AGE, ' ', 1) AS INTEGER),
                 'sex',           SEX,
                 'phone',         PHONE_NUMBER,
                 'address',       ADDRESS
