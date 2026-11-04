@@ -910,7 +910,7 @@ def config_from_params(params: Optional[Dict[str, Any]]) -> PipelineConfig:
         return max(minimum, int(p.get(name, getattr(d, name))))
 
     _schema_path = p.get("schema_path", SCHEMA_PATH)
-    if _schema_path and not _resolve_path(str(_schema_path)).is_file():
+    if not p.get("schema") and _schema_path and not _resolve_path(str(_schema_path)).is_file():
         _fallback = "dags/jsons/siaya_outpatient_schema.json"
         log.warning("schema: file not found: %s — using default schema %s", _schema_path, _fallback)
         _schema_path = _fallback
