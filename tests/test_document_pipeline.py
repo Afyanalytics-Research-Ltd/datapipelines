@@ -110,7 +110,7 @@ def test_non_schema_json_raises(value):
 def test_empty_params_are_the_old_defaults():
     cfg = dp.config_from_params({})
     d = dp.DEFAULT_CONFIG
-    assert cfg.schema == json.loads((DAGS_DIR / "jsons" / "schema.json").read_text(encoding="utf-8"))
+    assert cfg.schema == json.loads((DAGS_DIR / "jsons" / "patient_docs_outpatient_schema.json").read_text(encoding="utf-8"))
     assert cfg.boundary_schema is dp.BOUNDARY_SCHEMA
     for name in ("record_start_markers", "record_start_min_matches", "max_pages_per_record",
                  "boundary_score_threshold", "page_parse_workers", "output_dir", "state_dir",
@@ -497,6 +497,25 @@ def test_real_schema_file_maps_to_columns():
     cols = {c: t for c, _, t in dp.schema_columns(schema)}
     assert cols["BABY_NAME"] == "VARCHAR" and cols["DIAGNOSES"] == "VARIANT"
     assert len(cols) == len(schema["properties"])
+
+
+@pytest.mark.parametrize("filename", [
+    "siaya_outpatient_schema.json",
+    "patient_docs_outpatient_schema.json",
+])
+def test_outpatient_schema_files_are_valid_and_complete(filename):
+    """Both outpatient schema files must be valid JSON, loadable, and contain the
+    clinical fields docs_to_events_raw.py reads from EXTRACTED_FORMS columns."""
+    schema = json.loads((DAGS_DIR / "jsons" / filename).read_text(encoding="utf-8"))
+    required_fields = {
+        "patient_name", "age", "sex", "blood_pressure", "heart_rate",
+        "temperature", "weight", "height", "body_mass_index",
+        "chief_complaints", "history_of_present_illness",
+        "general_appearance", "doctors_notes",
+    }
+    missing = required_fields - set(schema.get("properties", {}).keys())
+    assert not missing, f"{filename} missing fields: {missing}"
+    assert schema.get("type") == "object"
 
 
 def test_snowflake_target_defaults(monkeypatch):

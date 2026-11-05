@@ -246,7 +246,7 @@ EXTRACT_MODEL = os.getenv("LANDINGAI_EXTRACT_MODEL", "extract-latest")
 OUTPUT_DIR = os.getenv("LANDING_OUTPUT_DIR", "./output")
 JSON_OUTPUT_DIR = os.getenv("LANDING_JSON_OUTPUT_DIR", "./output/json")
 STATE_DIR = os.getenv("LANDING_STATE_DIR", "./state")
-SCHEMA_PATH = os.getenv("SCHEMA_PATH", "./dags/jsons/schema.json")
+SCHEMA_PATH = os.getenv("SCHEMA_PATH", "./dags/jsons/patient_docs_outpatient_schema.json")
 
 PAGE_PARSE_WORKERS = int(os.getenv("PAGE_PARSE_WORKERS", "3"))
 BOUNDARY_WORKERS = int(os.getenv("BOUNDARY_WORKERS", "3"))
