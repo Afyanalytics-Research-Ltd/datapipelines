@@ -206,6 +206,9 @@ from typing import Any, Dict, List, Optional, Tuple
 import requests
 from pypdf import PdfReader, PdfWriter
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))  # for pipelines_common
+from pipelines_common import lap_callback  # noqa: E402
+
 try:  # keep the --inspect CLI usable without Airflow installed
     import pendulum
     try:
@@ -2029,6 +2032,8 @@ if AIRFLOW_AVAILABLE:
         tags=["landingai", "gdrive", "extraction"],
         doc_md=__doc__,
         params=dag_params(),
+        on_success_callback=lap_callback,
+        on_failure_callback=lap_callback,
     )
     def gdrive_landingai_extract():
 

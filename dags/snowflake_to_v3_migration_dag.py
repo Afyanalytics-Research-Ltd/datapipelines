@@ -74,8 +74,8 @@ from airflow.sdk import Param, dag, get_current_context, task
 from airflow.task.trigger_rule import TriggerRule
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))  # for pipelines_common
-from pipelines_common import (clean_list, facility_keys, int_env, old_system_history_tables,
-                              use_pipelines_dir)
+from pipelines_common import (clean_list, facility_keys, int_env, lap_callback,
+                              old_system_history_tables, use_pipelines_dir)
 
 log = logging.getLogger(__name__)
 
@@ -145,6 +145,8 @@ def _setup_modules(p: dict, facility: str):
                                  description="Mark tables whose records are only held back (parents/users "
                                              "not yet in V3) as failed instead of skipped."),
     },
+    on_success_callback=lap_callback,
+    on_failure_callback=lap_callback,
 )
 def snowflake_to_v3_migration():
 

@@ -31,7 +31,7 @@ from airflow.exceptions import AirflowFailException
 from airflow.sdk import Param, dag, get_current_context, task
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from pipelines_common import use_pipelines_dir
+from pipelines_common import lap_callback, use_pipelines_dir
 
 log = logging.getLogger(__name__)
 
@@ -293,6 +293,8 @@ def run_verify(cur, dst: str, facility: str) -> dict:
     tags=["snowflake", "documents", "migration"],
     default_args={"owner": "data-eng", "retries": 1, "retry_delay": timedelta(minutes=2)},
     params={"facility": Param("", type="string", title="Facility key", description='e.g. "siaya"')},
+    on_success_callback=lap_callback,
+    on_failure_callback=lap_callback,
 )
 def docs_to_events_raw():
 

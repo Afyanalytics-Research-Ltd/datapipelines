@@ -57,7 +57,7 @@ from airflow.task.trigger_rule import TriggerRule
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))  # for pipelines_common
 from pipelines_common import (clean_list, clean_schema, facility_keys, int_env,
-                              old_system_history_tables, raw_schema, use_pipelines_dir)
+                              lap_callback, old_system_history_tables, raw_schema, use_pipelines_dir)
 
 log = logging.getLogger(__name__)
 
@@ -102,6 +102,8 @@ def _dedup_rules(params) -> dict:
         "trigger_v3": Param(False, type="boolean", title="Trigger V3 migration after flatten",
                             description="Writes to V3. Old-system-history tables are excluded."),
     },
+    on_success_callback=lap_callback,
+    on_failure_callback=lap_callback,
 )
 def snowflake_flatten_clean():
 
