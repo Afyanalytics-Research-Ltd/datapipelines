@@ -110,7 +110,7 @@ def test_non_schema_json_raises(value):
 def test_empty_params_are_the_old_defaults():
     cfg = dp.config_from_params({})
     d = dp.DEFAULT_CONFIG
-    assert cfg.schema == json.loads((DAGS_DIR / "jsons" / "siaya_outpatient_schema.json").read_text(encoding="utf-8"))
+    assert cfg.schema == json.loads((DAGS_DIR / "jsons" / "patient_docs_outpatient_schema.json").read_text(encoding="utf-8"))
     assert cfg.boundary_schema is dp.BOUNDARY_SCHEMA
     for name in ("record_start_markers", "record_start_min_matches", "max_pages_per_record",
                  "boundary_score_threshold", "page_parse_workers", "output_dir", "state_dir",
